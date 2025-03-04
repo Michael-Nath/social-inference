@@ -1,6 +1,5 @@
 {
   "dependencies": {
     "webgpu": "^0.2.11"
-  },
-  "type": "module"
+  }
 }
