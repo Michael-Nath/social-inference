@@ -26,7 +26,8 @@ async function runExample() {
         console.log("Results match:", JSON.stringify(result) === JSON.stringify(expectedResult));
 
         // Update UI or perform additional processing with the results
-        displayResults(a, x, y, result);
+        const adapter = await navigator.gpu.requestAdapter();
+        displayResults(a, x, y, result, adapter.limits);
     } catch (error) {
         console.error("Error running SAXPY:", error);
         document.getElementById('error').textContent = `Error: ${error.message}`;
@@ -34,11 +35,12 @@ async function runExample() {
 }
 
 // Function to display results in the UI
-function displayResults(a, x, y, result) {
+function displayResults(a, x, y, result, limits) {
     const resultContainer = document.getElementById('results');
     resultContainer.innerHTML = `
         <h3>SAXPY Results</h3>
-        <p>Formula: result = ${a} * x + y</p>
+        <p>Formula: result = ${a} * ${x} + ${y}</p>
+        <p> ${limits}</p>
         <table>
             <thead>
                 <tr>
