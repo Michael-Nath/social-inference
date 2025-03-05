@@ -49,15 +49,151 @@ function formatValue(value) {
     return String(value);
 }
 
-// Example usage
+// Add input form to the page
+function addInputForm() {
+  const formHTML = `
+    <div class="input-form">
+      <h3>SAXPY Calculator</h3>
+      <p>Enter values for the SAXPY computation (a*x + y)</p>
+      
+      <div class="form-group">
+        <label for="scalar-a">Scalar value (a):</label>
+        <input type="number" id="scalar-a" step="any" value="2.0">
+      </div>
+      
+      <div class="form-group">
+        <label for="vector-x">Vector X (comma-separated numbers):</label>
+        <input type="text" id="vector-x" value="1, 2, 3, 4, 5">
+      </div>
+      
+      <div class="form-group">
+        <label for="vector-y">Vector Y (comma-separated numbers):</label>
+        <input type="text" id="vector-y" value="10, 20, 30, 40, 50">
+      </div>
+      
+      <button id="run-button" class="run-button">Run SAXPY</button>
+      <div id="validation-error" class="error-message"></div>
+    </div>
+    
+    <style>
+      .input-form {
+        margin-bottom: 20px;
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        background-color: #f9f9f9;
+      }
+      
+      .form-group {
+        margin-bottom: 15px;
+      }
+      
+      .form-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      
+      .form-group input {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+      }
+      
+      .run-button {
+        background-color: #3498db;
+        color: white;
+        border: none;
+        padding: 10px 15px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      
+      .run-button:hover {
+        background-color: #2980b9;
+      }
+      
+      .error-message {
+        color: #e74c3c;
+        margin-top: 10px;
+        font-size: 14px;
+      }
+    </style>
+  `;
+  
+  // Create a container for the form
+  const formContainer = document.createElement('div');
+  formContainer.innerHTML = formHTML;
+  
+  // Insert the form at the beginning of the results container
+  const resultsContainer = document.getElementById('results');
+  resultsContainer.insertBefore(formContainer, resultsContainer.firstChild);
+}
+
+// Parse comma-separated values into a numeric array
+function parseVector(inputString) {
+  return inputString
+    .split(',')
+    .map(item => item.trim())
+    .filter(item => item !== '')
+    .map(item => parseFloat(item));
+}
+
+// Validate inputs before running
+function validateInputs(a, x, y) {
+  // Check if a is a valid number
+  if (isNaN(a)) {
+    return "Scalar value 'a' must be a valid number";
+  }
+  
+  // Check if x and y are valid arrays
+  if (!Array.isArray(x) || x.length === 0 || x.some(isNaN)) {
+    return "Vector X must contain valid numbers";
+  }
+  
+  if (!Array.isArray(y) || y.length === 0 || y.some(isNaN)) {
+    return "Vector Y must contain valid numbers";
+  }
+  
+  // Check if x and y have the same length
+  if (x.length !== y.length) {
+    return "Vectors X and Y must have the same length";
+  }
+  
+  return null; // No validation errors
+}
+
+// Modified runExample function to use user input
 async function runExample() {
     try {
-        // Define inputs
-        const a = 2.0;
-        const x = [1, 2, 3, 4, 5];
-        const y = [10, 20, 30, 40, 50];
-
-
+        // Check if we're running with user input or default values
+        const isFormAvailable = document.getElementById('scalar-a') !== null;
+        
+        let a, x, y;
+        
+        if (isFormAvailable) {
+            // Get values from input fields
+            a = parseFloat(document.getElementById('scalar-a').value);
+            x = parseVector(document.getElementById('vector-x').value);
+            y = parseVector(document.getElementById('vector-y').value);
+            
+            // Validate inputs
+            const validationError = validateInputs(a, x, y);
+            if (validationError) {
+                document.getElementById('validation-error').textContent = validationError;
+                return;
+            } else {
+                document.getElementById('validation-error').textContent = '';
+            }
+        } else {
+            // Use default values on initial load
+            a = 2.0;
+            x = [1, 2, 3, 4, 5];
+            y = [10, 20, 30, 40, 50];
+        }
 
         console.log("Input a:", a);
         console.log("Input x:", x);
@@ -74,8 +210,7 @@ async function runExample() {
 
         // Update UI or perform additional processing with the results
         const adapter = await navigator.gpu.requestAdapter();
-        adapter.limits
-        displayResults(a, x, y, result, adapter.limits);
+        displayResults(a, x, y, result, adapter);
     } catch (error) {
         console.error("Error running SAXPY:", error);
         document.getElementById('error').textContent = `Error: ${error.message}`;
@@ -83,13 +218,31 @@ async function runExample() {
 }
 
 // Function to display results in the UI
-function displayResults(a, x, y, result, limits) {
+function displayResults(a, x, y, result, adapter) {
+    
+    const limits = adapter.limits;
     const resultContainer = document.getElementById('results');
+
+    // Clear previous results except the form (if it exists)
+    const form = resultContainer.querySelector('.input-form');
+    resultContainer.innerHTML = '';
+    
+    // Add the form back if it was there before
+    if (form) {
+        resultContainer.appendChild(form);
+    } else {
+        // Add form for first time
+        addInputForm();
+    }
+
+    const GPUInfo = `
+        <h3>Your GPU's name is: ${adapter.name}</h3>
+    `;
     
     // Create SAXPY results section
     const saxpySection = `
         <h3>SAXPY Results</h3>
-        <p>Formula: result = ${a} * ${x} + ${y}</p>
+        <p>Formula: result = ${a} * x + y</p>
         <table class="result-table">
             <thead>
                 <tr>
@@ -168,10 +321,13 @@ function displayResults(a, x, y, result, limits) {
         <button id="copy-limits" class="copy-button">Copy Limits to Clipboard</button>
     `;
     
-    // Combine SAXPY results and limits
-    resultContainer.innerHTML = `
-        ${saxpySection}
-        ${limitsSection}
+    // Append content to the results container
+    resultContainer.insertAdjacentHTML('beforeend', GPUInfo);
+    resultContainer.insertAdjacentHTML('beforeend', saxpySection);
+    resultContainer.insertAdjacentHTML('beforeend', limitsSection);
+    
+    // Add styles
+    const stylesHTML = `
         <style>
             .limits-table, .result-table {
                 width: 100%;
@@ -228,6 +384,7 @@ function displayResults(a, x, y, result, limits) {
             }
         </style>
     `;
+    resultContainer.insertAdjacentHTML('beforeend', stylesHTML);
     
     // Add event listener for the copy button
     document.getElementById('copy-limits').addEventListener('click', () => {
@@ -243,7 +400,39 @@ function displayResults(a, x, y, result, limits) {
             alert('Limits copied to clipboard!');
         });
     });
+    
+    // Add event listener to the run button
+    document.getElementById('run-button').addEventListener('click', runExample);
+    
+    // Also allow Enter key to submit
+    document.querySelectorAll('.input-form input').forEach(input => {
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                runExample();
+            }
+        });
+    });
 }
 
-// Run the example when the page loads
-document.addEventListener('DOMContentLoaded', runExample);
+// Initialize when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    // Check if we already have a results container
+    if (!document.getElementById('results')) {
+        // Create results container if it doesn't exist
+        const resultsContainer = document.createElement('div');
+        resultsContainer.id = 'results';
+        document.body.appendChild(resultsContainer);
+    }
+    
+    // Create error container if it doesn't exist
+    if (!document.getElementById('error')) {
+        const errorContainer = document.createElement('div');
+        errorContainer.id = 'error';
+        errorContainer.style.color = '#e74c3c';
+        errorContainer.style.marginTop = '20px';
+        document.body.appendChild(errorContainer);
+    }
+    
+    // Run the example with default values
+    runExample();
+});

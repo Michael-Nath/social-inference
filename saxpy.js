@@ -36,7 +36,7 @@ async function runSaxpy(a, xArray, yArray) {
 
   // Create buffer for scalar 'a'
   const uniformBuffer = device.createBuffer({
-      size: 16, // 4 bytes for f32 + 12 bytes padding (vec3<f32>)
+      size: vectorLength * 4, // 4 bytes for f32 + 12 bytes padding (vec3<f32>)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
   });
 
