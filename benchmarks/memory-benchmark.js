@@ -75,30 +75,20 @@ async function memCheck() {
               let dataArray;
               
               try {
-                  // Special safe handling for larger allocations on iOS
-                  if (isIOSDevice() && size > 256 * MB) {
-                      // For larger allocations on iOS, skip data transfer
-                      throw new Error("Skipping data transfer on iOS to prevent crash");
-                  } else {
-                      dataArray = new Uint8Array(size);
-                      
-                      // Only fill a small portion of the array to prevent excessive memory usage
-                      const fillSize = Math.min(1024, size);
-                      for (let j = 0; j < fillSize; j++) {
-                          dataArray[j] = j % 256;
-                      }
+                  // Create data array for all allocations up to 1GB
+                  dataArray = new Uint8Array(size);
+                  
+                  // Only fill a small portion of the array to prevent excessive memory usage
+                  const fillSize = Math.min(1024, size);
+                  for (let j = 0; j < fillSize; j++) {
+                      dataArray[j] = j % 256;
                   }
                   
                   // Start timing the data transfer
                   const transferStart = performance.now();
                   
-                  // Special handling for iOS with large buffers
-                  if (isIOSDevice() && size > 128 * MB) {
-                      // For iOS, transfer even less data for large buffers
-                      device.queue.writeBuffer(buffer, 0, dataArray, 0, Math.min(1024, size));
-                  } else {
-                      device.queue.writeBuffer(buffer, 0, dataArray);
-                  }
+                  // Write the data to the buffer (attempt full transfer for all sizes up to 1GB)
+                  device.queue.writeBuffer(buffer, 0, dataArray);
                   
                   // Wait for the GPU to finish operations
                   await device.queue.onSubmittedWorkDone();
