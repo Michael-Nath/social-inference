@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU Memory Benchmark</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        #controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+        #controls button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        #controls button:hover {
+            background-color: #45a049;
+        }
+        .hint {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        #status {
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #f5f5f5;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+        #deviceInfo {
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: #e9f7fe;
+            border-radius: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr.success {
+            background-color: #e6ffe6;
+        }
+        tr.failure {
+            background-color: #ffe6e6;
+        }
+        tr.max-success {
+            background-color: #c6ffc6;
+            font-weight: bold;
+        }
+        #summary {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+        }
+        .summary-section {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #ddd;
+        }
+        .summary-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .summary-section h3 {
+            margin-top: 0;
+            color: #1a73e8;
+        }
+        strong {
+            color: #1a73e8;
+        }
+    </style>
+</head>
+<body>
+    <h1>GPU Memory Benchmark</h1>
+    <div id="controls">
+        <button id="runButton">Run Memory Benchmark</button>
+        <p class="hint">Tests increasing allocation sizes (1MB, 2MB, 4MB, 8MB...) until failure</p>
+    </div>
+    <div id="status">Ready to run benchmark</div>
+    <div id="deviceInfo">
+        <h2>Device Information</h2>
+        <p>GPU: <span id="gpuName">Not detected yet</span></p>
+    </div>
+    <h2>Benchmark Results</h2>
+    <table id="resultsTable">
+        <thead>
+            <tr>
+                <th>Size</th>
+                <th>Allocation Time</th>
+                <th>Data Transfer</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="resultsBody">
+            <!-- Results will be populated here -->
+        </tbody>
+    </table>
+    <div id="summary">
+        <!-- Summary will be shown here -->
+    </div>
+
+    <!-- External JavaScript file -->
+    <script src="memory-benchmark.js"></script>
+</body>
+</html>
