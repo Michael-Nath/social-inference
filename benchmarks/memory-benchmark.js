@@ -11,27 +11,55 @@ async function setupGPU() {
   }
 }
 
+// Detect mobile devices
+function isMobileDevice() {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+// Get safe maximum allocation size based on device
+function getSafeMaxPower() {
+  if (isMobileDevice()) {
+      return 8; // Limit to 256MB on mobile devices
+  }
+  return 20; // Up to 1GB on desktop
+}
+
 // Main memory check function
-async function memCheck(maxPower = 20) {
-  const adapter = await setupGPU();
-  const device = await adapter.requestDevice();
+async function memCheck() {
+  // Set maximum power based on device
+  const maxPower = getSafeMaxPower();
   
-  // Update status function for progress
-  const updateStatus = (message) => {
-      document.getElementById('status').textContent = message;
-  };
-  
-  const MB = 1024 * 1024;
-  const results = [];
-  
-  // Test allocations with increasing sizes until failure or maxPower is reached
-  for (let power = 0; power <= maxPower; power++) {
-      const size = Math.pow(2, power) * MB;
-      updateStatus(`Testing ${(size / MB).toFixed(0)}MB (2^${power})...`);
+  try {
+      const adapter = await setupGPU();
+      const device = await adapter.requestDevice();
       
-      try {
-          console.log(`Attempting to allocate ${size / MB}MB...`);
-          const startTime = performance.now();
+      // Update status function for progress
+      const updateStatus = (message) => {
+          document.getElementById('status').textContent = message;
+      };
+      
+      const MB = 1024 * 1024;
+      const results = [];
+      
+      // Start with a small allocation on mobile
+      const startPower = isMobileDevice() ? 0 : 0; // 1MB on mobile, 1MB on desktop
+      
+      // Test allocations with increasing sizes until failure or maxPower is reached
+      for (let power = startPower; power <= maxPower; power++) {
+          const size = Math.pow(2, power) * MB;
+          updateStatus(`Testing ${(size / MB).toFixed(0)}MB (2^${power})...`);
+          
+          try {
+              console.log(`Attempting to allocate ${size / MB}MB...`);
+              
+              // For larger allocations on mobile, add an extra safety check
+              if (isMobileDevice() && power > 6) { // >64MB on mobile
+                  updateStatus(`Preparing to test ${(size / MB).toFixed(0)}MB (2^${power})...`);
+                  // Small delay to allow UI updates and browser to breathe
+                  await new Promise(resolve => setTimeout(resolve, 200));
+              }
+              
+              const startTime = performance.now();
           
           // Create the buffer
           const buffer = device.createBuffer({
@@ -42,42 +70,81 @@ async function memCheck(maxPower = 20) {
           const createTime = performance.now();
           
           // Create some data and transfer it to force actual allocation
-          // (Timing for data creation excluded from benchmark)
-          const dataArray = new Uint8Array(size);
+          // For large allocations, be more careful
+          // Use a more memory-efficient approach for data creation
+          let dataArray;
           
-          // Fill with some pattern (just to ensure it's actually doing something)
-          for (let j = 0; j < Math.min(1024, size); j++) {
-              dataArray[j] = j % 256;
+          try {
+              if (size > 512 * MB && isMobileDevice()) {
+                  // For very large allocations on mobile, skip data transfer
+                  // Just verify the buffer was created
+                  throw new Error("Skipping data transfer to prevent crash");
+              } else {
+                  dataArray = new Uint8Array(size);
+                  
+                  // Only fill a small portion of the array to prevent excessive memory usage
+                  const fillSize = Math.min(1024, size);
+                  for (let j = 0; j < fillSize; j++) {
+                      dataArray[j] = j % 256;
+                  }
+              }
+              
+              // Start timing the data transfer
+              const transferStart = performance.now();
+              
+              // Write the data to the buffer - be extra cautious on mobile
+              if (isMobileDevice() && size > 128 * MB) {
+                  // For large buffers on mobile, only transfer a small amount to test
+                  device.queue.writeBuffer(buffer, 0, dataArray, 0, Math.min(1024, size));
+              } else {
+                  device.queue.writeBuffer(buffer, 0, dataArray);
+              }
+              
+              // Wait for the GPU to finish operations
+              await device.queue.onSubmittedWorkDone();
+              
+              const endTime = performance.now();
+              
+              // Record successful allocation
+              results.push({
+                  power: power,
+                  size: size / MB,
+                  unit: 'MB',
+                  success: true,
+                  createTime: createTime - startTime,
+                  transferTime: endTime - transferStart,
+                  totalTime: (createTime - startTime) + (endTime - transferStart)
+              });
+              
+              console.log(`Successfully allocated ${size / MB}MB (2^${power}) in ${results[results.length-1].totalTime.toFixed(2)}ms`);
+              console.log(`  - Buffer creation: ${results[results.length-1].createTime.toFixed(2)}ms`);
+              console.log(`  - Data transfer: ${results[results.length-1].transferTime.toFixed(2)}ms`);
+          } catch (innerError) {
+              // If we fail during data transfer, we still count the buffer creation as success
+              // but note the data transfer issue
+              results.push({
+                  power: power,
+                  size: size / MB,
+                  unit: 'MB',
+                  success: true,
+                  partial: true,
+                  createTime: createTime - startTime,
+                  transferTime: 0,
+                  totalTime: createTime - startTime,
+                  transferError: innerError.message
+              });
+              
+              console.log(`Partially successful at ${size / MB}MB (2^${power}): Buffer created but data transfer skipped`);
           }
           
-          // Start timing the data transfer
-          const transferStart = performance.now();
-          
-          // Write the data to the buffer
-          device.queue.writeBuffer(buffer, 0, dataArray);
-          
-          // Wait for the GPU to finish operations
-          await device.queue.onSubmittedWorkDone();
-          
-          const endTime = performance.now();
-          
-          // Record successful allocation
-          results.push({
-              power: power,
-              size: size / MB,
-              unit: 'MB',
-              success: true,
-              createTime: createTime - startTime,
-              transferTime: endTime - transferStart,
-              totalTime: (createTime - startTime) + (endTime - transferStart)
-          });
-          
-          console.log(`Successfully allocated ${size / MB}MB (2^${power}) in ${results[results.length-1].totalTime.toFixed(2)}ms`);
-          console.log(`  - Buffer creation: ${results[results.length-1].createTime.toFixed(2)}ms`);
-          console.log(`  - Data transfer: ${results[results.length-1].transferTime.toFixed(2)}ms`);
-          
-          // Clean up immediately to avoid memory accumulation affecting next test
+          // Clean up immediately and make sure the GC has a chance to run
           buffer.destroy();
+          dataArray = null;
+          
+          // Add a small delay between tests to give the browser time to recover resources
+          if (isMobileDevice() || power > 12) {
+              await new Promise(resolve => setTimeout(resolve, 300));
+          }
           
       } catch (error) {
           // Record failed allocation
@@ -94,31 +161,72 @@ async function memCheck(maxPower = 20) {
           // Exit the loop since we've found the maximum
           break;
       }
+      
+      // Force a garbage collection pause between tests (when supported)
+      // This won't work in most browsers, but worth trying
+      if (typeof window.gc === 'function') {
+          try {
+              window.gc();
+          } catch (e) {
+              // Ignore errors
+          }
+      }
   }
   
-  return {
-      deviceName: adapter.name || 'Unknown GPU',
-      maxSuccessfulAllocation: results.filter(r => r.success).pop(),
-      failedAllocation: results.find(r => !r.success),
-      allResults: results
-  };
+      return {
+          deviceName: adapter.name || 'Unknown GPU',
+          deviceType: isMobileDevice() ? 'Mobile' : 'Desktop',
+          maxPowerTested: maxPower,
+          maxSuccessfulAllocation: results.filter(r => r.success && !r.partial).pop(),
+          firstPartialAllocation: results.find(r => r.partial),
+          failedAllocation: results.find(r => !r.success),
+          allResults: results
+      };
+  } catch (error) {
+      // If we fail at setup level
+      return {
+          deviceName: 'Failed to initialize GPU',
+          deviceType: isMobileDevice() ? 'Mobile' : 'Desktop',
+          error: error.message,
+          allResults: []
+      };
+  }
 }
 
 // Function to update the UI with results
 function updateUI(benchmarkResults) {
   // Update device info
   document.getElementById('gpuName').textContent = benchmarkResults.deviceName;
+  document.getElementById('deviceType').textContent = benchmarkResults.deviceType || 'Unknown';
   
   // Update status
-  document.getElementById('status').textContent = 'Benchmark completed';
+  document.getElementById('status').textContent = benchmarkResults.error ? 
+      `Error: ${benchmarkResults.error}` : 'Benchmark completed';
   
   // Get the results table body
   const resultsBody = document.getElementById('resultsBody');
   resultsBody.innerHTML = '';
   
+  // If we have an error at setup level
+  if (benchmarkResults.error) {
+      document.getElementById('summary').innerHTML = `
+          <div class="summary-section error">
+              <h3>Benchmark Error</h3>
+              <p>${benchmarkResults.error}</p>
+              <p>Your browser may not support WebGPU or it might be disabled.</p>
+          </div>
+      `;
+      return;
+  }
+  
   // Find max successful allocation and failed allocation
-  const maxSuccess = benchmarkResults.maxSuccessfulAllocation;
-  const failedAllocation = benchmarkResults.failedAllocation;
+  const maxSuccess = benchmarkResults.allResults
+      .filter(r => r.success && !r.partial)  // Only consider fully successful allocations
+      .pop();
+  const firstPartial = benchmarkResults.allResults
+      .find(r => r.partial);
+  const failedAllocation = benchmarkResults.allResults
+      .find(r => !r.success);
   
   // Add rows for each result
   benchmarkResults.allResults.forEach(result => {
@@ -128,6 +236,8 @@ function updateUI(benchmarkResults) {
       if (result.success) {
           if (maxSuccess && result.power === maxSuccess.power) {
               row.className = 'max-success';
+          } else if (result.partial) {
+              row.className = 'partial-success';
           } else {
               row.className = 'success';
           }
@@ -147,12 +257,24 @@ function updateUI(benchmarkResults) {
       
       // Transfer Time column
       const transferTimeCell = document.createElement('td');
-      transferTimeCell.textContent = result.success ? `${result.transferTime.toFixed(2)}ms` : 'N/A';
+      if (result.success && !result.partial) {
+          transferTimeCell.textContent = `${result.transferTime.toFixed(2)}ms`;
+      } else if (result.partial) {
+          transferTimeCell.textContent = 'Skipped';
+      } else {
+          transferTimeCell.textContent = 'N/A';
+      }
       row.appendChild(transferTimeCell);
       
       // Status column
       const statusCell = document.createElement('td');
-      statusCell.textContent = result.success ? 'Success' : `Failed: ${result.error}`;
+      if (result.success && !result.partial) {
+          statusCell.textContent = 'Success';
+      } else if (result.partial) {
+          statusCell.textContent = `Partial: ${result.transferError || 'Data transfer skipped'}`;
+      } else {
+          statusCell.textContent = `Failed: ${result.error}`;
+      }
       row.appendChild(statusCell);
       
       resultsBody.appendChild(row);
@@ -164,7 +286,26 @@ function updateUI(benchmarkResults) {
   if (maxSuccess) {
       let summaryHTML = '';
       
-      if (failedAllocation) {
+      // Add a warning for mobile devices
+      if (benchmarkResults.deviceType === 'Mobile') {
+          summaryHTML += `
+              <div class="summary-section warning">
+                  <h3>Mobile Device Detected</h3>
+                  <p>Testing was limited to prevent browser crashes. Maximum size tested: 2^${benchmarkResults.maxPowerTested} (${Math.pow(2, benchmarkResults.maxPowerTested)}MB)</p>
+              </div>
+          `;
+      }
+      
+      // If we have partial success allocations
+      if (firstPartial) {
+          summaryHTML += `
+              <div class="summary-section">
+                  <h3>Memory Limit Detected</h3>
+                  <p>Maximum full memory allocation: <strong>${maxSuccess.size} ${maxSuccess.unit} (2^${maxSuccess.power})</strong></p>
+                  <p>Larger allocations (starting at ${firstPartial.size} ${firstPartial.unit}) could create buffers but not transfer data.</p>
+              </div>
+          `;
+      } else if (failedAllocation) {
           summaryHTML += `
               <div class="summary-section">
                   <h3>Memory Limit Detected</h3>
@@ -182,14 +323,25 @@ function updateUI(benchmarkResults) {
           `;
       }
       
-      summaryHTML += `
-          <div class="summary-section">
-              <h3>Timing Details (Maximum Successful Allocation)</h3>
-              <p>Buffer creation: ${maxSuccess.createTime.toFixed(2)}ms</p>
-              <p>Data transfer: ${maxSuccess.transferTime.toFixed(2)}ms</p>
-              <p>Total time: ${maxSuccess.totalTime.toFixed(2)}ms</p>
-          </div>
-      `;
+      // Only show timing details if we have a successful allocation with transfer
+      if (!maxSuccess.partial) {
+          summaryHTML += `
+              <div class="summary-section">
+                  <h3>Timing Details (Maximum Successful Allocation)</h3>
+                  <p>Buffer creation: ${maxSuccess.createTime.toFixed(2)}ms</p>
+                  <p>Data transfer: ${maxSuccess.transferTime.toFixed(2)}ms</p>
+                  <p>Total time: ${maxSuccess.totalTime.toFixed(2)}ms</p>
+              </div>
+          `;
+      } else {
+          summaryHTML += `
+              <div class="summary-section">
+                  <h3>Timing Details (Maximum Successful Allocation)</h3>
+                  <p>Buffer creation: ${maxSuccess.createTime.toFixed(2)}ms</p>
+                  <p>Data transfer: Skipped to prevent browser crash</p>
+              </div>
+          `;
+      }
       
       summary.innerHTML = summaryHTML;
   } else {
