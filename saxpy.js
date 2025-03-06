@@ -25,7 +25,6 @@ async function runSaxpy(a, xArray, yArray) {
   // const shaderCode = await shaderResponse.text();
   const shaderCode = await shaderResponse.text();
 
-  console.log(shaderCode);
 
   // Create a shader module from our shader code
   const shaderModule = device.createShaderModule({
