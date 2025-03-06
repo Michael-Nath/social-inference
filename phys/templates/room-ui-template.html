@@ -1,0 +1,138 @@
+<!-- templates/room-ui-template.html -->
+<!-- This is the main template for the SAXPY Room UI interface -->
+
+<div class="saxpy-room-app">
+  <header class="app-header">
+    <h1>SAXPY Room Computation Service</h1>
+    <div class="user-info">
+      <span class="username"></span>
+      <span class="connection-status">Connecting...</span>
+    </div>
+  </header>
+  
+  <div class="app-layout">
+    <div class="sidebar">
+      <div class="rooms-section">
+        <div class="section-header">
+          <h2>Available Rooms</h2>
+          <button id="refresh-rooms" class="icon-button" title="Refresh rooms">↻</button>
+        </div>
+        <div id="rooms-list" class="rooms-list">
+          <p class="loading">Loading rooms...</p>
+        </div>
+        <button id="create-room" class="button">Create New Room</button>
+      </div>
+      
+      <div class="my-devices-section">
+        <div class="section-header">
+          <h2>My Devices</h2>
+          <button id="add-device" class="icon-button" title="Add a device">+</button>
+        </div>
+        <div id="devices-list" class="devices-list">
+          <p class="empty-message">No devices connected</p>
+        </div>
+      </div>
+    </div>
+    
+    <div class="main-content">
+      <div id="room-view" class="room-view">
+        <div class="empty-state">
+          <h2>Select a Room</h2>
+          <p>Select a computation room from the sidebar or create a new one to get started.</p>
+        </div>
+      </div>
+      
+      <div id="computation-panel" class="computation-panel" style="display: none;">
+        <div class="panel-header">
+          <h2>SAXPY Computation</h2>
+        </div>
+        <div class="panel-body">
+          <div class="form-group">
+            <label for="vector-size">Vector Size:</label>
+            <input type="number" id="vector-size" value="100000" min="1000" max="10000000">
+          </div>
+          <div class="form-group">
+            <label for="scalar-value">Scalar Value (a):</label>
+            <input type="number" id="scalar-value" value="2.0" step="0.1">
+          </div>
+          <button id="queue-task" class="button primary">Queue SAXPY Computation</button>
+        </div>
+      </div>
+      
+      <div id="task-status" class="task-status" style="display: none;">
+        <!-- Task status will be updated dynamically -->
+      </div>
+      
+      <div id="results-view" class="results-view" style="display: none;">
+        <!-- Results will be displayed here -->
+      </div>
+    </div>
+  </div>
+  
+  <!-- Modals -->
+  <div id="create-room-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Create New Room</h2>
+        <button class="close-button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="room-name">Room Name:</label>
+          <input type="text" id="room-name" placeholder="Enter room name">
+        </div>
+        <div class="form-group">
+          <label for="room-description">Description:</label>
+          <textarea id="room-description" placeholder="Room description"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="room-public" checked>
+            Make room public
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="button secondary cancel-button">Cancel</button>
+        <button class="button primary" id="create-room-submit">Create Room</button>
+      </div>
+    </div>
+  </div>
+  
+  <div id="add-device-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Add Device</h2>
+        <button class="close-button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="device-model">Device Model:</label>
+          <select id="device-model">
+            <option value="iPhone13">iPhone 13</option>
+            <option value="iPhone12">iPhone 12</option>
+            <option value="iPhone11">iPhone 11</option>
+            <option value="iPhoneX">iPhone X</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="device-battery">Initial Battery Level:</label>
+          <input type="range" id="device-battery" min="0" max="1" step="0.05" value="1">
+          <span id="battery-value">100%</span>
+        </div>
+        <div class="form-group">
+          <label for="device-connection">Connection Quality:</label>
+          <input type="range" id="device-connection" min="0" max="1" step="0.05" value="0.95">
+          <span id="connection-value">95%</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="button secondary cancel-button">Cancel</button>
+        <button class="button primary" id="add-device-submit">Add Device</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Toast notifications -->
+  <div id="toast-container" class="toast-container"></div>
+</div>

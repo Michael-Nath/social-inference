@@ -1,7 +1,9 @@
 {
   "dependencies": {
+    "http": "^0.0.1-security",
     "typegpu": "^0.4.4",
-    "webgpu": "^0.2.11"
+    "webgpu": "^0.2.11",
+    "ws": "^8.18.1"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.54",

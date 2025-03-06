@@ -1,0 +1,543 @@
+/* styles/room-ui-styles.css */
+/* Core styles for the SAXPY Room UI */
+
+.saxpy-room-app {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  color: #333;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* Header styles */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background-color: #0071e3;
+  color: white;
+  border-radius: 8px 8px 0 0;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.connection-status {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.connection-status.connected {
+  background-color: #34c759;
+}
+
+.connection-status.disconnected {
+  background-color: #ff3b30;
+}
+
+/* Layout styles */
+.app-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 1rem;
+  padding: 1rem;
+  background-color: #f5f5f7;
+  border-radius: 0 0 8px 8px;
+}
+
+@media (max-width: 768px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.main-content {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  padding: 1rem;
+}
+
+/* Room list section */
+.rooms-section, .my-devices-section {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  padding: 1rem;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+/* Button styles */
+.icon-button {
+  background-color: transparent;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.icon-button:hover {
+  background-color: #f0f0f0;
+}
+
+.button {
+  background-color: #0071e3;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.button:hover {
+  background-color: #0058b0;
+}
+
+.button.small {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.button.secondary {
+  background-color: #8e8e93;
+}
+
+.button.secondary:hover {
+  background-color: #6d6d72;
+}
+
+.button.primary {
+  background-color: #0071e3;
+}
+
+/* Room item styles */
+.room-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+}
+
+.room-item:hover {
+  background-color: #f5f5f7;
+}
+
+.room-item.selected {
+  background-color: #e6f2ff;
+  border-left: 4px solid #0071e3;
+}
+
+.room-info h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1rem;
+}
+
+.room-info p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8e8e93;
+}
+
+.room-stats {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.stat {
+  font-size: 0.8rem;
+  color: #8e8e93;
+}
+
+/* Message states */
+.empty-message, .loading {
+  text-align: center;
+  color: #8e8e93;
+  padding: 1rem;
+}
+
+.error {
+  color: #ff3b30;
+}
+
+/* Device item styles */
+.device-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  background-color: #f5f5f7;
+}
+
+.device-info h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1rem;
+}
+
+.device-info p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8e8e93;
+}
+
+/* Battery indicator */
+.battery-indicator {
+  width: 80px;
+  height: 12px;
+  background-color: #f0f0f0;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 0.25rem;
+}
+
+.battery-level {
+  height: 100%;
+  background-color: #34c759;
+}
+
+.battery-indicator.critical .battery-level {
+  background-color: #ff3b30;
+}
+
+.battery-indicator.low .battery-level {
+  background-color: #ff9500;
+}
+
+.battery-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: bold;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Status indicators */
+.status-indicator {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: bold;
+}
+
+.status-indicator.online {
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #34c759;
+}
+
+.status-indicator.offline {
+  background-color: rgba(255, 59, 48, 0.2);
+  color: #ff3b30;
+}
+
+/* Room view */
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  color: #8e8e93;
+}
+
+.room-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.room-header h2 {
+  margin: 0;
+}
+
+.room-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.stat-card {
+  background-color: #f5f5f7;
+  border-radius: 8px;
+  padding: 0.75rem;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #0071e3;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: #8e8e93;
+}
+
+/* User lists */
+.room-users h3 {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.user-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem;
+  border-radius: 4px;
+}
+
+.user-item.current-user {
+  background-color: #f5f5f7;
+}
+
+.badge {
+  display: inline-block;
+  background-color: #8e8e93;
+  color: white;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  margin-left: 0.5rem;
+}
+
+.badge.admin {
+  background-color: #0071e3;
+}
+
+/* Modal styles */
+.modal {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.modal-content {
+  background-color: white;
+  margin: 10% auto;
+  padding: 1.5rem;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #8e8e93;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* Form styles */
+.form-group {
+  margin-bottom: 1rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+input[type="text"],
+input[type="number"],
+textarea,
+select {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+textarea {
+  min-height: 80px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+input[type="checkbox"] {
+  margin: 0;
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+/* Computation panel */
+.computation-panel {
+  background-color: #f5f5f7;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.panel-header {
+  margin-bottom: 1rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+/* Task status */
+.task-status {
+  background-color: #f5f5f7;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.task-state {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.task-state.queued {
+  background-color: rgba(142, 142, 147, 0.2);
+  color: #8e8e93;
+}
+
+.task-state.running {
+  background-color: rgba(0, 113, 227, 0.2);
+  color: #0071e3;
+}
+
+.task-state.completed {
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #34c759;
+}
+
+.task-state.failed {
+  background-color: rgba(255, 59, 48, 0.2);
+  color: #ff3b30;
+}
+
+/* Progress bar */
+.progress-bar {
+  height: 20px;
+  background-color: #e6e6e6;
+  border-radius: 10px;
+  margin-top: 0.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress {
+  height: 100%;
+  background-color: #0071e3;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+  font-size: 0.8rem;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Results view */
+.results-view {
+  background-color: #f5f5f7;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.results-header h3 {
+  margin-top: 0;
+  font-size: 1.2
+}

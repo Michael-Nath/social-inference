@@ -1,5 +1,5 @@
 // This function initializes and runs the WebGPU SAXPY computation
-async function runSaxpy(a, xArray, yArray) {
+async function runSaxpy(a, xArray, yArray, taskId, chunkIndex, startIndex = 0) {
   /*
   The navigator object provides information about user's browswer and system
   we can use navigator object to identify browser capabilities, adapt to different envs
@@ -193,7 +193,12 @@ async function runSaxpy(a, xArray, yArray) {
   const result = Array.from(resultArray);
   
   readbackBuffer.unmap();
-  return result;
+  return {
+    result: result,
+    taskId: taskId,
+    chunkIndex: chunkIndex,
+    startIndex: startIndex
+  };
 }
 
 // Export the runSaxpy function
