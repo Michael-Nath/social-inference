@@ -735,7 +735,7 @@ class SAXPYWebSocketServer {
     if (ws.readyState === WebSocket.OPEN) {
       try {
         const jsonString = JSON.stringify(message);
-        console.log('Sending message:', jsonString); // Log what's being sent
+        // console.log('Sending message:', jsonString); // Log what's being sent
         ws.send(jsonString);
       } catch (error) {
         console.error('Error sending message:', error, 'Message:', message);

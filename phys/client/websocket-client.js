@@ -647,10 +647,12 @@ class SAXPYWebSocketClient {
     
     // Create worker for the device if not provided
     let worker = deviceInfo.worker;
+    console.log("Creating Worker!");
     if (!worker && typeof window !== 'undefined' && window.Worker) {
       worker = new Worker(new URL(deviceInfo.workerPath || './iphone-worker.js', import.meta.url), {
         type: 'module'
       });
+
       
       // Set up message handler
       worker.onmessage = (event) => {

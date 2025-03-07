@@ -155,7 +155,7 @@ class ComputationRoom {
     console.log(`Device ${deviceId} (${device.model}) added for user ${user.username} in room ${this.roomId}`);
     return true;
   }
-  
+
   /**
    * Remove a device from the room
    * @param {string} userId - ID of the user who owns the device
@@ -400,7 +400,8 @@ class ComputationRoom {
     // This method would interface with your actual device worker
     // For now, it's a placeholder that would be implemented differently
     // depending on how you communicate with the device workers
-    
+    console.log(device) 
+    throw new Error("Bruh")
     if (device.worker && typeof device.worker.postMessage === 'function') {
       // If we have a direct reference to the worker
       device.worker.postMessage({
@@ -663,9 +664,6 @@ class ComputationRoom {
     if (this.events.length > 1000) {
       this.events = this.events.slice(-1000);
     }
-    
-    // In a real implementation, you might emit this event to connected clients
-    // using WebSockets or a similar technology
   }
   
   /**
@@ -811,6 +809,48 @@ class RoomManager {
     console.log(`Created new room: ${room.name} (${roomId})`);
     return roomId;
   }
+
+    /**
+   * Add a device to a specific room
+   * @param {string} userId - ID of the user adding the device
+   * @param {string} roomId - ID of the room to add the device to
+   * @param {string} deviceId - Unique identifier for the device
+   * @param {Object} deviceInfo - Additional information about the device
+   * @returns {boolean} Whether the device was successfully added
+   */
+  addDeviceToRoom(userId, roomId, deviceId, deviceInfo = {}) {
+    // Find the room
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.error(`Cannot add device: Room ${roomId} not found`);
+      return false;
+    }
+    
+    // Find the user
+    const user = this.users.get(userId);
+    if (!user) {
+      console.error(`Cannot add device: User ${userId} not found`);
+      return false;
+    }
+    
+    // Check if the user is in the room
+    if (!room.users.has(userId)) {
+      console.error(`Cannot add device: User ${userId} not in room ${roomId}`);
+      return false;
+    }
+    
+    // Prepare device info with defaults
+    const completeDeviceInfo = {
+      model: deviceInfo.model || 'Unknown',
+      batteryLevel: deviceInfo.batteryLevel !== undefined ? deviceInfo.batteryLevel : 1.0,
+      connectionQuality: deviceInfo.connectionQuality !== undefined ? deviceInfo.connectionQuality : 0.95,
+      worker: deviceInfo.worker || null,
+      workerPath: deviceInfo.workerPath || null
+    };
+    
+    // Use the room's existing addDevice method
+    return room.addDevice(userId, deviceId, completeDeviceInfo);
+  }
   
   /**
    * Get a room by ID
@@ -819,6 +859,88 @@ class RoomManager {
    */
   getRoom(roomId) {
     return this.rooms.get(roomId) || null;
+  }
+
+    /**
+   * Check if a room is empty
+   * @param {string} roomId - The room ID to check
+   * @returns {boolean} Whether the room is empty
+   */
+  isRoomEmpty(roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.error(`Room ${roomId} not found`);
+      return true; // Consider non-existent rooms as "empty"
+    }
+    
+    return room.users.size === 0;
+  }
+
+  /**
+   * Automatically clean up empty rooms
+   * @returns {Array<string>} List of room IDs that were deleted
+   */
+  cleanEmptyRooms() {
+    const deletedRooms = [];
+    
+    for (const [roomId, room] of this.rooms.entries()) {
+      if (this.isRoomEmpty(roomId)) {
+        // Delete the room
+        if (this.deleteRoom(roomId)) {
+          deletedRooms.push(roomId);
+        }
+      }
+    }
+    
+    if (deletedRooms.length > 0) {
+      console.log(`Cleaned up ${deletedRooms.length} empty room(s): ${deletedRooms.join(', ')}`);
+    }
+    
+    return deletedRooms;
+  }
+
+  /**
+ * Remove a user from a room
+ * @param {string} userId - The user ID
+ * @param {string} roomId - The room ID
+ * @returns {boolean} Whether the user successfully left the room
+ */
+  leaveRoom(userId, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.error(`Room ${roomId} not found`);
+      return false;
+    }
+    
+    const user = this.users.get(userId);
+    if (!user) {
+      console.error(`User ${userId} not found`);
+      return false;
+    }
+    
+    // Check if the user is actually in this room
+    if (!room.users.has(userId)) {
+      console.log(`User ${userId} is not in room ${roomId}`);
+      return false;
+    }
+    
+    // Remove the user from the room
+    const removeResult = room.removeUser(userId);
+    
+    if (removeResult) {
+      // Remove the room from the user's room list
+      user.rooms.delete(roomId);      
+      console.log(`User ${userId} left room ${roomId}`);
+    }
+
+    // Check if the room is now empty
+    if (room.users.size === 0) {
+      // Delete the room if it's now empty
+      this.deleteRoom(roomId);
+      console.log(`Room ${roomId} deleted due to being empty`);
+    }
+    
+    return true;
   }
   
   /**
@@ -895,6 +1017,57 @@ class RoomManager {
     return userRooms;
   }
 
+    /**
+   * Queue a task in a specific room
+   * @param {string} roomId - The ID of the room to queue the task in
+   * @param {Object} taskData - Task parameters
+   * @param {number} taskData.a - The scalar value
+   * @param {Array<number>} taskData.xArray - The x vector
+   * @param {Array<number>} taskData.yArray - The y vector
+   * @param {string} initiatedBy - User ID who initiated the task
+   * @returns {string|null} The task ID if queued successfully, null otherwise
+   */
+  queueTaskInRoom(roomId, taskData, initiatedBy) {
+    // Find the room
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.error(`Cannot queue task: Room ${roomId} not found`);
+      return null;
+    }
+
+    // Validate task parameters
+    if (typeof taskData.a !== 'number') {
+      console.error('Invalid scalar value');
+      return null;
+    }
+
+    if (!Array.isArray(taskData.xArray) || !Array.isArray(taskData.yArray)) {
+      console.error('Invalid vector inputs');
+      return null;
+    }
+
+    if (taskData.xArray.length !== taskData.yArray.length) {
+      console.error('Input vectors must have the same length');
+      return null;
+    }
+
+    // Verify the user initiating the task is in the room
+    const initiatingUser = this.users.get(initiatedBy);
+    if (!initiatingUser || !room.users.has(initiatedBy)) {
+      console.error(`User ${initiatedBy} is not in room ${roomId}`);
+      return null;
+    }
+
+    // Prepare task data
+    const fullTaskData = {
+      ...taskData,
+      initiatedBy
+    };
+
+    // Queue the task using the room's queueTask method
+    return room.queueTask(fullTaskData);
+  }
+
 
   /**
    * Get detailed status of a specific room
@@ -940,6 +1113,45 @@ class RoomManager {
     })) {
       // Update user's room list
       user.rooms.add(roomId);
+      return true;
+    }
+    
+    return false;
+  }
+
+    /**
+   * Remove a device from a specific room
+   * @param {string} userId - ID of the user removing the device
+   * @param {string} roomId - ID of the room to remove the device from
+   * @param {string} deviceId - Unique identifier for the device
+   * @returns {boolean} Whether the device was successfully removed
+   */
+  removeDeviceFromRoom(userId, roomId, deviceId) {
+    // Find the room
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.error(`Cannot remove device: Room ${roomId} not found`);
+      return false;
+    }
+    
+    // Find the user
+    const user = this.users.get(userId);
+    if (!user) {
+      console.error(`Cannot remove device: User ${userId} not found`);
+      return false;
+    }
+    
+    // Check if the user is in the room
+    if (!room.users.has(userId)) {
+      console.error(`Cannot remove device: User ${userId} not in room ${roomId}`);
+      return false;
+    }
+    
+    // Remove the device using the room's method
+    const removeResult = room.removeDevice(userId, deviceId);
+    
+    if (removeResult) {
+      console.log(`Device ${deviceId} removed from room ${roomId} by user ${userId}`);
       return true;
     }
     

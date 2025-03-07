@@ -22,7 +22,7 @@ let deviceState = {
 // Import SAXPY computation function
 // In a real implementation, we'd need to include this directly or via importScripts()
 // Assuming WebGPU will be simulated in this worker context
-import { runSaxpy } from './saxpy.js';
+import { runSaxpy } from '../kernels/saxpy.js';
 
 /**
  * Simulates connecting to the SAXPY server

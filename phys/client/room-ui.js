@@ -37,6 +37,137 @@ class SAXPYRoomUI {
     this._setupClientEvents();
   }
 
+  // New method to select a room (mentioned in _refreshRoomsList)
+  /**
+   * Select a room without joining it
+   * @private
+   * @param {string} roomId - The room ID to select
+   */
+  _selectRoom(roomId) {
+    // Deselect all room items
+    const roomItems = document.querySelectorAll('.room-item');
+    roomItems.forEach(item => item.classList.remove('selected'));
+
+    // Select the clicked room
+    const selectedItem = document.querySelector(`.room-item[data-room-id="${roomId}"]`);
+    if (selectedItem) {
+      selectedItem.classList.add('selected');
+    }
+
+    // Store the selected room ID
+    this.selectedRoomId = roomId;
+
+    // Optionally, load room details or preview
+    // This could be a lightweight version of _loadRoomView
+    console.log(`Room selected: ${roomId}`);
+  }
+
+  /**
+   * Update room view with new information
+   * @private
+   * @param {Object} roomInfo - Updated room information
+   */
+  _updateRoomView(roomInfo) {
+    if (!this.elements || !this.elements.roomView) return;
+
+    // Update room name and description
+    const roomHeader = this.elements.roomView.querySelector('.room-header h2');
+    const roomDescription = this.elements.roomView.querySelector('.room-description p');
+
+    if (roomHeader) {
+      roomHeader.textContent = this._escapeHtml(roomInfo.name);
+    }
+
+    if (roomDescription) {
+      roomDescription.textContent = this._escapeHtml(roomInfo.description || 'No description');
+    }
+
+    // Update room stats
+    const statCards = this.elements.roomView.querySelectorAll('.stat-card');
+    if (statCards.length >= 4) {
+      statCards[0].querySelector('.stat-value').textContent = roomInfo.userCount;
+      statCards[2].querySelector('.stat-value').textContent = roomInfo.deviceCount;
+    }
+  }
+
+  /**
+   * Update task status display
+   * @private
+   * @param {Object} task - Current task information
+   */
+  _updateTaskStatus(task) {
+    if (!this.elements || !this.elements.taskStatus) return;
+
+    // Show task status panel
+    this.elements.taskStatus.style.display = 'block';
+
+    // Update task status details
+    const statusHtml = `
+      <h3>Current Task</h3>
+      <div class="task-details">
+        <p>Task ID: ${this._escapeHtml(task.taskId)}</p>
+        <p>Status: ${this._escapeHtml(task.status)}</p>
+        <div class="progress-bar">
+          <div class="progress" style="width: ${task.progress || 0}%"></div>
+        </div>
+        <p>Progress: ${(task.progress || 0).toFixed(1)}%</p>
+      </div>
+    `;
+
+    this.elements.taskStatus.innerHTML = statusHtml;
+  }
+
+  /**
+   * Update task progress
+   * @private
+   * @param {Object} taskProgress - Task progress information
+   */
+  _updateTaskProgress(taskProgress) {
+    if (!this.elements || !this.elements.taskStatus) return;
+
+    const progressBar = this.elements.taskStatus.querySelector('.progress');
+    const progressText = this.elements.taskStatus.querySelector('.progress-bar + p');
+
+    if (progressBar) {
+      progressBar.style.width = `${taskProgress.progress || 0}%`;
+    }
+
+    if (progressText) {
+      progressText.textContent = `Progress: ${(taskProgress.progress || 0).toFixed(1)}%`;
+    }
+  }
+
+  /**
+   * Show task results
+   * @private
+   * @param {Object} taskData - Completed task data
+   */
+  _showTaskResults(taskData) {
+    if (!this.elements || !this.elements.resultsView) return;
+
+    // Show results view
+    this.elements.resultsView.style.display = 'block';
+
+    // Parse and display results
+    const resultsHtml = `
+      <h3>Task Results</h3>
+      <div class="task-results">
+        <p>Task ID: ${this._escapeHtml(taskData.taskId)}</p>
+        <p>Completed At: ${new Date(taskData.completedAt).toLocaleString()}</p>
+        <p>Execution Time: ${taskData.executionTimeMs} ms</p>
+        <p>Devices Used: ${taskData.deviceCount}</p>
+        ${taskData.result ? `
+          <div class="result-preview">
+            <h4>Result Preview</h4>
+            <pre>${JSON.stringify(taskData.result.slice(0, 10), null, 2)}${taskData.result.length > 10 ? '...' : ''}</pre>
+          </div>
+        ` : ''}
+      </div>
+    `;
+
+    this.elements.resultsView.innerHTML = resultsHtml;
+  }
+
   /**
    * Initialize element references after template is loaded
    * @private
@@ -193,6 +324,108 @@ class SAXPYRoomUI {
     this.elements.createRoomModal.style.display = 'block';
   }
 
+    /**
+   * Generate a vector with specified characteristics
+   * @private
+   * @param {number} length - Length of the vector
+   * @param {string} type - Type of vector generation ('sequential', 'random', 'constant')
+   * @param {Object} [options] - Additional generation options
+   * @returns {Array<number>} Generated vector
+   */
+  _generateVector(length, type = 'random', options = {}) {
+    switch(type) {
+      case 'sequential':
+        return Array.from(
+          { length }, 
+          (_, i) => options.start !== undefined 
+            ? options.start + i * (options.step || 1) 
+            : i + 1
+        );
+      
+      case 'constant':
+        return Array(length).fill(options.value || 1);
+      
+      case 'random':
+      default:
+        const min = options.min !== undefined ? options.min : 0;
+        const max = options.max !== undefined ? options.max : 100;
+        return Array.from(
+          { length }, 
+          () => min + Math.random() * (max - min)
+        );
+    }
+  }
+
+    /**
+   * Handle queuing a SAXPY computation task
+   * @private
+   */
+  _handleQueueTask() {
+    // Ensure we have a current room selected
+    if (!this.currentRoom) {
+      this._showToast('Please join a room first', 'error');
+      return;
+    }
+
+    // Verify the current user is the room creator/root user
+    const roomStatus = this.currentRoom;
+    if (roomStatus.createdBy !== this.client.userId) {
+      this._showToast('Only the room creator can queue tasks', 'error');
+      return;
+    }
+
+    // Get input elements
+    const vectorSizeInput = document.getElementById('vector-size');
+    const scalarInput = document.getElementById('scalar-value');
+
+    // Validate inputs
+    if (!vectorSizeInput || !scalarInput) {
+      this._showToast('Could not find task input elements', 'error');
+      return;
+    }
+
+    // Parse inputs
+    const vectorLength = parseInt(vectorSizeInput.value);
+    const a = parseFloat(scalarInput.value);
+
+    // Validate parsed inputs
+    if (isNaN(vectorLength) || vectorLength <= 0) {
+      this._showToast('Invalid vector length', 'error');
+      return;
+    }
+
+    if (isNaN(a)) {
+      this._showToast('Invalid scalar value', 'error');
+      return;
+    }
+
+    // Generate vectors (default to sequential)
+    const xArray = this._generateVector(vectorLength, 'sequential');
+    const yArray = this._generateVector(vectorLength, 'sequential');
+
+    // Show loading toast
+    this._showToast(`Queuing SAXPY task with ${vectorLength} elements`, 'info');
+
+    // Send task to server
+    this.client.queueTask(this.currentRoom.roomId, a, xArray, yArray)
+      .then(taskId => {
+        this._showToast(`Task queued successfully: ${taskId}`, 'success');
+        
+        // Optional: Show generation details in a modal or log
+        console.log('Task Details:', {
+          taskId,
+          vectorLength,
+          scalarValue: a,
+          xVectorFirstFew: xArray.slice(0, 5),
+          yVectorFirstFew: yArray.slice(0, 5)
+        });
+      })
+      .catch(error => {
+        this._showToast(`Error queuing task: ${error.message}`, 'error');
+        console.error('Error queuing task:', error);
+      });
+  }
+
   /**
    * Handle create room button click
    * @private
@@ -276,9 +509,8 @@ class SAXPYRoomUI {
       model: modelSelect.value,
       batteryLevel: parseFloat(batterySlider.value),
       connectionQuality: parseFloat(connectionSlider.value),
-      workerPath: './client/iphone-worker.js'
+      workerPath: './iphone-worker.js'
     };
-    
     this.client.addDevice(this.currentRoom.roomId, deviceInfo)
       .then(deviceId => {
         if (this.elements.addDeviceModal) {
@@ -708,6 +940,73 @@ class SAXPYRoomUI {
     if (this.elements.resultsView) {
       this.elements.resultsView.style.display = 'none';
     }
+  }
+
+    /**
+   * Update the devices list in the UI
+   * @private
+   */
+  _updateDevicesList() {
+    // Check if we have a current room and a devices list element
+    if (!this.currentRoom || !this.elements.devicesList) return;
+
+    // Fetch room status to get the latest device information
+    this.client.getRoomStatus(this.currentRoom.roomId)
+      .then(roomStatus => {
+        const users = roomStatus.users || [];
+
+        // Collect all devices across all users
+        const allDevices = users.flatMap(user => 
+          (user.devices || []).map(device => ({
+            ...device,
+            username: user.username,
+            isCurrentUser: user.userId === this.client.userId
+          }))
+        );
+
+        // If no devices, show empty state
+        if (allDevices.length === 0) {
+          this.elements.devicesList.innerHTML = `
+            <p class="empty-message">No devices in this room</p>
+          `;
+          return;
+        }
+
+        // Generate HTML for devices
+        const devicesHtml = allDevices.map(device => `
+          <div class="device-item ${device.isConnected ? 'connected' : 'disconnected'}">
+            <div class="device-header">
+              <h4>${this._escapeHtml(device.model)}</h4>
+              <span class="device-status ${device.isConnected ? 'online' : 'offline'}">
+                ${device.isConnected ? 'Connected' : 'Disconnected'}
+              </span>
+            </div>
+            <div class="device-details">
+              <div class="device-owner">
+                Owner: ${this._escapeHtml(device.username)}
+                ${device.isCurrentUser ? '<span class="badge">You</span>' : ''}
+              </div>
+              <div class="device-stats">
+                <span class="battery" title="Battery Level">
+                  🔋 ${Math.round(device.batteryLevel * 100)}%
+                </span>
+                <span class="computations" title="Computations Performed">
+                  🖥️ ${device.computationsPerformed || 0}
+                </span>
+              </div>
+            </div>
+          </div>
+        `).join('');
+
+        // Update the devices list
+        this.elements.devicesList.innerHTML = devicesHtml;
+      })
+      .catch(error => {
+        console.error('Error updating devices list:', error);
+        this.elements.devicesList.innerHTML = `
+          <p class="error">Failed to load devices: ${error.message}</p>
+        `;
+      });
   }
   
   // Rest of the implementation remains largely the same
