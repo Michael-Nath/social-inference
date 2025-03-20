@@ -1,5 +1,5 @@
 // client/room-ui.js
-// Updated UI implementation with WebSocket support and one-device-per-user model
+// Simplified UI implementation with WebSocket support
 
 import SAXPYWebSocketClient from './websocket-client.js';
 
@@ -7,7 +7,7 @@ class SAXPYRoomUI {
   constructor(options = {}) {
     this.containerElement = options.container || document.getElementById('saxpy-room-app');
     
-    // Create WebSocket client instead of the simulated client
+    // Create WebSocket client
     this.client = options.client || new SAXPYWebSocketClient({
       userId: options.userId,
       username: options.username,
@@ -37,11 +37,7 @@ class SAXPYRoomUI {
     this._setupClientEvents();
   }
 
-  /**
-   * Select a room without joining it
-   * @private
-   * @param {string} roomId - The room ID to select
-   */
+  // Private methods
   _selectRoom(roomId) {
     // Deselect all room items
     const roomItems = document.querySelectorAll('.room-item');
@@ -55,15 +51,8 @@ class SAXPYRoomUI {
 
     // Store the selected room ID
     this.selectedRoomId = roomId;
-
-    console.log(`Room selected: ${roomId}`);
   }
 
-  /**
-   * Update room view with new information
-   * @private
-   * @param {Object} roomInfo - Updated room information
-   */
   _updateRoomView(roomInfo) {
     if (!this.elements || !this.elements.roomView) return;
 
@@ -83,16 +72,10 @@ class SAXPYRoomUI {
     const statCards = this.elements.roomView.querySelectorAll('.stat-card');
     if (statCards.length >= 3) {
       statCards[0].querySelector('.stat-value').textContent = roomInfo.userCount;
-      // Make sure we're using connectedDeviceCount here, not deviceCount
       statCards[1].querySelector('.stat-value').textContent = roomInfo.connectedDeviceCount;
     }
   }
 
-  /**
-   * Update task status display
-   * @private
-   * @param {Object} task - Current task information
-   */
   _updateTaskStatus(task) {
     if (!this.elements || !this.elements.taskStatus) return;
 
@@ -115,11 +98,6 @@ class SAXPYRoomUI {
     this.elements.taskStatus.innerHTML = statusHtml;
   }
 
-  /**
-   * Update task progress
-   * @private
-   * @param {Object} taskProgress - Task progress information
-   */
   _updateTaskProgress(taskProgress) {
     if (!this.elements || !this.elements.taskStatus) return;
 
@@ -135,11 +113,6 @@ class SAXPYRoomUI {
     }
   }
 
-  /**
-   * Show task results
-   * @private
-   * @param {Object} taskData - Completed task data
-   */
   _showTaskResults(taskData) {
     if (!this.elements || !this.elements.resultsView) return;
 
@@ -151,7 +124,7 @@ class SAXPYRoomUI {
       <h3>Task Results</h3>
       <div class="task-results">
         <p>Task ID: ${this._escapeHtml(taskData.taskId)}</p>
-        <p>Completed At: ${new Date(taskData.completedAt).toLocaleString()}</p>
+        <p>Completed At: ${taskData.completedAt ? new Date(taskData.completedAt).toLocaleString() || new Date().toLocaleString() : new Date().toLocaleString()}</p>
         <p>Execution Time: ${taskData.executionTimeMs} ms</p>
         <p>Devices Used: ${taskData.deviceCount}</p>
         ${taskData.result ? `
@@ -166,10 +139,6 @@ class SAXPYRoomUI {
     this.elements.resultsView.innerHTML = resultsHtml;
   }
 
-  /**
-   * Initialize element references after template is loaded
-   * @private
-   */
   _initializeElements() {
     this.elements = {
       roomsList: document.getElementById('rooms-list'),
@@ -194,13 +163,6 @@ class SAXPYRoomUI {
     this._updateConnectionStatus(this.client.connected);
   }
 
-  /**
-   * Show a toast notification
-   * @private
-   * @param {string} message - The message to show
-   * @param {string} type - Type of toast (info, success, error, warning)
-   * @param {number} duration - How long to show the toast in milliseconds
-  */
   _showToast(message, type = 'info', duration = 3000) {
     if (!this.elements || !this.elements.toastContainer) return;
     
@@ -212,55 +174,45 @@ class SAXPYRoomUI {
     // Add to the container
     this.elements.toastContainer.appendChild(toast);
     
-    // Animate in (using setTimeout to ensure the transition works)
+    // Animate in
     setTimeout(() => {
       toast.classList.add('show');
     }, 10);
     
     // Remove after specified duration
     setTimeout(() => {
-      // Start fade out animation
       toast.classList.remove('show');
       
-      // Remove from DOM after animation completes
       setTimeout(() => {
         if (toast.parentNode === this.elements.toastContainer) {
           this.elements.toastContainer.removeChild(toast);
         }
-      }, 300); // Match this to your CSS transition duration
+      }, 300);
     }, duration);
   }
 
-  /**
-   * Add event listeners to UI elements
-   * @private
-   */
   _addUIEventListeners() {
     // Room management
     this._addEventListener('click', 'refresh-rooms', () => this._refreshRoomsList());
     this._addEventListener('click', 'create-room', () => this._showCreateRoomModal());
     this._addEventListener('click', 'create-room-submit', () => this._handleCreateRoom());
     
-    // Device management - using direct DOM queries to avoid warnings
-    // For backward compatibility with old template
+    // Device management
     const addDeviceBtn = document.getElementById('add-device');
     if (addDeviceBtn) {
       addDeviceBtn.addEventListener('click', () => this._showSetDeviceModal());
     }
     
-    // For new template
     const setDeviceBtn = document.getElementById('set-device');
     if (setDeviceBtn) {
       setDeviceBtn.addEventListener('click', () => this._showSetDeviceModal());
     }
     
-    // For backward compatibility with old template
     const addDeviceSubmitBtn = document.getElementById('add-device-submit');
     if (addDeviceSubmitBtn) {
       addDeviceSubmitBtn.addEventListener('click', () => this._handleSetDevice());
     }
     
-    // For new template
     const setDeviceSubmitBtn = document.getElementById('set-device-submit');
     if (setDeviceSubmitBtn) {
       setDeviceSubmitBtn.addEventListener('click', () => this._handleSetDevice());
@@ -297,13 +249,6 @@ class SAXPYRoomUI {
     }
   }
 
-  /**
-   * Helper to add event listeners and track them
-   * @private
-   * @param {string} eventType - Type of event
-   * @param {string} elementId - ID of the element
-   * @param {Function} handler - Event handler
-   */
   _addEventListener(eventType, elementId, handler) {
     const element = document.getElementById(elementId);
     if (element) {
@@ -312,16 +257,9 @@ class SAXPYRoomUI {
       // Track this listener so we can remove it later if needed
       const key = `${eventType}:${elementId}`;
       this.eventListeners.set(key, { element, eventType, handler });
-    } else {
-      console.warn(`Element with ID '${elementId}' not found when adding ${eventType} listener`);
     }
   }
 
-  /**
-   * Update connection status in the UI
-   * @private
-   * @param {boolean} connected - Whether connected to the server
-   */
   _updateConnectionStatus(connected) {
     if (!this.elements || !this.elements.connectionStatus) return;
     
@@ -329,24 +267,12 @@ class SAXPYRoomUI {
     this.elements.connectionStatus.className = `connection-status ${connected ? 'connected' : 'disconnected'}`;
   }
 
-  /**
-   * Show the create room modal
-   * @private
-   */
   _showCreateRoomModal() {
     if (!this.elements || !this.elements.createRoomModal) return;
     
     this.elements.createRoomModal.style.display = 'block';
   }
 
-  /**
-   * Generate a vector with specified characteristics
-   * @private
-   * @param {number} length - Length of the vector
-   * @param {string} type - Type of vector generation ('sequential', 'random', 'constant')
-   * @param {Object} [options] - Additional generation options
-   * @returns {Array<number>} Generated vector
-   */
   _generateVector(length, type = 'random', options = {}) {
     switch(type) {
       case 'sequential':
@@ -371,10 +297,6 @@ class SAXPYRoomUI {
     }
   }
 
-  /**
-   * Handle queuing a SAXPY computation task
-   * @private
-   */
   _handleQueueTask() {
     // Ensure we have a current room selected
     if (!this.currentRoom) {
@@ -418,32 +340,18 @@ class SAXPYRoomUI {
     const xArray = this._generateVector(vectorLength, 'sequential');
     const yArray = this._generateVector(vectorLength, 'sequential');
 
-    // Show loading toast
-    this._showToast(`Queuing SAXPY task with ${vectorLength} elements`, 'info');
+    this._showToast(`Queuing SAXPY task...`, 'info');
 
     // Send task to server
     this.client.queueTask(this.currentRoom.roomId, a, xArray, yArray)
       .then(taskId => {
-        this._showToast(`Task queued successfully: ${taskId}`, 'success');
-        // Optional: Show generation details in a modal or log
-        console.log('Task Details:', {
-          taskId,
-          vectorLength,
-          scalarValue: a,
-          xVectorFirstFew: xArray.slice(0, 5),
-          yVectorFirstFew: yArray.slice(0, 5)
-        });
+        this._showToast(`Task queued successfully`, 'success');
       })
       .catch(error => {
         this._showToast(`Error queuing task: ${error.message}`, 'error');
-        console.error('Error queuing task:', error);
       });
   }
 
-  /**
-   * Handle create room button click
-   * @private
-   */
   _handleCreateRoom() {
     const nameInput = document.getElementById('room-name');
     const descriptionInput = document.getElementById('room-description');
@@ -466,7 +374,7 @@ class SAXPYRoomUI {
           this.elements.createRoomModal.style.display = 'none';
         }
         
-        this._showToast(`Room "${nameInput.value}" created`, 'success');
+        this._showToast(`Room created`, 'success');
         
         // Refresh the rooms list
         this._refreshRoomsList();
@@ -481,30 +389,17 @@ class SAXPYRoomUI {
       })
       .catch(error => {
         this._showToast(`Error creating room: ${error.message}`, 'error');
-        console.error('Error creating room:', error);
       });
   }
 
-  /**
-   * Show the set device modal
-   * @private
-   */
   _showSetDeviceModal() {
-    // Support both old and new modal IDs
     const modal = this.elements?.setDeviceModal || document.getElementById('set-device-modal') || document.getElementById('add-device-modal');
     
-    if (!modal) {
-      console.warn('Device modal not found in the DOM');
-      return;
+    if (modal) {
+      modal.style.display = 'block';
     }
-    
-    modal.style.display = 'block';
   }
 
-  /**
-   * Handle set device button click
-   * @private
-   */
   _handleSetDevice() {
     const modelSelect = document.getElementById('device-model');
     const batterySlider = document.getElementById('device-battery');
@@ -524,25 +419,20 @@ class SAXPYRoomUI {
     
     this.client.setDevice(deviceInfo)
       .then(deviceId => {
-        // Close the modal (supporting both old and new IDs)
+        // Close the modal
         const modal = this.elements?.setDeviceModal || document.getElementById('set-device-modal') || document.getElementById('add-device-modal');
         if (modal) {
           modal.style.display = 'none';
         }
         
-        this._showToast(`Device set: ${deviceInfo.model}`, 'success');
+        this._showToast(`Device set`, 'success');
         this._updateDevicesList();
       })
       .catch(error => {
         this._showToast(`Error setting device: ${error.message}`, 'error');
-        console.error('Error setting device:', error);
       });
   }
   
-  /**
-   * Handle removing the user's device
-   * @private
-   */
   _handleRemoveDevice() {
     if (!this.client.device) {
       this._showToast('You don\'t have a device to remove', 'error');
@@ -552,7 +442,7 @@ class SAXPYRoomUI {
     this.client.removeDevice()
       .then(removed => {
         if (removed) {
-          this._showToast('Device removed successfully', 'success');
+          this._showToast('Device removed', 'success');
           this._updateDevicesList();
         } else {
           this._showToast('Failed to remove device', 'error');
@@ -560,27 +450,22 @@ class SAXPYRoomUI {
       })
       .catch(error => {
         this._showToast(`Error removing device: ${error.message}`, 'error');
-        console.error('Error removing device:', error);
       });
   }
   
-  /**
-   * Initialize the user interface
-   * @private
-   */
   _initializeUI() {
     if (!this.containerElement) {
       throw new Error('Container element not found');
     }
     
-    // Import HTML template from separate file
+    // Import HTML template
     fetch('templates/room-ui-template.html')
       .then(response => response.text())
       .then(html => {
         // Insert the HTML template into the container
         this.containerElement.innerHTML = html;
         
-        // Get references to elements we'll interact with
+        // Get element references
         this._initializeElements();
         
         // Add event listeners
@@ -588,9 +473,6 @@ class SAXPYRoomUI {
         
         // Update connection status in UI
         this._updateConnectionStatus(this.client.connected);
-        
-        // Load the initial data
-        // this._refreshRoomsList();
       })
       .catch(error => {
         console.error('Error loading UI template:', error);
@@ -608,11 +490,6 @@ class SAXPYRoomUI {
       });
   }
 
-  /**
-   * Join a room
-   * @private
-   * @param {string} roomId - The room ID to join
-  */
   _joinRoom(roomId) {
     if (!roomId) {
       this._showToast('Invalid room ID', 'error');
@@ -626,16 +503,15 @@ class SAXPYRoomUI {
       return;
     }
     
-    // Show loading toast
     this._showToast(`Joining room...`, 'info');
     
     // Join the room via the WebSocket client
     this.client.joinRoom(roomId)
       .then(roomInfo => {
         this.selectedRoomId = roomId;
-        this._showToast(`Joined room: ${roomInfo.name}`, 'success');
+        this._showToast(`Joined room`, 'success');
         
-        // Update the room list to reflect the joined status
+        // Update the room list
         this._refreshRoomsList();
         
         // Load the room view
@@ -643,14 +519,9 @@ class SAXPYRoomUI {
       })
       .catch(error => {
         this._showToast(`Error joining room: ${error.message}`, 'error');
-        console.error('Error joining room:', error);
       });
   }
 
-  /**
-   * Refresh the list of available rooms
-   * @private
-   */
   _refreshRoomsList() {
     if (!this.elements || !this.elements.roomsList) return;
     
@@ -673,8 +544,6 @@ class SAXPYRoomUI {
           document.getElementById('retry-connection')?.addEventListener('click', () => {
             this._refreshRoomsList();
           });
-          
-          console.error('Connection error when refreshing rooms:', error);
         });
       return;
     }
@@ -739,16 +608,9 @@ class SAXPYRoomUI {
       })
       .catch(error => {
         this.elements.roomsList.innerHTML = `<p class="error">Error loading rooms: ${error.message}</p>`;
-        console.error('Error loading rooms:', error);
       });
   }
 
-  /**
-   * Helper method to escape HTML special characters
-   * @private
-   * @param {string} text - Text to escape
-   * @returns {string} Escaped text
-   */
   _escapeHtml(text) {
     if (!text) return '';
     
@@ -757,11 +619,6 @@ class SAXPYRoomUI {
     return div.innerHTML;
   }
   
-  /**
-   * Load the room view for a specific room
-   * @private
-   * @param {string} roomId - The room ID to load
-   */
   _loadRoomView(roomId) {
     if (!this.elements || !this.elements.roomView) return;
     
@@ -769,7 +626,7 @@ class SAXPYRoomUI {
     this.elements.roomView.innerHTML = `
       <div class="loading-state">
         <div class="loading-spinner"></div>
-        <p>Loading room information...</p>
+        <p>Loading room...</p>
       </div>
     `;
     
@@ -818,17 +675,9 @@ class SAXPYRoomUI {
         document.getElementById('retry-load-room')?.addEventListener('click', () => {
           this._loadRoomView(roomId);
         });
-        
-        console.error('Error loading room view:', error);
       });
   }
 
-  /**
-   * Generate HTML for the room view
-   * @private
-   * @param {Object} roomStatus - Room status data
-   * @returns {string} HTML for the room view
-   */
   _generateRoomViewHTML(roomStatus) {
     const room = roomStatus.roomInfo;
     const users = roomStatus.users || [];
@@ -836,7 +685,7 @@ class SAXPYRoomUI {
     // Generate the users list
     const usersHtml = users.map(user => {
       const isCurrentUser = user.userId === this.client.userId;
-      const hasDevice = user.hasDevice || user.device; // Check both properties
+      const hasDevice = user.hasDevice || user.device;
       const isDeviceConnected = hasDevice && (user.device && user.device.isConnected);
       
       return `
@@ -899,10 +748,6 @@ class SAXPYRoomUI {
     `;
   }
 
-  /**
-   * Add event listeners specific to the room view
-   * @private
-   */
   _addRoomViewEventListeners() {
     // Leave room button
     const leaveButton = document.getElementById('leave-room');
@@ -913,11 +758,6 @@ class SAXPYRoomUI {
     }
   }
 
-  /**
-   * Leave a room
-   * @private
-   * @param {string} roomId - The room ID to leave
-   */
   _leaveRoom(roomId) {
     if (!roomId) return;
     
@@ -932,14 +772,9 @@ class SAXPYRoomUI {
       })
       .catch(error => {
         this._showToast(`Error leaving room: ${error.message}`, 'error');
-        console.error('Error leaving room:', error);
       });
   }
 
-  /**
-   * Clear the room view
-   * @private
-   */
   _clearRoomView() {
     this.currentRoom = null;
     
@@ -967,10 +802,6 @@ class SAXPYRoomUI {
     }
   }
 
-  /**
-   * Update the devices list in the UI
-   * @private
-   */
   _updateDevicesList() {
     const deviceDetailsEl = document.getElementById('user-device-details');
     if (!deviceDetailsEl) return;
@@ -984,7 +815,7 @@ class SAXPYRoomUI {
         </div>
       `;
       
-      // Add click handler for set device button using a class instead of ID
+      // Add click handler for set device button
       const setDeviceButtons = deviceDetailsEl.querySelectorAll('.set-device-btn');
       setDeviceButtons.forEach(btn => {
         btn.addEventListener('click', () => this._showSetDeviceModal());
@@ -1022,7 +853,7 @@ class SAXPYRoomUI {
         </div>
       `;
       
-      // Add click handler for remove device button - using unique ID to avoid conflicts
+      // Add click handler for remove device button
       const removeDeviceButton = document.getElementById(deviceId);
       if (removeDeviceButton) {
         removeDeviceButton.addEventListener('click', () => this._handleRemoveDevice());
@@ -1030,10 +861,6 @@ class SAXPYRoomUI {
     }
   }
   
-  /**
-   * Set up event handlers for client events
-   * @private
-   */
   _setupClientEvents() {
     // Connection status events
     this.client.on('connect', () => {
@@ -1053,7 +880,7 @@ class SAXPYRoomUI {
     });
     
     this.client.on('roomLeft', (data) => {
-      this._showToast(`Left room: ${data.roomId}`, 'info');
+      this._showToast(`Left room`, 'info');
       this._clearRoomView();
     });
     
@@ -1066,26 +893,23 @@ class SAXPYRoomUI {
     // User events
     this.client.on('userJoined', (data) => {
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
-        this._showToast(`User joined: ${data.username || data.userId}`, 'info');
-        // Refresh room view to show the new user
+        this._showToast(`User joined`, 'info');
         this._loadRoomView(data.roomId);
       }
     });
     
     this.client.on('userLeft', (data) => {
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
-        this._showToast(`User left: ${data.username || data.userId}`, 'info');
-        // Refresh room view to update user list
+        this._showToast(`User left`, 'info');
         this._loadRoomView(data.roomId);
       }
     });
     
     // Device events
     this.client.on('deviceUpdated', (data) => {
-      this._showToast(`Device updated: ${data.deviceInfo.model}`, 'success');
+      this._showToast(`Device updated`, 'success');
       this._updateDevicesList();
       
-      // If the device was updated for a user in the current room, refresh the view
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
         this._loadRoomView(data.roomId);
       }
@@ -1095,20 +919,15 @@ class SAXPYRoomUI {
       this._showToast(`Device removed`, 'info');
       this._updateDevicesList();
       
-      // If the device was removed from the current room, refresh the view
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
         this._loadRoomView(data.roomId);
       }
     });
     
     this.client.on('deviceStatusUpdated', (data) => {
-      // Update the device in the list
       this._updateDevicesList();
       
-      // If the device is in the current room, consider refreshing the view
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
-        // For minor updates, we might not want to refresh the entire view
-        // but for significant changes (like connection status), we might
         if (data.updates.isConnected !== undefined) {
           this._loadRoomView(data.roomId);
         }
@@ -1118,13 +937,13 @@ class SAXPYRoomUI {
     // Task events
     this.client.on('taskQueued', (data) => {
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
-        this._showToast(`Task queued by ${data.userId === this.client.userId ? 'you' : 'another user'}`, 'info');
+        this._showToast(`Task queued`, 'info');
       }
     });
     
     this.client.on('taskStarted', (data) => {
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
-        this._showToast(`Task started: ${data.taskId}`, 'info');
+        this._showToast(`Task started`, 'info');
         this._updateTaskStatus({
           taskId: data.taskId,
           status: 'running',
@@ -1145,7 +964,7 @@ class SAXPYRoomUI {
     
     this.client.on('taskCompleted', (data) => {
       if (this.currentRoom && this.currentRoom.roomId === data.roomId) {
-        this._showToast(`Task completed: ${data.taskId}`, 'success');
+        this._showToast(`Task completed`, 'success');
         this._showTaskResults(data);
       }
     });
@@ -1153,7 +972,6 @@ class SAXPYRoomUI {
     // Error events
     this.client.on('error', (data) => {
       this._showToast(`Error: ${data.error}`, 'error');
-      console.error('SAXPY client error:', data.error, data.details);
     });
   }
 }

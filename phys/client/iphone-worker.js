@@ -1,20 +1,16 @@
 // iphone-worker.js
-// This worker simulates an iPhone connecting to the SAXPY server and performing computations
+// Worker for iPhone device
 
-// State for this simulated iPhone
+import { runSaxpy } from '../kernels/saxpy.js';
+
+// Simplified state for the iPhone
 let deviceState = {
   model: 'iPhone13',
-  batteryLevel: 1.0,  // Starts at 100%
-  connectionQuality: 0.95, // Simulated connection quality (0-1)
+  batteryLevel: 1.0,
+  connectionQuality: 0.95,
   isConnected: false,
-  computationsPerformed: 0,
-  deviceId: `iPhone-${Math.floor(Math.random() * 10000)}` // Unique device ID
+  deviceId: `iPhone-${Math.floor(Math.random() * 10000)}`
 };
-
-// Import SAXPY computation function
-// In a real implementation, we'd need to include this directly or via importScripts()
-// Assuming WebGPU will be simulated in this worker context
-import { runSaxpy } from '../kernels/saxpy.js';
 
 // Listen for messages from the main thread
 self.onmessage = async function(event) {
@@ -26,7 +22,7 @@ self.onmessage = async function(event) {
       const result = await runSaxpy(a, xArray, yArray);
       const computationTime = performance.now() - startTime;
       
-      // Send the result back with additional metadata
+      // Send the result back
       self.postMessage({
         type: 'result',
         roomId: event.data.roomId,
@@ -34,14 +30,14 @@ self.onmessage = async function(event) {
         chunkIndex: chunkIndex,
         result: result,
         deviceStats: {
-          batteryLevel: 100, // Update with actual battery tracking
+          batteryLevel: 100,
           computationTime: computationTime
         }
       });
     } catch (error) {
       self.postMessage({
         type: 'error',
-        error: "Deez nuts!\n",
+        error: error.message,
         taskId: taskId,
         chunkIndex: chunkIndex
       });

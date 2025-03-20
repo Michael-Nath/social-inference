@@ -20,22 +20,16 @@ class SAXPYWebSocketServer {
     
     // Optional cleanup interval to remove inactive rooms
     this.cleanupInterval = setInterval(() => {
-      this.roomManager.cleanupInactiveRooms();
+      this.roomManager.cleanEmptyRooms();
     }, 30 * 60 * 1000); // 30 minutes
   }
   
-  /**
-   * Start the WebSocket server
-   */
   start() {
     this.server.listen(this.port, () => {
-      console.log(`SAXPY WebSocket server is running on port ${this.port}`);
+      console.log(`SAXPY WebSocket server running on port ${this.port}`);
     });
   }
   
-  /**
-   * Stop the WebSocket server
-   */
   stop() {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
@@ -51,14 +45,8 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Setup WebSocket connection handlers
-   * @private
-   */
   _setupWebSocketHandlers() {
     this.wss.on('connection', (ws) => {
-      console.log('New client connected');
-      
       let userId = null;
       let authenticated = false;
       
@@ -79,8 +67,6 @@ class SAXPYWebSocketServer {
               type: 'auth_success',
               userId
             });
-            
-            console.log(`Client authenticated: ${userId}`);
           } else if (!authenticated) {
             // Reject non-authenticated requests
             this._sendToClient(ws, {
@@ -93,7 +79,6 @@ class SAXPYWebSocketServer {
             this._handleClientMessage(ws, userId, data);
           }
         } catch (error) {
-          console.error('Error processing message:', error);
           this._sendToClient(ws, {
             type: 'error',
             error: 'Invalid message format'
@@ -102,8 +87,6 @@ class SAXPYWebSocketServer {
       });
       
       ws.on('close', () => {
-        console.log(`Client disconnected${userId ? ': ' + userId : ''}`);
-        
         if (userId) {
           // Clean up client connections
           this.clients.delete(userId);
@@ -119,13 +102,6 @@ class SAXPYWebSocketServer {
     });
   }
   
-  /**
-   * Handle client messages
-   * @private
-   * @param {WebSocket} ws - The WebSocket connection
-   * @param {string} userId - The user ID
-   * @param {Object} message - The message data
-   */
   _handleClientMessage(ws, userId, message) {
     const { type, requestId } = message;
     
@@ -183,10 +159,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle computation error from client
-   * @private
-   */
   _handleComputationError(ws, userId, requestId, message) {
     try {
       const { roomId, deviceId, taskId, chunkIndex, error } = message;
@@ -198,18 +170,18 @@ class SAXPYWebSocketServer {
       // Get the room
       const room = this.roomManager.getRoom(roomId);
       if (!room) {
-        throw new Error(`Room ${roomId} not found`);
+        throw new Error(`Room not found`);
       }
       
       // Find the user
       const user = room.users.get(userId);
       if (!user) {
-        throw new Error(`User ${userId} not found in room ${roomId}`);
+        throw new Error(`User not found in room`);
       }
       
       // Check if this is the user's device
       if (!user.device || user.device.deviceId !== deviceId) {
-        throw new Error(`Device ${deviceId} not found for user ${userId}`);
+        throw new Error(`Device not found for user`);
       }
       
       // Handle the error through the room's error handler
@@ -237,11 +209,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle client disconnection
-   * @private
-   * @param {string} userId - The user ID
-   */
   _handleClientDisconnect(userId) {
     // Get rooms the user has joined
     const rooms = this.roomManager.getUserRooms(userId);
@@ -259,14 +226,10 @@ class SAXPYWebSocketServer {
         userId,
         updates: { isConnected: false },
         roomInfo: this.roomManager.getRoom(room.roomId).getRoomInfo()
-      }, userId); // Exclude the disconnected user
+      }, userId);
     }
   }
   
-  /**
-   * Handle list rooms request
-   * @private
-   */
   _handleListRooms(ws, userId, requestId) {
     const rooms = this.roomManager.listRooms();
     
@@ -274,16 +237,10 @@ class SAXPYWebSocketServer {
       type: 'response',
       requestId,
       success: true,
-      data: {
-        rooms
-      }
+      data: { rooms }
     });
   }
   
-  /**
-   * Handle create room request
-   * @private
-   */
   _handleCreateRoom(ws, userId, requestId, message) {
     try {
       const { name, description, isPublic } = message;
@@ -317,10 +274,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle join room request
-   * @private
-   */
   _handleJoinRoom(ws, userId, requestId, message) {
     try {
       const { roomId } = message;
@@ -372,10 +325,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle leave room request
-   * @private
-   */
   _handleLeaveRoom(ws, userId, requestId, message) {
     try {
       const { roomId } = message;
@@ -429,10 +378,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle set device request
-   * @private
-   */
   _handleSetDevice(ws, userId, requestId, message) {
     try {
       const { deviceInfo } = message;
@@ -457,13 +402,12 @@ class SAXPYWebSocketServer {
         // Notify all room members about the new device
         for (const room of rooms) {
           const updatedRoomInfo = this.roomManager.getRoom(room.roomId).getRoomInfo();
-          console.log(`Broadcasting updated room info with connected devices: ${updatedRoomInfo.connectedDeviceCount}`);
           
           this._broadcastToRoom(room.roomId, {
             type: 'deviceUpdated',
             roomId: room.roomId,
             userId,
-            deviceId: deviceId,
+            deviceId,
             deviceInfo,
             roomInfo: updatedRoomInfo
           }, userId);
@@ -481,7 +425,7 @@ class SAXPYWebSocketServer {
           requestId,
           success: true,
           data: {
-            deviceId: deviceId,
+            deviceId,
             added: true
           }
         });
@@ -489,8 +433,8 @@ class SAXPYWebSocketServer {
         // Also send a deviceUpdated event for client-side event handlers
         this._sendToClient(ws, {
           type: 'deviceUpdated',
-          deviceId: deviceId,
-          deviceInfo: { ...deviceInfo, deviceId: deviceId }
+          deviceId,
+          deviceInfo: { ...deviceInfo, deviceId }
         });
       } else {
         throw new Error('Failed to set device');
@@ -505,10 +449,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle remove device request
-   * @private
-   */
   _handleRemoveDevice(ws, userId, requestId, message) {
     try {
       const removed = this.roomManager.removeUserDevice(userId);
@@ -554,10 +494,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle get room status request
-   * @private
-   */
   _handleGetRoomStatus(ws, userId, requestId, message) {
     try {
       const { roomId } = message;
@@ -591,10 +527,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle queue task request
-   * @private
-   */
   _handleQueueTask(ws, userId, requestId, message) {
     try {
       const { roomId, a, xArray, yArray } = message;
@@ -661,11 +593,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Send pending computations to client devices
-   * @private
-   * @param {ComputationRoom} room - The room with pending computations
-   */
   _sendPendingComputations(room) {
     // Iterate through all users in the room
     for (const user of room.users.values()) {
@@ -686,11 +613,7 @@ class SAXPYWebSocketServer {
             deviceId: device.deviceId,
             computation: computation
           });
-          
-          console.log(`Sent computation request to client for device ${device.deviceId}`);
         } else {
-          console.error(`Cannot find client connection for user ${user.userId} to send computation`);
-          
           // Handle the error - mark the computation as failed
           if (room.currentTask && computation.taskId === room.currentTask.taskId) {
             room._handleDeviceComputationError(
@@ -705,10 +628,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle computation result
-   * @private
-   */
   _handleComputationResult(ws, userId, requestId, message) {
     try {
       const { roomId, deviceId, taskId, chunkIndex, result, stats } = message;
@@ -719,7 +638,7 @@ class SAXPYWebSocketServer {
       
       const room = this.roomManager.getRoom(roomId);
       if (!room) {
-        throw new Error(`Room ${roomId} not found`);
+        throw new Error(`Room not found`);
       }
       
       const handled = room.handleDeviceComputationComplete(deviceId, userId, taskId, chunkIndex, result, stats || {});
@@ -777,10 +696,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Handle update device status
-   * @private
-   */
   _handleUpdateDeviceStatus(ws, userId, requestId, message) {
     try {
       const { updates } = message;
@@ -802,7 +717,6 @@ class SAXPYWebSocketServer {
         
         // Notify room members about the status change
         for (const room of rooms) {
-          // Get a fresh detailed status to ensure all data is updated
           const roomStatus = this.roomManager.getRoomStatus(room.roomId);
           
           this._broadcastToRoom(room.roomId, {
@@ -843,30 +757,16 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Send a message to a specific client
-   * @private
-   * @param {WebSocket} ws - The WebSocket connection
-   * @param {Object} message - The message to send
-   */
   _sendToClient(ws, message) {
     if (ws.readyState === WebSocket.OPEN) {
       try {
-        const jsonString = JSON.stringify(message);
-        // console.log('Sending message:', jsonString); // Log what's being sent
-        ws.send(jsonString);
+        ws.send(JSON.stringify(message));
       } catch (error) {
-        console.error('Error sending message:', error, 'Message:', message);
+        console.error('Error sending message:', error);
       }
     }
   }
   
-  /**
-   * Send a message to a specific user
-   * @private
-   * @param {string} userId - The user ID
-   * @param {Object} message - The message to send
-   */
   _sendToUser(userId, message) {
     const ws = this.clients.get(userId);
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -874,13 +774,6 @@ class SAXPYWebSocketServer {
     }
   }
   
-  /**
-   * Broadcast a message to all users in a room
-   * @private
-   * @param {string} roomId - The room ID
-   * @param {Object} message - The message to broadcast
-   * @param {string} [excludeUserId] - User ID to exclude from broadcast
-   */
   _broadcastToRoom(roomId, message, excludeUserId) {
     const room = this.roomManager.getRoom(roomId);
     if (!room) return;
