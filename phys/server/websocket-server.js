@@ -146,8 +146,8 @@ class SAXPYWebSocketServer {
         this._handleLeaveRoom(ws, userId, requestId, message);
         break;
         
-      case 'addDevice':
-        this._handleAddDevice(ws, userId, requestId, message);
+      case 'setDevice':
+        this._handleSetDevice(ws, userId, requestId, message);
         break;
         
       case 'removeDevice':
@@ -166,6 +166,10 @@ class SAXPYWebSocketServer {
         this._handleComputationResult(ws, userId, requestId, message);
         break;
         
+      case 'computationError':
+        this._handleComputationError(ws, userId, requestId, message);
+        break;
+        
       case 'updateDeviceStatus':
         this._handleUpdateDeviceStatus(ws, userId, requestId, message);
         break;
@@ -180,6 +184,60 @@ class SAXPYWebSocketServer {
   }
   
   /**
+   * Handle computation error from client
+   * @private
+   */
+  _handleComputationError(ws, userId, requestId, message) {
+    try {
+      const { roomId, deviceId, taskId, chunkIndex, error } = message;
+      
+      if (!roomId || !deviceId || !taskId || chunkIndex === undefined) {
+        throw new Error('Invalid computation error parameters');
+      }
+      
+      // Get the room
+      const room = this.roomManager.getRoom(roomId);
+      if (!room) {
+        throw new Error(`Room ${roomId} not found`);
+      }
+      
+      // Find the user
+      const user = room.users.get(userId);
+      if (!user) {
+        throw new Error(`User ${userId} not found in room ${roomId}`);
+      }
+      
+      // Check if this is the user's device
+      if (!user.device || user.device.deviceId !== deviceId) {
+        throw new Error(`Device ${deviceId} not found for user ${userId}`);
+      }
+      
+      // Handle the error through the room's error handler
+      const device = user.device;
+      room._handleDeviceComputationError(device, taskId, chunkIndex, error || 'Client reported error');
+      
+      // Response to the client
+      this._sendToClient(ws, {
+        type: 'response',
+        requestId,
+        success: true,
+        data: { handled: true }
+      });
+      
+      // Check if there are any pending computations to send
+      this._sendPendingComputations(room);
+      
+    } catch (error) {
+      this._sendToClient(ws, {
+        type: 'response',
+        requestId,
+        success: false,
+        error: error.message
+      });
+    }
+  }
+  
+  /**
    * Handle client disconnection
    * @private
    * @param {string} userId - The user ID
@@ -188,29 +246,20 @@ class SAXPYWebSocketServer {
     // Get rooms the user has joined
     const rooms = this.roomManager.getUserRooms(userId);
     
-    // Auto-leave rooms or mark devices as disconnected
+    // Mark the user's device as disconnected
+    this.roomManager.updateUserDeviceStatus(userId, {
+      isConnected: false
+    });
+    
+    // Notify other room members about the device status change
     for (const room of rooms) {
-      // Option 1: Remove the user completely from the room
-      // this.roomManager.leaveRoom(userId, room.roomId);
-      
-      // Option 2: Mark the user's devices as disconnected but keep them in the room
-      const roomStatus = this.roomManager.getRoomStatus(room.roomId);
-      if (roomStatus) {
-        const userDevices = roomStatus.users.find(u => u.userId === userId)?.devices || [];
-        
-        for (const device of userDevices) {
-          this.roomManager.updateDeviceStatus(room.roomId, userId, device.deviceId, {
-            isConnected: false
-          });
-        }
-        
-        // Notify other room members about the device status change
-        this._broadcastToRoom(room.roomId, {
-          type: 'roomUpdated',
-          roomId: room.roomId,
-          roomInfo: this.roomManager.getRoom(room.roomId).getRoomInfo()
-        }, userId); // Exclude the disconnected user
-      }
+      this._broadcastToRoom(room.roomId, {
+        type: 'deviceStatusUpdated',
+        roomId: room.roomId,
+        userId,
+        updates: { isConnected: false },
+        roomInfo: this.roomManager.getRoom(room.roomId).getRoomInfo()
+      }, userId); // Exclude the disconnected user
     }
   }
   
@@ -381,56 +430,70 @@ class SAXPYWebSocketServer {
   }
   
   /**
-   * Handle add device request
+   * Handle set device request
    * @private
    */
-  _handleAddDevice(ws, userId, requestId, message) {
+  _handleSetDevice(ws, userId, requestId, message) {
     try {
-      const { roomId, deviceId, deviceInfo } = message;
+      const { deviceInfo } = message;
       
-      if (!roomId) {
-        throw new Error('Room ID is required');
+      if (!deviceInfo) {
+        throw new Error('Device information is required');
       }
       
-      // Generate a device ID if not provided
-      const actualDeviceId = deviceId || `device-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      // Ensure isConnected is set to true
+      deviceInfo.isConnected = true;
       
-      const added = this.roomManager.addDeviceToRoom(userId, roomId, actualDeviceId, deviceInfo || {});
+      // Generate a device ID if not provided
+      const deviceId = deviceInfo.deviceId || `device-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      
+      // Set the user's device
+      const added = this.roomManager.setUserDevice(userId, deviceId, deviceInfo || {});
       
       if (added) {
-        // Get updated room info
-        const roomInfo = this.roomManager.getRoom(roomId).getRoomInfo();
+        // Get user's rooms to send updates
+        const rooms = this.roomManager.getUserRooms(userId);
         
-        // Notify other room members
-        this._broadcastToRoom(roomId, {
-          type: 'deviceAdded',
-          roomId,
-          userId,
-          deviceId: actualDeviceId,
-          deviceInfo,
-          roomInfo
-        }, userId);
+        // Notify all room members about the new device
+        for (const room of rooms) {
+          const updatedRoomInfo = this.roomManager.getRoom(room.roomId).getRoomInfo();
+          console.log(`Broadcasting updated room info with connected devices: ${updatedRoomInfo.connectedDeviceCount}`);
+          
+          this._broadcastToRoom(room.roomId, {
+            type: 'deviceUpdated',
+            roomId: room.roomId,
+            userId,
+            deviceId: deviceId,
+            deviceInfo,
+            roomInfo: updatedRoomInfo
+          }, userId);
+          
+          // Also broadcast a general room update to refresh counters
+          this._broadcastToRoom(room.roomId, {
+            type: 'roomUpdated',
+            roomId: room.roomId,
+            roomInfo: updatedRoomInfo
+          });
+        }
         
         this._sendToClient(ws, {
           type: 'response',
           requestId,
           success: true,
           data: {
-            roomId,
-            deviceId: actualDeviceId,
+            deviceId: deviceId,
             added: true
           }
         });
         
-        // Also send a deviceAdded event for client-side event handlers
+        // Also send a deviceUpdated event for client-side event handlers
         this._sendToClient(ws, {
-          type: 'deviceAdded',
-          roomId,
-          deviceId: actualDeviceId,
-          deviceInfo: { ...deviceInfo, deviceId: actualDeviceId }
+          type: 'deviceUpdated',
+          deviceId: deviceId,
+          deviceInfo: { ...deviceInfo, deviceId: deviceId }
         });
       } else {
-        throw new Error('Failed to add device');
+        throw new Error('Failed to set device');
       }
     } catch (error) {
       this._sendToClient(ws, {
@@ -448,34 +511,27 @@ class SAXPYWebSocketServer {
    */
   _handleRemoveDevice(ws, userId, requestId, message) {
     try {
-      const { roomId, deviceId } = message;
-      
-      if (!roomId || !deviceId) {
-        throw new Error('Room ID and Device ID are required');
-      }
-      
-      const removed = this.roomManager.removeDeviceFromRoom(userId, roomId, deviceId);
+      const removed = this.roomManager.removeUserDevice(userId);
       
       if (removed) {
-        // Get updated room info
-        const roomInfo = this.roomManager.getRoom(roomId).getRoomInfo();
+        // Get user's rooms to send updates
+        const rooms = this.roomManager.getUserRooms(userId);
         
-        // Notify other room members
-        this._broadcastToRoom(roomId, {
-          type: 'deviceRemoved',
-          roomId,
-          userId,
-          deviceId,
-          roomInfo
-        }, userId);
+        // Notify all room members about the device removal
+        for (const room of rooms) {
+          this._broadcastToRoom(room.roomId, {
+            type: 'deviceRemoved',
+            roomId: room.roomId,
+            userId,
+            roomInfo: this.roomManager.getRoom(room.roomId).getRoomInfo()
+          }, userId);
+        }
         
         this._sendToClient(ws, {
           type: 'response',
           requestId,
           success: true,
           data: {
-            roomId,
-            deviceId,
             removed: true
           }
         });
@@ -483,8 +539,7 @@ class SAXPYWebSocketServer {
         // Also send a deviceRemoved event for client-side event handlers
         this._sendToClient(ws, {
           type: 'deviceRemoved',
-          roomId,
-          deviceId
+          userId
         });
       } else {
         throw new Error('Failed to remove device');
@@ -580,6 +635,9 @@ class SAXPYWebSocketServer {
           }
         });
         
+        // Check if any device assignments need to be sent to clients
+        this._sendPendingComputations(room);
+        
         this._sendToClient(ws, {
           type: 'response',
           requestId,
@@ -604,6 +662,50 @@ class SAXPYWebSocketServer {
   }
   
   /**
+   * Send pending computations to client devices
+   * @private
+   * @param {ComputationRoom} room - The room with pending computations
+   */
+  _sendPendingComputations(room) {
+    // Iterate through all users in the room
+    for (const user of room.users.values()) {
+      // Check if the user has a device with pending computation
+      if (user.device && user.device.pendingComputation) {
+        const device = user.device;
+        const computation = device.pendingComputation;
+        
+        // Clear the pending computation to avoid sending it multiple times
+        device.pendingComputation = null;
+        
+        // Find the client connection for this user
+        const ws = this.clients.get(user.userId);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          // Send the computation request to the client
+          this._sendToClient(ws, {
+            type: 'deviceComputation',
+            deviceId: device.deviceId,
+            computation: computation
+          });
+          
+          console.log(`Sent computation request to client for device ${device.deviceId}`);
+        } else {
+          console.error(`Cannot find client connection for user ${user.userId} to send computation`);
+          
+          // Handle the error - mark the computation as failed
+          if (room.currentTask && computation.taskId === room.currentTask.taskId) {
+            room._handleDeviceComputationError(
+              device, 
+              computation.taskId, 
+              computation.data.chunkIndex, 
+              'Client not connected'
+            );
+          }
+        }
+      }
+    }
+  }
+  
+  /**
    * Handle computation result
    * @private
    */
@@ -611,23 +713,19 @@ class SAXPYWebSocketServer {
     try {
       const { roomId, deviceId, taskId, chunkIndex, result, stats } = message;
       
-      if (!roomId || !deviceId || !taskId || chunkIndex === undefined || !Array.isArray(result)) {
+      if (!Array.isArray(result)) {
         throw new Error('Invalid computation result parameters');
       }
       
-      const handled = this.roomManager.handleDeviceComputationComplete(
-        roomId, 
-        userId, 
-        deviceId, 
-        taskId, 
-        chunkIndex, 
-        result, 
-        stats || {}
-      );
+      const room = this.roomManager.getRoom(roomId);
+      if (!room) {
+        throw new Error(`Room ${roomId} not found`);
+      }
+      
+      const handled = room.handleDeviceComputationComplete(deviceId, userId, taskId, chunkIndex, result, stats || {});
       
       if (handled) {
         // Get the room to check if task is completed
-        const room = this.roomManager.getRoom(roomId);
         const task = room.currentTask;
         
         if (task && task.taskId === taskId) {
@@ -654,6 +752,9 @@ class SAXPYWebSocketServer {
             result: completedTask.result
           });
         }
+        
+        // Check for and send any pending computations
+        this._sendPendingComputations(room);
         
         this._sendToClient(ws, {
           type: 'response',
@@ -682,27 +783,44 @@ class SAXPYWebSocketServer {
    */
   _handleUpdateDeviceStatus(ws, userId, requestId, message) {
     try {
-      const { roomId, deviceId, updates } = message;
+      const { updates } = message;
       
-      if (!roomId || !deviceId || !updates) {
+      if (!updates) {
         throw new Error('Invalid update parameters');
       }
       
-      const updated = this.roomManager.updateDeviceStatus(roomId, userId, deviceId, updates);
+      // Ensure isConnected is a boolean if provided
+      if (updates.isConnected !== undefined) {
+        updates.isConnected = updates.isConnected === true;
+      }
+      
+      const updated = this.roomManager.updateUserDeviceStatus(userId, updates);
       
       if (updated) {
-        // Get updated room info
-        const roomInfo = this.roomManager.getRoom(roomId).getRoomInfo();
+        // Get user's rooms to notify
+        const rooms = this.roomManager.getUserRooms(userId);
         
         // Notify room members about the status change
-        this._broadcastToRoom(roomId, {
-          type: 'deviceStatusUpdated',
-          roomId,
-          userId,
-          deviceId,
-          updates,
-          roomInfo
-        });
+        for (const room of rooms) {
+          // Get a fresh detailed status to ensure all data is updated
+          const roomStatus = this.roomManager.getRoomStatus(room.roomId);
+          
+          this._broadcastToRoom(room.roomId, {
+            type: 'deviceStatusUpdated',
+            roomId: room.roomId,
+            userId,
+            updates,
+            roomInfo: roomStatus.roomInfo
+          });
+          
+          // Also broadcast a roomUpdated event with the detailed status
+          this._broadcastToRoom(room.roomId, {
+            type: 'roomUpdated',
+            roomId: room.roomId,
+            roomInfo: roomStatus.roomInfo,
+            detailedStatus: roomStatus
+          });
+        }
         
         this._sendToClient(ws, {
           type: 'response',

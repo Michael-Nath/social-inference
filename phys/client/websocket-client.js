@@ -1,5 +1,5 @@
 // client/websocket-client.js
-// WebSocket client implementation for SAXPY Room Computing
+// WebSocket client implementation for SAXPY Room Computing with one device per user
 
 class SAXPYWebSocketClient {
   constructor(options = {}) {
@@ -17,8 +17,8 @@ class SAXPYWebSocketClient {
     // Rooms the client has joined
     this.joinedRooms = new Map(); // roomId -> roomInfo
     
-    // Devices managed by this client
-    this.devices = new Map(); // deviceId -> deviceInfo
+    // User's single device
+    this.device = null;
     
     // Pending requests
     this.pendingRequests = new Map(); // requestId -> { resolve, reject, timeout }
@@ -32,7 +32,7 @@ class SAXPYWebSocketClient {
       'roomJoined': [],
       'roomLeft': [],
       'roomUpdated': [],
-      'deviceAdded': [],
+      'deviceUpdated': [],
       'deviceRemoved': [],
       'deviceStatusUpdated': [],
       'taskQueued': [],
@@ -63,10 +63,6 @@ class SAXPYWebSocketClient {
    * Connect to the WebSocket server
    * @returns {Promise<void>} Promise that resolves when connected
    */
-  /**
- * Connect to the WebSocket server
- * @returns {Promise<void>} Promise that resolves when connected
- */
   connect() {
     // If already connected, return resolved promise
     if (this.connected && this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -342,6 +338,12 @@ class SAXPYWebSocketClient {
       }
     }
     
+    // Handle device computation requests
+    if (message.type === 'deviceComputation') {
+      this._handleDeviceComputation(message);
+      return;
+    }
+    
     // Handle event messages
     switch (message.type) {
       case 'auth_success':
@@ -369,8 +371,8 @@ class SAXPYWebSocketClient {
         this._emitEvent('userLeft', message);
         break;
         
-      case 'deviceAdded':
-        this._handleDeviceAdded(message);
+      case 'deviceUpdated':
+        this._handleDeviceUpdated(message);
         break;
         
       case 'deviceRemoved':
@@ -397,10 +399,6 @@ class SAXPYWebSocketClient {
         this._emitEvent('taskCompleted', message);
         break;
         
-      case 'deviceRequest':
-        this._handleDeviceRequest(message);
-        break;
-        
       case 'error':
         this._emitEvent('error', { error: message.error, details: message.details });
         break;
@@ -408,6 +406,55 @@ class SAXPYWebSocketClient {
       default:
         // For unknown message types, emit a generic message event
         this._emitEvent('message', message);
+    }
+  }
+  
+  /**
+   * Handle computation request from server
+   * @private
+   * @param {Object} message - The computation message
+   */
+  _handleDeviceComputation(message) {
+    const { deviceId, computation } = message;
+    
+    // Check if this is our device
+    if (this.device && this.device.deviceId === deviceId) {
+      // Check if we have a worker
+      if (this.device.worker && typeof this.device.worker.postMessage === 'function') {
+        try {
+          // Forward the computation to our local worker
+          this.device.worker.postMessage(computation);
+          console.log(`Forwarded computation to local worker for device ${deviceId}`);
+        } catch (error) {
+          console.error(`Error forwarding computation to worker:`, error);
+          
+          // Report error back to server
+          this._sendRequest('computationError', {
+            roomId: computation.roomId,
+            deviceId: deviceId,
+            taskId: computation.taskId,
+            chunkIndex: computation.data.chunkIndex,
+            error: error.message
+          }).catch(err => {
+            console.error('Failed to report computation error to server:', err);
+          });
+        }
+      } else {
+        console.error(`Received computation for device ${deviceId} but no worker is available`);
+        
+        // Report error back to server
+        this._sendRequest('computationError', {
+          roomId: computation.roomId,
+          deviceId: deviceId,
+          taskId: computation.taskId,
+          chunkIndex: computation.data.chunkIndex,
+          error: 'No worker available'
+        }).catch(err => {
+          console.error('Failed to report computation error to server:', err);
+        });
+      }
+    } else {
+      console.warn(`Received computation for unknown device ${deviceId}`);
     }
   }
   
@@ -474,37 +521,35 @@ class SAXPYWebSocketClient {
     const { roomId } = message;
     
     this.joinedRooms.delete(roomId);
-    
-    // Remove all devices from this room
-    for (const [deviceId, device] of this.devices.entries()) {
-      if (device.roomId === roomId) {
-        this.devices.delete(deviceId);
-        this._emitEvent('deviceRemoved', { roomId, deviceId });
-      }
-    }
-    
     this._emitEvent('roomLeft', message);
   }
   
   /**
-   * Handle device added message
+   * Handle device updated message
    * @private
    * @param {Object} message - The message from the server
    */
-  _handleDeviceAdded(message) {
-    const { roomId, deviceId, deviceInfo } = message;
+  _handleDeviceUpdated(message) {
+    const { deviceId, deviceInfo } = message;
     
-    // Only store the device if it belongs to this client
+    
+    const workerRef = this.device ? this.device.worker : null;
+
+    // Update our local device information
     if (deviceInfo && deviceInfo.userId === this.userId) {
-      this.devices.set(deviceId, {
-        ...deviceInfo,
+      this.device = {
         deviceId,
-        roomId,
-        status: 'connected'
-      });
+        ...deviceInfo,
+        status: 'connected',
+        isConnected: true, // Explicitly set isConnected to true
+        worker: workerRef,
+      };
+      
+      
+      console.log(`Device updated: ${deviceId} connected = ${this.device.isConnected}`);
     }
     
-    this._emitEvent('deviceAdded', message);
+    this._emitEvent('deviceUpdated', message);
   }
   
   /**
@@ -513,10 +558,12 @@ class SAXPYWebSocketClient {
    * @param {Object} message - The message from the server
    */
   _handleDeviceRemoved(message) {
-    const { roomId, deviceId } = message;
+    const { userId } = message;
     
-    // Remove from local devices
-    this.devices.delete(deviceId);
+    // If this is our device, clear it
+    if (userId === this.userId) {
+      this.device = null;
+    }
     
     this._emitEvent('deviceRemoved', message);
   }
@@ -527,12 +574,11 @@ class SAXPYWebSocketClient {
    * @param {Object} message - The message from the server
    */
   _handleDeviceStatusUpdated(message) {
-    const { roomId, deviceId, updates } = message;
+    const { userId, updates } = message;
     
-    // Update local device if we have it
-    const device = this.devices.get(deviceId);
-    if (device) {
-      Object.assign(device, updates);
+    // Update our device if it's ours
+    if (userId === this.userId && this.device) {
+      Object.assign(this.device, updates);
     }
     
     this._emitEvent('deviceStatusUpdated', message);
@@ -546,20 +592,16 @@ class SAXPYWebSocketClient {
   _handleDeviceRequest(message) {
     const { deviceId, taskId, data } = message;
     
-    const device = this.devices.get(deviceId);
-    if (!device) {
-      console.warn(`Received request for unknown device ${deviceId}`);
-      return;
-    }
-    
-    // Process the task on the device
-    if (device.worker && typeof device.worker.postMessage === 'function') {
-      // Forward the request to the device worker
-      device.worker.postMessage({
-        command: 'compute',
-        taskId,
-        data
-      });
+    // Only process if this is our device
+    if (this.device && this.device.deviceId === deviceId) {
+      if (this.device.worker && typeof this.device.worker.postMessage === 'function') {
+        // Forward the request to the device worker
+        this.device.worker.postMessage({
+          command: 'compute',
+          taskId,
+          data
+        });
+      }
     }
   }
   
@@ -613,13 +655,6 @@ class SAXPYWebSocketClient {
       .then(response => {
         if (response.left) {
           this.joinedRooms.delete(roomId);
-          
-          // Remove all devices from this room
-          for (const [deviceId, device] of this.devices.entries()) {
-            if (device.roomId === roomId) {
-              this.removeDevice(deviceId);
-            }
-          }
         }
         return response.left;
       });
@@ -636,28 +671,28 @@ class SAXPYWebSocketClient {
   }
   
   /**
-   * Add a device to a room
-   * @param {string} roomId - The room ID
+   * Set the user's device
    * @param {Object} deviceInfo - Device information
    * @returns {Promise<string>} Promise that resolves with the device ID
    */
-  addDevice(roomId, deviceInfo = {}) {
-    // Generate a device ID if not provided
-    const deviceId = deviceInfo.deviceId || `device-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    
+  setDevice(deviceInfo = {}) {
     // Create worker for the device if not provided
     let worker = deviceInfo.worker;
-    console.log("Creating Worker!");
     if (!worker && typeof window !== 'undefined' && window.Worker) {
-      worker = new Worker(new URL(deviceInfo.workerPath || './iphone-worker.js', import.meta.url), {
-        type: 'module'
-      });
+      try {
+        worker = new Worker(new URL(deviceInfo.workerPath || './client/iphone-worker.js', import.meta.url), {
+          type: 'module'
+        });
 
-      
-      // Set up message handler
-      worker.onmessage = (event) => {
-        this._handleDeviceMessage(deviceId, event);
-      };
+        
+        // Set up message handler
+        worker.onmessage = (event) => {
+          this._handleDeviceMessage(event);
+        };
+      } catch (error) {
+        console.warn('Error creating worker:', error);
+        // Continue without a worker
+      }
     }
     
     // Prepare device info for the server
@@ -665,69 +700,77 @@ class SAXPYWebSocketClient {
       model: deviceInfo.model || 'iPhone13',
       batteryLevel: deviceInfo.batteryLevel !== undefined ? deviceInfo.batteryLevel : 1.0,
       connectionQuality: deviceInfo.connectionQuality !== undefined ? deviceInfo.connectionQuality : 0.95,
-      userId: this.userId
+      userId: this.userId,
+      isConnected: true // Explicitly set isConnected to true
     };
     
     // Send request to server
-    return this._sendRequest('addDevice', {
-      roomId,
-      deviceId,
+    return this._sendRequest('setDevice', {
       deviceInfo: serverDeviceInfo
     })
       .then(response => {
         if (response.added) {
+          const deviceId = response.deviceId;
+          
           // Store the device locally
-          this.devices.set(deviceId, {
+          this.device = {
             deviceId,
-            roomId,
             model: serverDeviceInfo.model,
             batteryLevel: serverDeviceInfo.batteryLevel,
             connectionQuality: serverDeviceInfo.connectionQuality,
             worker,
             addedAt: new Date(),
-            status: 'connected'
-          });
-          
+            status: 'connected',
+            isConnected: true // Explicitly set isConnected to true
+          };
+
           // Initialize the worker
           if (worker) {
-            worker.postMessage({
-              command: 'initialize',
-              data: {
-                deviceId,
-                model: serverDeviceInfo.model,
-                batteryLevel: serverDeviceInfo.batteryLevel,
-                connectionQuality: serverDeviceInfo.connectionQuality
-              }
-            });
+            try {
+              worker.postMessage({
+                command: 'initialize',
+                data: {
+                  deviceId,
+                  model: serverDeviceInfo.model,
+                  batteryLevel: serverDeviceInfo.batteryLevel,
+                  connectionQuality: serverDeviceInfo.connectionQuality
+                }
+              });
+            } catch (error) {
+              console.warn('Error initializing worker:', error);
+            }
           }
+          
+          return deviceId;
         }
-        return deviceId;
+        
+        return response.deviceId;
       });
   }
   
   /**
-   * Remove a device from a room
-   * @param {string} deviceId - The device ID
+   * Remove the user's device
    * @returns {Promise<boolean>} Promise that resolves with whether the device was removed
    */
-  removeDevice(deviceId) {
-    const device = this.devices.get(deviceId);
-    if (!device) {
+  removeDevice() {
+    if (!this.device) {
       return Promise.resolve(false);
     }
     
-    const roomId = device.roomId;
-    
-    return this._sendRequest('removeDevice', { roomId, deviceId })
+    return this._sendRequest('removeDevice')
       .then(response => {
         if (response.removed) {
-          // Terminate the worker if we have one
-          if (device.worker) {
-            device.worker.terminate();
+          // Safely terminate the worker if it exists and has a terminate method
+          if (this.device.worker && typeof this.device.worker.terminate === 'function') {
+            try {
+              this.device.worker.terminate();
+            } catch (error) {
+              console.warn('Error terminating worker:', error);
+            }
           }
           
-          // Remove from local devices
-          this.devices.delete(deviceId);
+          // Remove local device
+          this.device = null;
         }
         return response.removed;
       });
@@ -736,15 +779,13 @@ class SAXPYWebSocketClient {
   /**
    * Handle a message from a device worker
    * @private
-   * @param {string} deviceId - The device ID
    * @param {MessageEvent} event - The message event
    */
-  _handleDeviceMessage(deviceId, event) {
+  _handleDeviceMessage(event) {
     const message = event.data;
-    const device = this.devices.get(deviceId);
     
-    if (!device) {
-      console.warn(`Received message from unknown device ${deviceId}`);
+    if (!this.device) {
+      console.warn(`Received message from device worker but no device is registered`);
       return;
     }
     
@@ -752,42 +793,41 @@ class SAXPYWebSocketClient {
     switch (message.type) {
       case 'result':
         // Send computation result to server
+        console.log(message.roomId);
         this._sendRequest('computationResult', {
-          roomId: device.roomId,
-          deviceId,
+          roomId: message.roomId,
+          deviceId: this.device.deviceId,
           taskId: message.taskId,
           chunkIndex: message.chunkIndex,
           result: message.result,
           stats: message.deviceStats
         }).catch(error => {
-          console.error(`Error sending computation result for device ${deviceId}:`, error);
+          console.error(`Error sending computation result:`, error);
         });
         break;
         
       case 'status':
         // Update device status
         if (message.deviceStats) {
-          device.batteryLevel = message.deviceStats.batteryLevel;
-          device.connectionQuality = message.deviceStats.connectionQuality;
-          device.isConnected = message.deviceStats.isConnected;
+          this.device.batteryLevel = message.deviceStats.batteryLevel;
+          this.device.connectionQuality = message.deviceStats.connectionQuality;
+          this.device.isConnected = message.deviceStats.isConnected;
           
           // Update server with new status
           this._sendRequest('updateDeviceStatus', {
-            roomId: device.roomId,
-            deviceId,
             updates: {
-              batteryLevel: device.batteryLevel,
-              connectionQuality: device.connectionQuality,
-              isConnected: device.isConnected
+              batteryLevel: this.device.batteryLevel,
+              connectionQuality: this.device.connectionQuality,
+              isConnected: this.device.isConnected
             }
           }).catch(error => {
-            console.error(`Error updating device status for ${deviceId}:`, error);
+            console.error(`Error updating device status:`, error);
           });
         }
         break;
         
       case 'error':
-        console.error(`Error from device ${deviceId}:`, message.error);
+        console.error(`Error from device:`, message.error);
         break;
     }
   }

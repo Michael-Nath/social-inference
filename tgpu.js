@@ -1,5 +1,4 @@
 async function test() {
-  console.log("Michael Nath");
   
   if (!navigator.gpu) {
     console.log("WebGPU is not supported on this browser.");

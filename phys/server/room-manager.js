@@ -9,10 +9,10 @@ class ComputationRoom {
     this.createdAt = new Date();
     this.createdBy = options.createdBy || 'Anonymous';
     this.isPublic = options.isPublic !== undefined ? options.isPublic : true;
-    this.maxDevices = options.maxDevices || 50;
+    this.maxUsers = options.maxUsers || 50;
     
-    // Connected users and their devices
-    this.users = new Map(); // userId -> { username, joinedAt, devices }
+    // Connected users and their single device
+    this.users = new Map(); // userId -> { username, joinedAt, device, isAdmin }
     
     // Task management
     this.taskQueue = [];
@@ -25,7 +25,7 @@ class ComputationRoom {
       totalComputations: 0,
       totalDevicesEverConnected: 0,
       totalUsersEverJoined: 0,
-      peakDeviceCount: 0,
+      peakUserCount: 0,
       totalComputationTime: 0
     };
     
@@ -52,12 +52,17 @@ class ComputationRoom {
       userId,
       username: userInfo.username || `User-${userId.substring(0, 6)}`,
       joinedAt: new Date(),
-      devices: new Map(), // deviceId -> device object
+      device: null, // Single device per user
       isAdmin: userInfo.isAdmin || false
     };
     
     this.users.set(userId, user);
     this.stats.totalUsersEverJoined++;
+    
+    // Update peak user count
+    if (this.users.size > this.stats.peakUserCount) {
+      this.stats.peakUserCount = this.users.size;
+    }
     
     this.addEvent('user_joined', { 
       userId, 
@@ -79,10 +84,11 @@ class ComputationRoom {
     if (!user) {
       return false;
     }
-    
-    // Remove all devices owned by this user
-    for (const deviceId of user.devices.keys()) {
-      this.removeDevice(userId, deviceId);
+    console.log("removeUser() is being called!\n");
+
+    // Handle the device if the user has one
+    if (user.device) {
+      this._handleDeviceDisconnectionDuringTask(user.device);
     }
     
     // Remove the user
@@ -95,29 +101,34 @@ class ComputationRoom {
   }
   
   /**
-   * Add a device to a user in the room
+   * Set or update a device for a user in the room
    * @param {string} userId - ID of the user who owns the device
    * @param {string} deviceId - Unique identifier for the device
    * @param {Object} deviceInfo - Information about the device
    * @returns {boolean} Whether the device was added successfully
    */
-  addDevice(userId, deviceId, deviceInfo = {}) {
+  setUserDevice(userId, deviceId, deviceInfo = {}) {
     const user = this.users.get(userId);
     if (!user) {
-      console.error(`Cannot add device: User ${userId} not in room ${this.roomId}`);
+      console.error(`Cannot set device: User ${userId} not in room ${this.roomId}`);
       return false;
     }
     
-    if (user.devices.has(deviceId)) {
-      console.log(`Device ${deviceId} already registered to user ${userId}`);
-      return false;
-    }
-    
-    // Check if we've reached the maximum number of devices
-    const totalDevices = this.getTotalDeviceCount();
-    if (totalDevices >= this.maxDevices) {
-      console.error(`Cannot add device: Room ${this.roomId} at maximum capacity (${this.maxDevices} devices)`);
-      return false;
+    // Check if user already has a device and it's different from this one
+    if (user.device && user.device.deviceId !== deviceId) {
+      // Disconnect the old device first
+      if (user.device.isProcessing && this.currentTask) {
+        this._handleDeviceDisconnectionDuringTask(user.device);
+      }
+      
+      this.addEvent('device_disconnected', {
+        deviceId: user.device.deviceId,
+        userId,
+        username: user.username,
+        model: user.device.model
+      });
+      
+      console.log(`Previous device ${user.device.deviceId} replaced for user ${user.username} in room ${this.roomId}`);
     }
     
     // Create the device object
@@ -129,20 +140,19 @@ class ComputationRoom {
       lastActive: new Date(),
       batteryLevel: deviceInfo.batteryLevel !== undefined ? deviceInfo.batteryLevel : 1.0,
       connectionQuality: deviceInfo.connectionQuality !== undefined ? deviceInfo.connectionQuality : 0.95,
-      isConnected: true,
+      isConnected: true, // Explicitly set to true when a device is added or updated
       isProcessing: false,
       computationsPerformed: 0,
       totalComputationTime: 0,
       worker: deviceInfo.worker // Reference to the actual worker/device
     };
     
-    user.devices.set(deviceId, device);
-    this.stats.totalDevicesEverConnected++;
+    // Set the user's device
+    user.device = device;
     
-    // Update peak device count
-    const newTotalCount = this.getTotalDeviceCount();
-    if (newTotalCount > this.stats.peakDeviceCount) {
-      this.stats.peakDeviceCount = newTotalCount;
+    // Only increment the total devices if it's a new device
+    if (!user.device) {
+      this.stats.totalDevicesEverConnected++;
     }
     
     this.addEvent('device_connected', {
@@ -157,32 +167,35 @@ class ComputationRoom {
   }
 
   /**
-   * Remove a device from the room
+   * Remove a device from a user
    * @param {string} userId - ID of the user who owns the device
-   * @param {string} deviceId - ID of the device to remove
    * @returns {boolean} Whether the device was removed
    */
-  removeDevice(userId, deviceId) {
+  removeUserDevice(userId) {
     const user = this.users.get(userId);
-    if (!user || !user.devices.has(deviceId)) {
+    if (!user || !user.device) {
       return false;
     }
     
-    const device = user.devices.get(deviceId);
+    const device = user.device;
     
     // If the device is currently processing a task, handle the interruption
     if (device.isProcessing && this.currentTask) {
       this._handleDeviceDisconnectionDuringTask(device);
     }
     
+    // Store the device info before removing
+    const deviceId = device.deviceId;
+    const model = device.model;
+    
     // Remove the device
-    user.devices.delete(deviceId);
+    user.device = null;
     
     this.addEvent('device_disconnected', {
       deviceId,
       userId,
       username: user.username,
-      model: device.model
+      model
     });
     
     console.log(`Device ${deviceId} removed for user ${user.username} in room ${this.roomId}`);
@@ -397,30 +410,32 @@ class ComputationRoom {
    * @private
    */
   _sendComputationToDevice(device, taskId, a, xSlice, ySlice, chunkIndex, startIndex) {
-    // This method would interface with your actual device worker
-    // For now, it's a placeholder that would be implemented differently
-    // depending on how you communicate with the device workers
-    console.log(device) 
-    throw new Error("Bruh")
-    if (device.worker && typeof device.worker.postMessage === 'function') {
-      // If we have a direct reference to the worker
-      device.worker.postMessage({
-        command: 'compute',
-        taskId,
-        roomId: this.roomId,
-        data: {
-          a,
-          xArray: xSlice,
-          yArray: ySlice,
-          chunkIndex,
-          startIndex
-        }
-      });
-    } else {
-      console.error(`Cannot send computation to device ${device.deviceId}: No worker reference`);
-      // Handle this error - maybe mark the chunk as unassigned again
-      this._handleDeviceComputationError(device, taskId, chunkIndex, 'No worker reference');
-    }
+    // Instead of trying to use the worker directly, we'll just store the computation task
+    // The WebSocket server will notify the client that there's a task to process
+    
+    // Create computation data to be sent to the client
+    const computationData = {
+      command: 'compute',
+      taskId,
+      roomId: this.roomId,
+      data: {
+        a,
+        xArray: xSlice,
+        yArray: ySlice,
+        chunkIndex,
+        startIndex
+      }
+    };
+    
+    // Store this computation request with the device for the server to handle
+    device.pendingComputation = computationData;
+    
+    // The actual notification to the client will be handled by the WebSocket server
+    // when it sees this pendingComputation property
+    console.log(`Prepared computation for device ${device.deviceId} for task ${taskId} (chunk ${chunkIndex})`);
+    
+    // Return true to indicate success - actual transmission happens elsewhere
+    return true;
   }
   
   /**
@@ -433,18 +448,21 @@ class ComputationRoom {
    * @param {Object} stats - Statistics about the computation
    */
   handleDeviceComputationComplete(deviceId, userId, taskId, chunkIndex, result, stats) {
-    // Find the device
+    // Find the user
+     
     const user = this.users.get(userId);
     if (!user) {
       console.error(`Unknown user ${userId} reported computation completion`);
       return;
     }
     
-    const device = user.devices.get(deviceId);
-    if (!device) {
+    // Check if the user has the specified device
+    if (!user.device || user.device.deviceId !== deviceId) {
       console.error(`Unknown device ${deviceId} for user ${userId} reported computation completion`);
       return;
     }
+    
+    const device = user.device;
     
     // Check if this is for the current task
     if (!this.currentTask || this.currentTask.taskId !== taskId) {
@@ -467,8 +485,9 @@ class ComputationRoom {
     assignment.completedAt = new Date();
     assignment.computationTime = stats.computationTime;
     
-    // Update device stats
+    // Update device stats - ensure isConnected is set to true
     device.isProcessing = false;
+    device.isConnected = true;
     device.lastActive = new Date();
     device.computationsPerformed++;
     device.totalComputationTime += stats.computationTime;
@@ -501,6 +520,7 @@ class ComputationRoom {
     if (this.currentTask.chunksCompleted >= this.currentTask.totalChunks) {
       this._finalizeTask();
     }
+    return true;
   }
   
   /**
@@ -608,10 +628,11 @@ class ComputationRoom {
     const availableDevices = [];
     
     for (const user of this.users.values()) {
-      for (const device of user.devices.values()) {
-        if (device.isConnected && !device.isProcessing && device.batteryLevel > 0.05) {
-          availableDevices.push(device);
-        }
+      if (user.device && 
+          user.device.isConnected && 
+          !user.device.isProcessing && 
+          user.device.batteryLevel > 0.05) {
+        availableDevices.push(user.device);
       }
     }
     
@@ -625,7 +646,7 @@ class ComputationRoom {
   getTotalDeviceCount() {
     let count = 0;
     for (const user of this.users.values()) {
-      count += user.devices.size;
+      if (user.device) count++;
     }
     return count;
   }
@@ -637,10 +658,8 @@ class ComputationRoom {
   getConnectedDeviceCount() {
     let count = 0;
     for (const user of this.users.values()) {
-      for (const device of user.devices.values()) {
-        if (device.isConnected) {
-          count++;
-        }
+      if (user.device && user.device.isConnected) {
+        count++;
       }
     }
     return count;
@@ -671,6 +690,9 @@ class ComputationRoom {
    * @returns {Object} Room information
    */
   getRoomInfo() {
+    // Recalculate the connected device count to ensure it's up-to-date
+    const connectedDeviceCount = this.getConnectedDeviceCount();
+    
     return {
       roomId: this.roomId,
       name: this.name,
@@ -680,7 +702,7 @@ class ComputationRoom {
       isPublic: this.isPublic,
       userCount: this.users.size,
       deviceCount: this.getTotalDeviceCount(),
-      connectedDeviceCount: this.getConnectedDeviceCount(),
+      connectedDeviceCount: connectedDeviceCount,
       taskQueueLength: this.taskQueue.length,
       currentTask: this.currentTask ? {
         taskId: this.currentTask.taskId,
@@ -699,18 +721,18 @@ class ComputationRoom {
     const userDetails = [];
     
     for (const user of this.users.values()) {
-      const deviceDetails = [];
+      let deviceDetails = null;
       
-      for (const device of user.devices.values()) {
-        deviceDetails.push({
-          deviceId: device.deviceId,
-          model: device.model,
-          isConnected: device.isConnected,
-          isProcessing: device.isProcessing,
-          batteryLevel: device.batteryLevel,
-          computationsPerformed: device.computationsPerformed,
-          joinedAt: device.joinedAt
-        });
+      if (user.device) {
+        deviceDetails = {
+          deviceId: user.device.deviceId,
+          model: user.device.model,
+          isConnected: user.device.isConnected === true, // Ensure boolean
+          isProcessing: user.device.isProcessing,
+          batteryLevel: user.device.batteryLevel,
+          computationsPerformed: user.device.computationsPerformed,
+          joinedAt: user.device.joinedAt
+        };
       }
       
       userDetails.push({
@@ -718,10 +740,21 @@ class ComputationRoom {
         username: user.username,
         isAdmin: user.isAdmin,
         joinedAt: user.joinedAt,
-        deviceCount: user.devices.size,
-        devices: deviceDetails
+        hasDevice: !!user.device && user.device.isConnected === true, // Ensure boolean
+        device: deviceDetails
       });
     }
+    
+    // Log the detailed status for debugging
+    console.log(`Room ${this.roomId} detailed status:`, {
+      connectedDeviceCount: this.getConnectedDeviceCount(),
+      userCount: this.users.size,
+      users: userDetails.map(u => ({
+        username: u.username,
+        hasDevice: u.hasDevice,
+        deviceConnected: u.device ? u.device.isConnected : false
+      }))
+    });
     
     return {
       roomInfo: this.getRoomInfo(),
@@ -735,16 +768,14 @@ class ComputationRoom {
   /**
    * Update a device's status
    * @param {string} userId - ID of the user who owns the device
-   * @param {string} deviceId - ID of the device to update
    * @param {Object} updates - Status updates to apply
    * @returns {boolean} Whether the update was successful
    */
-  updateDeviceStatus(userId, deviceId, updates) {
+  updateDeviceStatus(userId, updates) {
     const user = this.users.get(userId);
-    if (!user) return false;
+    if (!user || !user.device) return false;
     
-    const device = user.devices.get(deviceId);
-    if (!device) return false;
+    const device = user.device;
     
     // Apply updates
     if (updates.batteryLevel !== undefined) {
@@ -771,7 +802,7 @@ class ComputationRoom {
 class RoomManager {
   constructor() {
     this.rooms = new Map(); // roomId -> Room
-    this.users = new Map(); // userId -> { username, rooms: Set<roomId> }
+    this.users = new Map(); // userId -> { username, rooms: Set<roomId>, device: {} }
   }
 
   /**
@@ -810,46 +841,53 @@ class RoomManager {
     return roomId;
   }
 
-    /**
-   * Add a device to a specific room
-   * @param {string} userId - ID of the user adding the device
-   * @param {string} roomId - ID of the room to add the device to
+  /**
+   * Set a device for a user. This updates the device in all rooms the user is part of.
+   * @param {string} userId - ID of the user
    * @param {string} deviceId - Unique identifier for the device
    * @param {Object} deviceInfo - Additional information about the device
    * @returns {boolean} Whether the device was successfully added
    */
-  addDeviceToRoom(userId, roomId, deviceId, deviceInfo = {}) {
-    // Find the room
-    const room = this.rooms.get(roomId);
-    if (!room) {
-      console.error(`Cannot add device: Room ${roomId} not found`);
-      return false;
-    }
-    
+  setUserDevice(userId, deviceId, deviceInfo = {}) {
     // Find the user
     const user = this.users.get(userId);
     if (!user) {
-      console.error(`Cannot add device: User ${userId} not found`);
+      console.error(`Cannot set device: User ${userId} not found`);
       return false;
     }
-    
-    // Check if the user is in the room
-    if (!room.users.has(userId)) {
-      console.error(`Cannot add device: User ${userId} not in room ${roomId}`);
-      return false;
-    }
-    
-    // Prepare device info with defaults
-    const completeDeviceInfo = {
+
+    // Ensure isConnected is set
+    deviceInfo.isConnected = true;
+
+    // Store device information with the user globally
+    user.device = {
+      deviceId,
       model: deviceInfo.model || 'Unknown',
       batteryLevel: deviceInfo.batteryLevel !== undefined ? deviceInfo.batteryLevel : 1.0,
       connectionQuality: deviceInfo.connectionQuality !== undefined ? deviceInfo.connectionQuality : 0.95,
-      worker: deviceInfo.worker || null,
-      workerPath: deviceInfo.workerPath || null
+      isConnected: true,
+      worker: deviceInfo.worker || null
     };
     
-    // Use the room's existing addDevice method
-    return room.addDevice(userId, deviceId, completeDeviceInfo);
+    // Update device in all rooms user has joined
+    let success = true;
+    for (const roomId of user.rooms) {
+      const room = this.rooms.get(roomId);
+      if (room) {
+        const result = room.setUserDevice(userId, deviceId, {
+          ...deviceInfo,
+          isConnected: true,
+          worker: deviceInfo.worker
+        });
+        if (!result) success = false;
+        
+        // Log the connected device count for this room
+        console.log(`Room ${roomId} now has ${room.getConnectedDeviceCount()} connected devices.`);
+      }
+    }
+    
+    console.log(`Device ${deviceId} set for user ${userId} in all joined rooms`);
+    return success;
   }
   
   /**
@@ -861,7 +899,7 @@ class RoomManager {
     return this.rooms.get(roomId) || null;
   }
 
-    /**
+  /**
    * Check if a room is empty
    * @param {string} roomId - The room ID to check
    * @returns {boolean} Whether the room is empty
@@ -900,11 +938,11 @@ class RoomManager {
   }
 
   /**
- * Remove a user from a room
- * @param {string} userId - The user ID
- * @param {string} roomId - The room ID
- * @returns {boolean} Whether the user successfully left the room
- */
+   * Remove a user from a room
+   * @param {string} userId - The user ID
+   * @param {string} roomId - The room ID
+   * @returns {boolean} Whether the user successfully left the room
+   */
   leaveRoom(userId, roomId) {
     const room = this.rooms.get(roomId);
     if (!room) {
@@ -989,14 +1027,15 @@ class RoomManager {
       userId,
       username: userInfo.username || `User-${userId.substring(0, 6)}`,
       registeredAt: new Date(),
-      rooms: new Set()
+      rooms: new Set(),
+      device: null // Single device per user
     });
     
     console.log(`Registered user ${userInfo.username || userId}`);
     return true;
   }
   
-    /**
+  /**
    * Get rooms a user has joined
    * @param {string} userId - The user ID
    * @returns {Array<Object>} Array of room info objects
@@ -1017,7 +1056,7 @@ class RoomManager {
     return userRooms;
   }
 
-    /**
+  /**
    * Queue a task in a specific room
    * @param {string} roomId - The ID of the room to queue the task in
    * @param {Object} taskData - Task parameters
@@ -1068,7 +1107,6 @@ class RoomManager {
     return room.queueTask(fullTaskData);
   }
 
-
   /**
    * Get detailed status of a specific room
    * @param {string} roomId - The room ID
@@ -1083,7 +1121,6 @@ class RoomManager {
     
     return room.getDetailedStatus();
   }
-
   
   /**
    * Join a user to a room
@@ -1111,6 +1148,11 @@ class RoomManager {
       username: user.username,
       isAdmin: options.isAdmin || false
     })) {
+      // If user has a device, add it to this room
+      if (user.device) {
+        room.setUserDevice(userId, user.device.deviceId, user.device);
+      }
+      
       // Update user's room list
       user.rooms.add(roomId);
       return true;
@@ -1119,43 +1161,71 @@ class RoomManager {
     return false;
   }
 
-    /**
-   * Remove a device from a specific room
-   * @param {string} userId - ID of the user removing the device
-   * @param {string} roomId - ID of the room to remove the device from
-   * @param {string} deviceId - Unique identifier for the device
+  /**
+   * Remove a user's device
+   * @param {string} userId - ID of the user
    * @returns {boolean} Whether the device was successfully removed
    */
-  removeDeviceFromRoom(userId, roomId, deviceId) {
-    // Find the room
-    const room = this.rooms.get(roomId);
-    if (!room) {
-      console.error(`Cannot remove device: Room ${roomId} not found`);
-      return false;
-    }
-    
+  removeUserDevice(userId) {
     // Find the user
     const user = this.users.get(userId);
-    if (!user) {
-      console.error(`Cannot remove device: User ${userId} not found`);
+    if (!user || !user.device) {
+      console.error(`Cannot remove device: User ${userId} not found or has no device`);
       return false;
     }
     
-    // Check if the user is in the room
-    if (!room.users.has(userId)) {
-      console.error(`Cannot remove device: User ${userId} not in room ${roomId}`);
+    // Remove the device from all rooms the user is in
+    let success = true;
+    for (const roomId of user.rooms) {
+      const room = this.rooms.get(roomId);
+      if (room) {
+        const result = room.removeUserDevice(userId);
+        if (!result) success = false;
+      }
+    }
+    
+    // Remove the device from the user
+    user.device = null;
+    
+    return success;
+  }
+  
+  /**
+   * Update a user's device status in all rooms
+   * @param {string} userId - ID of the user
+   * @param {Object} updates - Status updates to apply
+   * @returns {boolean} Whether the update was successful
+   */
+  updateUserDeviceStatus(userId, updates) {
+    const user = this.users.get(userId);
+    if (!user || !user.device) {
       return false;
     }
     
-    // Remove the device using the room's method
-    const removeResult = room.removeDevice(userId, deviceId);
-    
-    if (removeResult) {
-      console.log(`Device ${deviceId} removed from room ${roomId} by user ${userId}`);
-      return true;
+    // Update the user's global device information
+    if (updates.batteryLevel !== undefined) {
+      user.device.batteryLevel = updates.batteryLevel;
     }
     
-    return false;
+    if (updates.connectionQuality !== undefined) {
+      user.device.connectionQuality = updates.connectionQuality;
+    }
+    
+    if (updates.isConnected !== undefined) {
+      user.device.isConnected = updates.isConnected;
+    }
+    
+    // Update in all rooms
+    let success = true;
+    for (const roomId of user.rooms) {
+      const room = this.rooms.get(roomId);
+      if (room) {
+        const result = room.updateDeviceStatus(userId, updates);
+        if (!result) success = false;
+      }
+    }
+    
+    return success;
   }
 }
 
