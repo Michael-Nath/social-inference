@@ -6,9 +6,9 @@ function isIOSDevice() {
 // Get safe maximum allocation size based on device
 function getSafeMaxPower() {
   if (isIOSDevice()) {
-      return 10; // Allow up to 1GB on iOS devices
+      return 10; // 2 GB
   }
-  return 20; // Up to 1GB (2^20) on desktop
+  return 15; // Up to 32 GB on desktop
 }
 
 // GPU setup function
@@ -24,7 +24,7 @@ async function setupGPU() {
   }
 }
 
-// Main memory check function
+// Main memory check function with three trials per buffer size
 async function memCheck() {
   // Set maximum power based on device
   const maxPower = getSafeMaxPower();
@@ -41,122 +41,135 @@ async function memCheck() {
       const MB = 1024 * 1024;
       const results = [];
       
-      // Start with a small allocation on iOS
-      const startPower = isIOSDevice() ? 0 : 0; // 1MB on iOS, 1MB on desktop
+      // Starting power (could be modified per platform)
+      const startPower = 0;
       
       // Test allocations with increasing sizes until failure or maxPower is reached
       for (let power = startPower; power <= maxPower; power++) {
           const size = Math.pow(2, power) * MB;
           updateStatus(`Testing ${(size / MB).toFixed(0)}MB (2^${power})...`);
           
-          try {
-              console.log(`Attempting to allocate ${size / MB}MB...`);
-              
-              // For larger allocations on iOS, be extra cautious
-              if (isIOSDevice() && power > 7) { // >128MB on iOS
-                  updateStatus(`Preparing to test ${(size / MB).toFixed(0)}MB (2^${power}) safely...`);
-                  // Longer delay on iOS to let the browser stabilize
-                  await new Promise(resolve => setTimeout(resolve, 300));
-              }
-              
-              const startTime = performance.now();
-              
-              // Create the buffer
-              const buffer = device.createBuffer({
-                  size: size,
-                  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
-              });
-              
-              const createTime = performance.now();
-              
-              // Create some data and transfer it to force actual allocation
-              // For large allocations, be more careful
-              // Use a more memory-efficient approach for data creation
-              let dataArray;
-              
+          const trialResults = [];
+          // Run three trials for each buffer size
+          for (let trial = 0; trial < 3; trial++) {
               try {
-                  // Create data array for all allocations up to 1GB
-                  dataArray = new Uint8Array(size);
+                  console.log(`Trial ${trial + 1}: Attempting to allocate ${size / MB}MB (2^${power})...`);
                   
-                  // Only fill a small portion of the array to prevent excessive memory usage
-                  const fillSize = Math.min(1024, size);
-                  for (let j = 0; j < fillSize; j++) {
-                      dataArray[j] = j % 256;
+                  // For larger allocations on iOS, be extra cautious
+                  if (isIOSDevice() && power > 7) { // >128MB on iOS
+                      updateStatus(`Preparing trial ${trial + 1} for ${(size / MB).toFixed(0)}MB (2^${power}) safely...`);
+                      await new Promise(resolve => setTimeout(resolve, 300));
                   }
                   
-                  // Start timing the data transfer
-                  const transferStart = performance.now();
+                  const startTime = performance.now();
                   
-                  // Write the data to the buffer (attempt full transfer for all sizes up to 1GB)
-                  device.queue.writeBuffer(buffer, 0, dataArray);
-                  
-                  // Wait for the GPU to finish operations
-                  await device.queue.onSubmittedWorkDone();
-                  
-                  const endTime = performance.now();
-                  
-                  // Record successful allocation
-                  results.push({
-                      power: power,
-                      size: size / MB,
-                      unit: 'MB',
-                      success: true,
-                      createTime: createTime - startTime,
-                      transferTime: endTime - transferStart,
-                      totalTime: (createTime - startTime) + (endTime - transferStart)
+                  // Create the buffer
+                  const buffer = device.createBuffer({
+                      size: size,
+                      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
                   });
                   
-                  console.log(`Successfully allocated ${size / MB}MB (2^${power}) in ${results[results.length-1].totalTime.toFixed(2)}ms`);
-                  console.log(`  - Buffer creation: ${results[results.length-1].createTime.toFixed(2)}ms`);
-                  console.log(`  - Data transfer: ${results[results.length-1].transferTime.toFixed(2)}ms`);
-              } catch (innerError) {
-                  // If we fail during data transfer, we still count the buffer creation as success
-                  // but note the data transfer issue
-                  results.push({
-                      power: power,
-                      size: size / MB,
-                      unit: 'MB',
-                      success: true,
-                      partial: true,
-                      createTime: createTime - startTime,
-                      transferTime: 0,
-                      totalTime: createTime - startTime,
-                      transferError: innerError.message
-                  });
+                  const createTime = performance.now();
                   
-                  console.log(`Partially successful at ${size / MB}MB (2^${power}): Buffer created but data transfer skipped`);
+                  let runResult = {};
+                  try {
+                      // Create some data and transfer it to force actual allocation
+                      const fillSize = Math.min(4 * MB, size);
+                      const dataArray = new Uint8Array(fillSize);
+                      for (let j = 0; j < fillSize; j++) {
+                          dataArray[j] = j % 256;
+                      }
+                      
+                      const transferStart = performance.now();
+                      
+                      // Write the data to the buffer in chunks
+                      for (let i = 0; i < size / fillSize; i++) {
+                          device.queue.writeBuffer(buffer, i * fillSize, dataArray);
+                      }
+                      
+                      // Wait for the GPU to finish operations
+                      await device.queue.onSubmittedWorkDone();
+                      
+                      const endTime = performance.now();
+                      
+                      runResult = {
+                          success: true,
+                          partial: false,
+                          createTime: createTime - startTime,
+                          transferTime: endTime - transferStart,
+                          totalTime: (createTime - startTime) + (endTime - transferStart)
+                      };
+                      
+                      console.log(`Trial ${trial + 1} successful: ${size / MB}MB allocated in ${runResult.totalTime.toFixed(2)}ms`);
+                  } catch (innerError) {
+                      // If data transfer fails but the buffer was created
+                      runResult = {
+                          success: true,
+                          partial: true,
+                          createTime: createTime - startTime,
+                          transferTime: 0,
+                          totalTime: createTime - startTime,
+                          transferError: innerError.message
+                      };
+                      console.log(`Trial ${trial + 1} partially successful at ${size / MB}MB: Buffer created but data transfer skipped`);
+                  }
+                  
+                  // Clean up and push trial result
+                  buffer.destroy();
+                  trialResults.push(runResult);
+                  
+                  // Small delay between trials
+                  await new Promise(resolve => setTimeout(resolve, 50));
+              } catch (error) {
+                  // On failure for this trial, record the error result
+                  trialResults.push({
+                      success: false,
+                      error: error.message
+                  });
+                  console.error(`Trial ${trial + 1} failed to allocate ${size / MB}MB (2^${power}): ${error.message}`);
               }
-              
-              // Clean up immediately and make sure the GC has a chance to run
-              buffer.destroy();
-              dataArray = null;
-              
-              // Add a small delay between tests to give the browser time to recover resources
-              if (isIOSDevice() && power > 8) {
-                  // Longer recovery time for iOS with large allocations
-                  await new Promise(resolve => setTimeout(resolve, 500));
-              } else if (power > 12) {
-                  await new Promise(resolve => setTimeout(resolve, 300));
-              }
-              
-          } catch (error) {
-              // Record failed allocation
+          } // end trial loop
+          
+          // Check if at least one trial succeeded
+          const successfulTrials = trialResults.filter(r => r.success);
+          if (successfulTrials.length === 0) {
+              // Record failure for this power and exit the outer loop
               results.push({
                   power: power,
                   size: size / MB,
                   unit: 'MB',
                   success: false,
-                  error: error.message
+                  error: trialResults[0].error || "Unknown error"
               });
-              
-              console.error(`Failed to allocate ${size / MB}MB (2^${power}): ${error.message}`);
-              
-              // Exit the loop since we've found the maximum
+              console.error(`All trials failed for ${size / MB}MB (2^${power}). Stopping further tests.`);
               break;
+          } else {
+              // Average timings from all successful trials
+              let totalCreate = 0, totalTransfer = 0, totalTotal = 0;
+              let anyPartial = false;
+              successfulTrials.forEach(trial => {
+                  totalCreate += trial.createTime;
+                  totalTransfer += trial.transferTime;
+                  totalTotal += trial.totalTime;
+                  if (trial.partial) {
+                      anyPartial = true;
+                  }
+              });
+              const count = successfulTrials.length;
+              results.push({
+                  power: power,
+                  size: size / MB,
+                  unit: 'MB',
+                  success: true,
+                  partial: anyPartial,
+                  createTime: totalCreate / count,
+                  transferTime: totalTransfer / count,
+                  totalTime: totalTotal / count,
+                  trialCount: count
+              });
           }
           
           // Force a garbage collection pause between tests (when supported)
-          // This won't work in most browsers, but worth trying
           if (typeof window.gc === 'function') {
               try {
                   window.gc();
@@ -164,7 +177,14 @@ async function memCheck() {
                   // Ignore errors
               }
           }
-      }
+          
+          // Delay between tests to let the browser recover resources
+          if (isIOSDevice() && power > 8) {
+              await new Promise(resolve => setTimeout(resolve, 500));
+          } else if (power > 12) {
+              await new Promise(resolve => setTimeout(resolve, 300));
+          }
+      } // end outer loop
       
       return {
           deviceName: adapter.name || 'Unknown GPU',
@@ -200,8 +220,8 @@ async function runBenchmark() {
       // Small delay to allow the UI to update before running the benchmark
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      // Run the benchmark (with a generous maximum of 2^20 = 1GB)
-      const results = await memCheck(20);
+      // Run the benchmark
+      const results = await memCheck();
       updateUI(results);
   } catch (error) {
       document.getElementById('status').textContent = `Error: ${error.message}`;
@@ -282,6 +302,17 @@ function updateUI(benchmarkResults) {
           transferTimeCell.textContent = 'N/A';
       }
       row.appendChild(transferTimeCell);
+
+      // Bandwidth column
+      const bandwidthCell = document.createElement('td');
+      if (result.success && !result.partial) {
+          bandwidthCell.textContent = `${(result.size / result.transferTime).toFixed(2)} GB/s`;
+      } else if (result.partial) {
+          bandwidthCell.textContent = 'Skipped';
+      } else {
+          bandwidthCell.textContent = 'N/A';
+      }
+      row.appendChild(bandwidthCell);
       
       // Status column
       const statusCell = document.createElement('td');
@@ -344,7 +375,7 @@ function updateUI(benchmarkResults) {
       if (!maxSuccess.partial) {
           summaryHTML += `
               <div class="summary-section">
-                  <h3>Timing Details (Maximum Successful Allocation)</h3>
+                  <h3>Timing Details (Average over ${maxSuccess.trialCount} trials)</h3>
                   <p>Buffer creation: ${maxSuccess.createTime.toFixed(2)}ms</p>
                   <p>Data transfer: ${maxSuccess.transferTime.toFixed(2)}ms</p>
                   <p>Total time: ${maxSuccess.totalTime.toFixed(2)}ms</p>
@@ -353,7 +384,7 @@ function updateUI(benchmarkResults) {
       } else {
           summaryHTML += `
               <div class="summary-section">
-                  <h3>Timing Details (Maximum Successful Allocation)</h3>
+                  <h3>Timing Details (Average over ${maxSuccess.trialCount} trials)</h3>
                   <p>Buffer creation: ${maxSuccess.createTime.toFixed(2)}ms</p>
                   <p>Data transfer: Skipped to prevent browser crash</p>
               </div>
