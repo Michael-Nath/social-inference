@@ -116,48 +116,63 @@
         // Generate a random username for this session
         const username = `User-${Math.floor(Math.random() * 10000)}`;
         
-        // Configuration (could be loaded from environment or settings)
-        const config = {
-            serverUrl: 'ws://localhost:8080', // WebSocket server URL
-            reconnectAttempts: 5,             // Max reconnection attempts
-            autoConnect: true                 // Connect automatically
+        // Dynamically determine WebSocket URL based on current location
+        const getWebSocketUrl = () => {
+            // Always use non-secure ws:// for now to bypass SSL issues
+            // This is a temporary workaround - not recommended for production
+            const hostname = window.location.hostname;
+            
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return `wss://${hostname}:8080`;
+            } else {
+                // For production - using non-secure connection
+                // SECURITY WARNING: This is not recommended for sensitive data
+                return `wss://${hostname}:8080`;
+            }
         };
         
-        // In index.html, modify the script to explicitly connect
+        // Configuration
+        const config = {
+            serverUrl: getWebSocketUrl(),
+            reconnectAttempts: 5,
+            autoConnect: true
+        };
+        
         document.addEventListener('DOMContentLoaded', () => {
-        const appContainer = document.getElementById('app-container');
-        
-        // Create the room UI instance
-        const ui = new SAXPYRoomUI({
-            container: appContainer,
-            username: username,
-            serverUrl: config.serverUrl,
-            autoConnect: false // Don't auto-connect, we'll do it explicitly
-        });
-        
-        // Explicitly connect and handle the result
-        ui.client.connect()
-            .then(() => {
-            console.log('Successfully connected to server');
-            // Initialize UI now that we're connected
-            ui._initializeUI();
-            })
-            .catch(error => {
-            console.error('Failed to connect:', error);
-            appContainer.innerHTML = `
-                <div class="connection-error">
-                <h2>Connection Error</h2>
-                <p>Could not connect to the SAXPY server at ${config.serverUrl}</p>
-                <p>Error: ${error.message}</p>
-                <p>Please make sure the server is running and try again.</p>
-                <button id="retry-connection" class="retry-button">Retry Connection</button>
-                </div>
-            `;
+            const appContainer = document.getElementById('app-container');
+            console.log("Attempting to connect to:", config.serverUrl);
             
-            document.getElementById('retry-connection').addEventListener('click', () => {
-                window.location.reload();
+            // Create the room UI instance
+            const ui = new SAXPYRoomUI({
+                container: appContainer,
+                username: username,
+                serverUrl: config.serverUrl,
+                autoConnect: false // Don't auto-connect, we'll do it explicitly
             });
-            });
+            
+            // Explicitly connect and handle the result
+            ui.client.connect()
+                .then(() => {
+                    console.log('Successfully connected to server');
+                    // Initialize UI now that we're connected
+                    ui._initializeUI();
+                })
+                .catch(error => {
+                    console.error('Failed to connect:', error);
+                    appContainer.innerHTML = `
+                        <div class="connection-error">
+                            <h2>Connection Error</h2>
+                            <p>Could not connect to the server at ${config.serverUrl}</p>
+                            <p>Error: ${error.message}</p>
+                            <p>Please make sure the server is running and try again.</p>
+                            <button id="retry-connection" class="retry-button">Retry Connection</button>
+                        </div>
+                    `;
+                    
+                    document.getElementById('retry-connection').addEventListener('click', () => {
+                        window.location.reload();
+                    });
+                });
         });
     </script>
 </body>

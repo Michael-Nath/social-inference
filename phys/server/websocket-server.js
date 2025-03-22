@@ -1,14 +1,32 @@
 // server/websocket-server.js
 // WebSocket server implementation for SAXPY Room Computing
 
+require("dotenv").config();
 const WebSocket = require('ws');
-const http = require('http');
+const https = require('https');
+const fs = require("fs");
 const RoomManager = require('./room-manager');
+const assert = require('assert');
 
 class SAXPYWebSocketServer {
   constructor(options = {}) {
     this.port = options.port || 8080;
-    this.server = http.createServer();
+
+		const certfile = process.env.CERT_FILE;
+		const keyfile  = process.env.KEY_FILE;
+		
+		assert(certfile, 'Environment variable CERT_FILE must be set');
+    assert(keyfile, 'Environment variable KEY_FILE must be set');
+
+		 // Assert that the certificate and key files exist
+    assert(fs.existsSync(certfile), `Certificate file not found at ${certfile}`);
+    assert(fs.existsSync(keyfile), `Key file not found at ${keyfile}`);
+
+		const sslOptions = {
+			cert: fs.readFileSync(certfile),
+		 	key: fs.readFileSync(keyfile)
+		};
+    this.server = https.createServer(sslOptions);
     this.wss = new WebSocket.Server({ server: this.server });
     this.roomManager = new RoomManager();
     
