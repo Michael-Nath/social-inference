@@ -24,7 +24,8 @@ async function setupGPU() {
 	    requiredLimits: {
 		maxBufferSize: adapter.limits.maxBufferSize,
 		maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-	    }
+	    },
+	    requiredFeatures: ['shader-f16']
 	});
 
 	// Listen for uncaptured errors.
