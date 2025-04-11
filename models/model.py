@@ -7,6 +7,8 @@ import torch
 
 from models.cache import ModelCache
 from .tensor import Tensor
+from dataclasses import dataclass
+
 
 class Work(BaseModel):
     order: int
@@ -18,6 +20,7 @@ class WorkResult(BaseModel):
     operation: str
     results: list[Tensor]
 
+@dataclass
 class PipelineData:
     order: int
     data: list[Tensor]
@@ -32,7 +35,7 @@ class RegistrationRequest(BaseModel):
     capabilities: ClientCapabilities
 
 class MatmulRegistration(BaseModel):
-    operation: Literal["matmul"]
+    operation: Union[Literal["matmul0"] | Literal["matmul1"]]
     matrix: Tensor
 
 Registration = Annotated[Union[MatmulRegistration], Field(discriminator="operation")]
@@ -75,7 +78,8 @@ class Pipeline:
                 matrix = "model.layers.1.self_attn.k_proj.weight"
                 operation = "matmul1"
                 self.step2_workers += 1
-        with self.model_cache.get_tensor(matrix) as t:
+        cache = self.model_cache.get_cache("meta-llama/Llama-3.2-1B")
+        with cache.get_tensor(matrix) as t:
             t = t.float()[:64,:64]
             return MatmulRegistration(operation=operation, matrix=Tensor.from_torch(t))
 

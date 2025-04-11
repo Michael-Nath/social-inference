@@ -39,12 +39,12 @@ async function loadShader(device) {
 }
 
 async function setupBuffersAndBindGroups(device, registration) {
-  const M = registration.operation.matrix.shape[0];
-  const K = registration.operation.matrix.shape[1];
-  const N = registration.operation.matrix.shape[0];
+  const M = registration.matrix.shape[0];
+  const K = registration.matrix.shape[1];
+  const N = registration.matrix.shape[0];
 
-  const matrixA = new Float32Array(registration.operation.matrix.elements);
-  const matrixB = new Float32Array(registration.operation.matrix.elements);
+  const matrixA = new Float32Array(registration.matrix.elements);
+  const matrixB = new Float32Array(registration.matrix.elements);
   const dimensions = new Uint32Array([M, K, N]);
 
 

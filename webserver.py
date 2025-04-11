@@ -3,9 +3,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from models import ModelCache
+from models import Pipeline
 from models.model import Registration, RegistrationRequest, Work, WorkResult
 
 model_cache = ModelCache()
+
+pipeline = Pipeline()
 app = FastAPI()
 
 # Configure CORS
@@ -25,7 +28,8 @@ async def register(request: RegistrationRequest):
     Called by clients to register their capabilities and request assignment to work.
     """
 
-    return model_cache.register(request)
+    # return model_cache.register(request)
+    return pipeline.register(request)
     
 @app.get("/work", response_model=Work)
 async def get_work():
@@ -34,36 +38,36 @@ async def get_work():
     """
     return model_cache.get_work()
 
-    {
-    operation: {
-    operation: "matmul",
-    matrix: {
-    elements: [....]
-    shape: [32,32]
-    }
-    }
-    }
-    """
-    cache = model_cache.get_cache("meta-llama/Llama-3.2-1B")
-    with cache.get_tensor("model.layers.0.self_attn.k_proj.weight") as t:
-        print(t.shape)
-        t = t.float()[:1024, :2048]
-        print(t.shape)
-        print(t.dtype)
-        return RegisterResponse(
-            operation=MatMulOperationAssignment(
-                operation="matmul",
-                matrix=Tensor.from_torch(t)
-            )
-        )
-class WorkResponse(BaseModel):
-    pass
-@app.get("/work", response_model=WorkResponse)
-async def get_work():
-    """
-    Called by clients to submit inference results
-    """
-    return model_cache.submit_work(work)
+#     {
+#     operation: {
+#     operation: "matmul",
+#     matrix: {
+#     elements: [....]
+#     shape: [32,32]
+#     }
+#     }
+#     }
+#     """
+#     cache = model_cache.get_cache("meta-llama/Llama-3.2-1B")
+#     with cache.get_tensor("model.layers.0.self_attn.k_proj.weight") as t:
+#         print(t.shape)
+#         t = t.float()[:1024, :2048]
+#         print(t.shape)
+#         print(t.dtype)
+#         return RegisterResponse(
+#             operation=MatMulOperationAssignment(
+#                 operation="matmul",
+#                 matrix=Tensor.from_torch(t)
+#             )
+#         )
+# class WorkResponse(BaseModel):
+#     pass
+# @app.get("/work", response_model=WorkResponse)
+# async def get_work():
+#     """
+#     Called by clients to submit inference results
+#     """
+#     return model_cache.submit_work(work)
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
