@@ -34,8 +34,31 @@ async def get_work():
     """
     return model_cache.get_work()
 
-@app.post("/work", response_model=WorkResult)
-async def submit_work(work: WorkResult):
+    {
+    operation: {
+    operation: "matmul",
+    matrix: {
+    elements: [....]
+    shape: [32,32]
+    }
+    }
+    }
+    """
+    cache = model_cache.get_cache("meta-llama/Llama-3.2-1B")
+    with cache.get_tensor("model.layers.0.self_attn.k_proj.weight") as t:
+        t = t.float()[:128, :128]
+        print(t.shape)
+        print(t.dtype)
+        return RegisterResponse(
+            operation=MatMulOperationAssignment(
+                operation="matmul",
+                matrix=Tensor.from_torch(t)
+            )
+        )
+class WorkResponse(BaseModel):
+    pass
+@app.get("/work", response_model=WorkResponse)
+async def get_work():
     """
     Called by clients to submit inference results
     """
