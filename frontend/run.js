@@ -1,3 +1,4 @@
+import { viewBuffer  } from "./common.js";
 async function requestMatrix() {
   const registration = await (await fetch("/register", {
     method: "POST",
@@ -39,15 +40,13 @@ async function loadShader(device) {
 
 async function setupBuffersAndBindGroups(device, registration) {
   const M = registration.operation.matrix.shape[0];
-  const K = registration.operation.matrix.shape[0];
+  const K = registration.operation.matrix.shape[1];
   const N = registration.operation.matrix.shape[0];
 
   const matrixA = new Float32Array(registration.operation.matrix.elements);
   const matrixB = new Float32Array(registration.operation.matrix.elements);
-  const matrixC = new Float32Array(M * N);
   const dimensions = new Uint32Array([M, K, N]);
 
-  console.log(matrixA);
 
   // Create buffers
   const dimensionsBuffer = device.createBuffer({
@@ -58,7 +57,7 @@ async function setupBuffersAndBindGroups(device, registration) {
 
   const matrixABuffer = device.createBuffer({
     size: M * K * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
   });
 
   const matrixBBuffer = device.createBuffer({
@@ -77,8 +76,16 @@ async function setupBuffersAndBindGroups(device, registration) {
     mappedAtCreation: false
   });
 
+
+  const readbackA = device.createBuffer({
+    size: M * K * 4,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: false
+  });
+
   // Write data to buffers
   device.queue.writeBuffer(matrixABuffer, 0, matrixA);
+
   device.queue.writeBuffer(matrixBBuffer, 0, matrixB);
   device.queue.writeBuffer(dimensionsBuffer, 0, dimensions);
 
@@ -132,7 +139,7 @@ async function setupBuffersAndBindGroups(device, registration) {
 
   return {
     dimensions: { M, K, N },
-    buffers: { matrixCBuffer, readbackBuffer },
+    buffers: { readbackA, matrixABuffer, matrixCBuffer, readbackBuffer },
     bindGroupLayout,
     bindGroup
   };
@@ -142,12 +149,16 @@ async function computeMatrixMultiplication() {
   const device = await initializeWebGPU();
   const registration = await requestMatrix();
   const shaderModule = await loadShader(device);
-  
+
   const { dimensions, buffers, bindGroupLayout, bindGroup } = 
     await setupBuffersAndBindGroups(device, registration);
   
-  const { M, N } = dimensions;
-  const { matrixCBuffer, readbackBuffer } = buffers;
+  const { M, N, K } = dimensions;
+  const { readbackA, matrixABuffer, matrixCBuffer, readbackBuffer } = buffers;
+
+
+  const result = await viewBuffer(device, matrixABuffer, M * K * 4);
+  console.log(result);
 
   // Create pipeline
   const pipelineLayout = device.createPipelineLayout({
@@ -201,15 +212,8 @@ async function computeMatrixMultiplication() {
     throw e;
   }
 
-  // Read and return results
-  await readbackBuffer.mapAsync(GPUMapMode.READ);
-  const resultArrayBuffer = readbackBuffer.getMappedRange();
-  const resultArray = new Float32Array(resultArrayBuffer);
-  const result = Array.from(resultArray);
-  readbackBuffer.unmap();
-  
-  console.log(result);
-  return result;
+  const results = await viewBuffer(device, matrixCBuffer, M * N * 4);
+  console.log(results);
 }
 
 // Execute the computation
