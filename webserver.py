@@ -1,14 +1,9 @@
-from typing import Literal, Annotated, Union
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from pydantic import BaseModel, Field
-
-import numpy as np
-import torch
 from models import ModelCache
+from models.model import Registration, RegistrationRequest, Work, WorkResult
 
 model_cache = ModelCache()
 app = FastAPI()
@@ -24,76 +19,27 @@ app = FastAPI()
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
 
-
-
-class ClientCapabilities(BaseModel):
-    maxBufferSize: int
-    """
-    Max buffer size in bytes
-    """
-
-class RegisterRequest(BaseModel):
-    capabilities: ClientCapabilities
-
-class Tensor(BaseModel):
-    elements: list[float]
-    shape: list[int]
-
-    @classmethod
-    def from_numpy(cls, np_array: np.ndarray):
-        return cls(elements=np_array.flatten().tolist(), shape=list(np_array.shape))
-    
-    @classmethod
-    def from_torch(cls, torch_tensor):
-        np_array = torch_tensor.detach().cpu().numpy()
-        return cls(elements=np_array.flatten().tolist(), shape=list(np_array.shape))
-
-class MatMulOperationAssignment(BaseModel):
-    operation: Literal["matmul"]
-    matrix: Tensor
-
-OperationData = Annotated[Union[MatMulOperationAssignment], Field(discriminator="operation")]
-
-class RegisterResponse(BaseModel):
-    operation: OperationData
-    """
-    Operation assigned to client
-    """
-
-@app.post("/register", response_model=RegisterResponse)
-async def register(request: RegisterRequest):
+@app.post("/register", response_model=Registration)
+async def register(request: RegistrationRequest):
     """
     Called by clients to register their capabilities and request assignment to work.
-
-    {
-    operation: {
-    operation: "matmul",
-    matrix: {
-    elements: [....]
-    shape: [32,32]
-    }
-    }
-    }
     """
-    cache = model_cache.get_cache("meta-llama/Llama-3.2-1B")
-    with cache.get_tensor("model.layers.0.self_attn.k_proj.weight") as t:
-        t = t.float()[:64,:64]
-        print(t.shape)
-        print(t.dtype)
-        return RegisterResponse(
-            operation=MatMulOperationAssignment(
-                operation="matmul",
-                matrix=Tensor.from_torch(t)
-            )
-        )
-class WorkResponse(BaseModel):
-    pass
-@app.get("/work", response_model=WorkResponse)
+
+    return model_cache.register(request)
+    
+@app.get("/work", response_model=Work)
 async def get_work():
     """
     Called by clients to request inference inputs
     """
-    pass
+    return model_cache.get_work()
+
+@app.post("/work", response_model=WorkResult)
+async def submit_work(work: WorkResult):
+    """
+    Called by clients to submit inference results
+    """
+    return model_cache.submit_work(work)
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

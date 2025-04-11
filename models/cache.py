@@ -7,6 +7,9 @@ import os
 import torch
 from copy import deepcopy
 import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 GB = 1024 * 1024 * 1024
 SIZE_LIMIT = 10 * GB
