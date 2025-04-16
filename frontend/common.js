@@ -1,7 +1,12 @@
 export async function initializeWebGPU() {
   const adapter = await navigator.gpu.requestAdapter();
   console.log(adapter);
-  const device = await adapter.requestDevice();
+  const device = await adapter.requestDevice({
+    requiredLimits: {
+      maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    }
+  });
 
   // Add a device lost handler to catch severe errors
   device.lost.then((info) => {

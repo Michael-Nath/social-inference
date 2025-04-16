@@ -144,8 +144,7 @@ class ComputeSession {
    */
   createCommandEncoder() {
     this.pushErrorScope('validation');
-    this.commandEncoder = this.device.createCommandEncoder();
-    return this.commandEncoder;
+    return this.device.createCommandEncoder();
   }
 
   /**
@@ -158,7 +157,6 @@ class ComputeSession {
     if (!buffer) {
       throw new Error(`Buffer '${bufferName}' not found in the session.`);
     }
-
     const readbackBuffer = this.device.createBuffer({
       size: buffer.size,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
@@ -323,6 +321,8 @@ export class KernelBuilder {
       usage: usage,
       mappedAtCreation: false
     });
+
+    this.activeSession.buffers.set(name, buffer);
     
     this.device.queue.writeBuffer(buffer, 0, data);
     return buffer;
@@ -471,8 +471,15 @@ export class KernelBuilder {
         }
       } else {
         // Use input tensor from current session
-        buffer = this._createBufferFromTensor(config.name, 
-          GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+        // Determine the appropriate buffer usage based on the config type
+        let bufferUsage;
+        if (config.type === "uniform") {
+          bufferUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+        } else {
+          // For "storage" or "read-only-storage" types
+          bufferUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+        }
+        buffer = this._createBufferFromTensor(config.name, bufferUsage);
       }
       
       this.activeSession.buffers.set(config.name, buffer);
@@ -509,15 +516,25 @@ export class KernelBuilder {
     }
     
     if (!this.activeSession.commandEncoder) {
-      this.activeSession.createCommandEncoder();
+      this.activeSession.commandEncoder = this.activeSession.createCommandEncoder();
     }
     
+    this.activeSession.pushErrorScope('validation');
     const bindGroup = this._createBindGroup(kernel);
+    var error = await this.activeSession.popErrorScope();
+    if (error) {
+      console.error(error);
+    }
+    
     this.activeSession.bindGroups.set(kernel.name, bindGroup);
     
     this.activeSession.pushErrorScope('validation');
-    
     const computePass = this.activeSession.commandEncoder.beginComputePass();
+    error = await this.activeSession.popErrorScope();
+    if (error) {
+      console.log(error);
+      throw new Error(`Kernel execution error for ${kernel.name}: ${error}`);
+    }
     computePass.setPipeline(kernel.computePipeline);
     computePass.setBindGroup(0, bindGroup);
     
@@ -525,9 +542,10 @@ export class KernelBuilder {
     computePass.dispatchWorkgroups(workgroups.x, workgroups.y, workgroups.z);
     computePass.end();
     
-    const error = await this.activeSession.popErrorScope();
+    error = await this.activeSession.popErrorScope();
     
     if (error) {
+      console.log(error);
       throw new Error(`Kernel execution error for ${kernel.name}: ${error}`);
     }
     
@@ -574,6 +592,10 @@ export class KernelBuilder {
     
     // Copy output buffers to readback buffers
     for (const { source, readback, size } of readbackBuffers) {
+      console.log("source")
+      console.log(source);
+      console.log("readback")
+      console.log(readback);
       commandEncoder.copyBufferToBuffer(source, 0, readback, 0, size);
     }
     
@@ -603,7 +625,7 @@ export class KernelBuilder {
     const session = this.activeSession;
     this.activeSession = null;
     
-    return {
+    return {\
       results,
       session
     };

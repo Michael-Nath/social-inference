@@ -17,8 +17,7 @@ const TILE_N: u32 = 4;  // Tile size in N dimension
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let row = global_id.y * TILE_M;
     let col = global_id.x * TILE_N;
-
-
+    let bruh = dimensions.K;
     // initialize the array with all 0s
     var sums: array<array<f32, TILE_N>, TILE_M>;
     for (var i = 0u; i < TILE_M; i++) {
@@ -50,5 +49,4 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
         }
     }
-
 }
