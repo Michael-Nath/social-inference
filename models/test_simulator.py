@@ -1,4 +1,4 @@
-from .graph import ComputeGraph, DEFAULT_NODE_OUTPUT, MatmulNode
+from .graph import ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, MatmulNode
 from .simulator import simulate
 from .pipeline import PartitionWork, InputAssignment
 from .test_util import random_2d_tensor, llama_1b_cache
@@ -6,13 +6,13 @@ from .test_util import random_2d_tensor, llama_1b_cache
 import numpy as np
 
 def test_simulate_simple_matmul():
-    g = ComputeGraph()
-    x = g.input("x")
-    y = g.input("y")
-    with g.partition("p0"):
-        z = g.matmul("z", x, y)
-    g.output("o", z)
-    g.freeze()
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    y = builder.input("y")
+    with builder.partition("p0"):
+        z = builder.matmul("z", x, y)
+    o = builder.output("o", z)
+    g = builder.build()
 
     ge = g.extract_partition("p0", include_cut_edges=False).encode()
 

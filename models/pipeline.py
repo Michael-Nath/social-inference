@@ -58,10 +58,6 @@ class ComputePipeline:
 
     def __init__(self, graph: ComputeGraph):
         self.graph = graph
-        if not self.graph.is_frozen():
-            print("Warning: ComputeGraph is not frozen. Freezing for you, but you probably should do this yourself.")
-            self.graph.freeze()
-
         self.edge_queues = {}
         self.partition_queues = {}
         self._build_queues()
@@ -83,7 +79,7 @@ class ComputePipeline:
         Enqueues elements for the pipeline
         """
         # Ensure that all elements in the PARTITION_INPUT partition are covered
-        for node in self.graph.partitions[PARTITION_INPUT]:
+        for node in self.graph.list_partition(PARTITION_INPUT):
             if node not in elements:
                 raise ValueError(f"Missing element for node {node}")
 
