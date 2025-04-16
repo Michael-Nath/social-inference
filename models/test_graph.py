@@ -1,5 +1,5 @@
 import pytest
-from .graph import ComputeGraph, ComputeGraphEdge
+from .graph import ComputeGraph, ComputeGraphEdge, MatmulNode, DEFAULT_NODE_OUTPUT, InputNode, OutputNode
 
 def test_graph_construction():
     g = ComputeGraph()
@@ -37,12 +37,12 @@ def test_graph_partition():
     p0_cut = g.extract_partition("p0", include_cut_edges=True)
     assert p0_cut.nodes["z"] == z
     assert p0_cut.partitions["p0"] == {"z"}
-    assert p0_cut.get_forward_edges("x") == {ComputeGraphEdge(src="x", src_output="output", dst="z", dst_input="lhs")}
-    assert p0_cut.get_forward_edges("y") == {ComputeGraphEdge(src="y", src_output="output", dst="z", dst_input="rhs")}
-    assert p0_cut.get_forward_edges("z") == {ComputeGraphEdge(src="z", src_output="output", dst="o", dst_input="input")}
+    assert p0_cut.get_forward_edges("x") == {ComputeGraphEdge(src="x", src_output=DEFAULT_NODE_OUTPUT, dst="z", dst_input=MatmulNode.LHS)}
+    assert p0_cut.get_forward_edges("y") == {ComputeGraphEdge(src="y", src_output=DEFAULT_NODE_OUTPUT, dst="z", dst_input=MatmulNode.RHS)}
+    assert p0_cut.get_forward_edges("z") == {ComputeGraphEdge(src="z", src_output=DEFAULT_NODE_OUTPUT, dst="o", dst_input=OutputNode.INPUT)}
     assert p0_cut.get_backward_edges("z") == {
-        ComputeGraphEdge(src="y", src_output="output", dst="z", dst_input="rhs"),
-        ComputeGraphEdge(src="x", src_output="output", dst="z", dst_input="lhs"),
+        ComputeGraphEdge(src="y", src_output=DEFAULT_NODE_OUTPUT, dst="z", dst_input=MatmulNode.RHS),
+        ComputeGraphEdge(src="x", src_output=DEFAULT_NODE_OUTPUT, dst="z", dst_input=MatmulNode.LHS),
     }
 
 
@@ -58,19 +58,19 @@ def test_graph_cuts():
     o = g.output("o", w)
 
     assert g.identify_forward_cuts("p0") == {
-        ComputeGraphEdge(src="x", src_output="output", dst="z", dst_input="lhs"),
-        ComputeGraphEdge(src="y", src_output="output", dst="z", dst_input="rhs"),
+        ComputeGraphEdge(src="x", src_output=DEFAULT_NODE_OUTPUT, dst="z", dst_input=MatmulNode.LHS),
+        ComputeGraphEdge(src="y", src_output=DEFAULT_NODE_OUTPUT, dst="z", dst_input=MatmulNode.RHS),
     }
     assert g.identify_forward_cuts("p1") == {
-        ComputeGraphEdge(src="z", src_output="output", dst="w", dst_input="lhs"),
-        ComputeGraphEdge(src="z", src_output="output", dst="w", dst_input="rhs"),
+        ComputeGraphEdge(src="z", src_output=DEFAULT_NODE_OUTPUT, dst="w", dst_input=MatmulNode.LHS),
+        ComputeGraphEdge(src="z", src_output=DEFAULT_NODE_OUTPUT, dst="w", dst_input=MatmulNode.RHS),
     }
     assert g.identify_backward_cuts("p0") == {
-        ComputeGraphEdge(src="z", src_output="output", dst="w", dst_input="lhs"),
-        ComputeGraphEdge(src="z", src_output="output", dst="w", dst_input="rhs"),
+        ComputeGraphEdge(src="z", src_output=DEFAULT_NODE_OUTPUT, dst="w", dst_input=MatmulNode.LHS),
+        ComputeGraphEdge(src="z", src_output=DEFAULT_NODE_OUTPUT, dst="w", dst_input=MatmulNode.RHS),
     }
     assert g.identify_backward_cuts("p1") == {
-        ComputeGraphEdge(src="w", src_output="output", dst="o", dst_input="input"),
+        ComputeGraphEdge(src="w", src_output=DEFAULT_NODE_OUTPUT, dst="o", dst_input=OutputNode.INPUT),
     }
 
 def test_graph_freeze():

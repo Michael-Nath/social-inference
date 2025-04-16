@@ -7,10 +7,17 @@ from copy import deepcopy
 from pydantic import BaseModel, Field
 
 type NodeName = str
+type NodeInput = str
+type NodeOutput = str
 type PartitionName = str
 
 PARTITION_INPUT: PartitionName = "__input__"
 PARTITION_OUTPUT: PartitionName = "__output__"
+
+DEFAULT_NODE_OUTPUT: NodeOutput = "output"
+"""
+Our logic mostly supports multiple outputs from a node, but not fully. Use this.
+"""
 
 class ConstantNodeEncoding(BaseModel):
     """
@@ -39,9 +46,9 @@ class EdgeEncoding(BaseModel):
     API-encoded edge.
     """
     src: NodeName
-    src_output: str
+    src_output: NodeOutput
     dst: NodeName
-    dst_input: str
+    dst_input: NodeInput
 
 class GraphEncoding(BaseModel):
     """
@@ -90,14 +97,16 @@ class InputNode(ComputeGraphNode):
         return set()
 
     def get_output_names(self) -> set[str]:
-        return {"output"}
+        return {DEFAULT_NODE_OUTPUT}
 
 class OutputNode(ComputeGraphNode):
+    INPUT: NodeInput = "input"
+
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
     def get_input_names(self) -> set[str]:
-        return {"input"}
+        return {self.INPUT}
 
     def get_output_names(self) -> set[str]:
         return set()
@@ -108,6 +117,7 @@ class ConstantNode(ComputeGraphNode):
     The name of the safe tensor.
     """
 
+
     def __init__(self, name: NodeName, partition: PartitionName, tensor_name: str):
         super().__init__(name, partition)
         self.tensor_name = tensor_name
@@ -116,17 +126,20 @@ class ConstantNode(ComputeGraphNode):
         return set()
 
     def get_output_names(self) -> set[str]:
-        return {"output"}
+        return {DEFAULT_NODE_OUTPUT}
 
 class MatmulNode(ComputeGraphNode):
+    LHS: NodeInput = "lhs"
+    RHS: NodeInput = "rhs"
+
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
     def get_input_names(self) -> set[str]:
-        return {"lhs", "rhs"}
+        return {self.LHS, self.RHS}
 
     def get_output_names(self) -> set[str]:
-        return {"output"}
+        return {DEFAULT_NODE_OUTPUT}
     
 def _check_partition_name(name: PartitionName):
     if name == PARTITION_INPUT or name == PARTITION_OUTPUT:
@@ -141,9 +154,9 @@ class ComputeGraphEdge:
     now, we do not really support multiple outputs from a node.
     """
     src: NodeName
-    src_output: str
+    src_output: NodeOutput
     dst: NodeName
-    dst_input: str
+    dst_input: NodeInput
     
     def __repr__(self) -> str:
         return f"ComputeGraphEdge(src={self.src}, src_output={self.src_output}, dst={self.dst}, dst_input={self.dst_input})"
@@ -243,7 +256,7 @@ class ComputeGraph:
     def __repr__(self) -> str:
         return f"ComputeGraph(nodes={self.nodes}, partitions={self.partitions})"
     
-    def _make_edge(self, src: NodeName, src_output: str, dst: NodeName, dst_input: str):
+    def _make_edge(self, src: NodeName, src_output: NodeOutput, dst: NodeName, dst_input: NodeInput):
         # Error check
         if src not in self.nodes:
             raise ValueError(f"Node {src} does not exist")
@@ -266,7 +279,7 @@ class ComputeGraph:
             if node in nodes:
                 return partition
 
-    def get_forward_edges(self, src: NodeName, src_output: str | None = None) -> set[ComputeGraphEdge]:
+    def get_forward_edges(self, src: NodeName, src_output: NodeOutput | None = None) -> set[ComputeGraphEdge]:
         """
         Get the forward edges for a given node and output. In other words, the
         inputs this output flows into.
@@ -283,7 +296,7 @@ class ComputeGraph:
         else:
             return {e for e in self._forward_edges[src] if e.src_output == src_output}
         
-    def get_backward_edges(self, dst: NodeName, dst_input: str | None = None) -> set[ComputeGraphEdge]:
+    def get_backward_edges(self, dst: NodeName, dst_input: NodeInput | None = None) -> set[ComputeGraphEdge]:
         """
         Get the backward edges for a given node and input. In other words, the
         outputs that flow into this input.
@@ -339,7 +352,7 @@ class ComputeGraph:
 
         self.nodes[name] = OutputNode(name=name, partition=PARTITION_OUTPUT)
         self.partitions[PARTITION_OUTPUT].add(name)
-        self._make_edge(x.name, "output", name, "input")
+        self._make_edge(x.name, DEFAULT_NODE_OUTPUT, name, OutputNode.INPUT)
         return self.nodes[name]
     
     def constant(self, name: NodeName, tensor_name: str) -> ConstantNode:
@@ -352,10 +365,10 @@ class ComputeGraph:
 
         self.nodes[name] = ConstantNode(name=name, partition=self._active_partition, tensor_name=tensor_name)
         self.partitions[self._active_partition].add(name)
-        self._make_edge(name, "output", name, "input")
+        self._make_edge(name, DEFAULT_NODE_OUTPUT, name, InputNode.INPUT)
         return self.nodes[name]
     
-    def matmul(self, name: NodeName, x: ComputeGraphNode, y: ComputeGraphNode) -> MatmulNode:
+    def matmul(self, name: NodeName, lhs: ComputeGraphNode, rhs: ComputeGraphNode) -> MatmulNode:
         if name in self.nodes:
             raise ValueError(f"Node {name} already exists")
         if self._active_partition is None:
@@ -365,8 +378,8 @@ class ComputeGraph:
 
         self.nodes[name] = MatmulNode(name=name, partition=self._active_partition)
         self.partitions[self._active_partition].add(name)
-        self._make_edge(x.name, "output", name, "lhs")
-        self._make_edge(y.name, "output", name, "rhs")
+        self._make_edge(lhs.name, DEFAULT_NODE_OUTPUT, name, MatmulNode.LHS)
+        self._make_edge(rhs.name, DEFAULT_NODE_OUTPUT, name, MatmulNode.RHS)
 
         return self.nodes[name]
     
