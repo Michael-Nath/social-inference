@@ -56,3 +56,14 @@ def test_graph_cuts():
     assert g.identify_backward_cuts("p1") == {
         ComputeGraphEdge(src="w", src_output="output", dst="o", dst_input="input"),
     }
+
+def test_graph_freeze():
+    g = ComputeGraph()
+    g.input("x")
+    assert not g.is_frozen()
+    g.freeze()
+    assert g.is_frozen()
+
+    # Check that the graph is frozen
+    with pytest.raises(ValueError):
+        g.input("y")

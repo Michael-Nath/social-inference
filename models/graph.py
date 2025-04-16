@@ -136,6 +136,18 @@ class ComputeGraph:
 
     _active_partition: PartitionName | None
 
+    _frozen: bool
+
+    _cached_forward_cuts: dict[PartitionName, set[ComputeGraphEdge]]
+    """
+    Cached forward cuts. Only populated after the graph has been frozen.
+    """
+
+    _cached_backward_cuts: dict[PartitionName, set[ComputeGraphEdge]]
+    """
+    Cached backward cuts. Only populated after the graph has been frozen.
+    """
+
     def __init__(self):
         """
         Construct an empty compute graph
@@ -145,6 +157,7 @@ class ComputeGraph:
         self.partitions = defaultdict(lambda: set())
         self._forward_edges = defaultdict(lambda: [])
         self._backward_edges = defaultdict(lambda: [])
+        self._frozen = False
 
     @contextmanager
     def partition(self, name: PartitionName):
@@ -176,10 +189,56 @@ class ComputeGraph:
         # Make the edge
         self._forward_edges[src].append(ComputeGraphEdge(src, src_output, dst, dst_input))
         self._backward_edges[dst].append(ComputeGraphEdge(src, src_output, dst, dst_input))
+
+    def get_partition(self, node: NodeName) -> PartitionName:
+        """
+        Get the partition for a given node.
+        """
+        for partition, nodes in self.partitions.items():
+            if node in nodes:
+                return partition
+
+    def get_forward_edges(self, src: NodeName, src_output: str | None = None) -> list[ComputeGraphEdge]:
+        """
+        Get the forward edges for a given node and output. In other words, the inputs this output flows into.
+        """
+        if src_output is None:
+            return self._forward_edges[src]
+        else:
+            return [e for e in self._forward_edges[src] if e.src_output == src_output]
+        
+    def get_backward_edge(self, dst: NodeName, dst_input: str) -> ComputeGraphEdge:
+        """
+        Get the backward edge for a given node and input. In other words, the output that flows into this input.
+        """
+        raise NotImplementedError("Not implemented")
+
+    def freeze(self):
+        """
+        Freeze the graph.
+
+        A frozen graph cannot have any more nodes or edges added to it. Poor man's
+        immutability.
+        """
+        self._frozen = True
+
+    def is_frozen(self) -> bool:
+        """
+        Check if the graph is frozen.
+        """
+        return self._frozen
+    
+    def get_partitions(self) -> list[PartitionName]:
+        """
+        Get the list of partitions in the graph.
+        """
+        return list(self.partitions.keys())
     
     def input(self, name: NodeName) -> InputNode:
         if name in self.nodes:
             raise ValueError(f"Node {name} already exists")
+        if self._frozen:
+            raise ValueError("Cannot add nodes after graph has been frozen")
 
         self.nodes[name] = InputNode(name=name, partition=PARTITION_INPUT)
         self.partitions[PARTITION_INPUT].add(name)
@@ -188,6 +247,8 @@ class ComputeGraph:
     def output(self, name: NodeName, x: ComputeGraphNode) -> OutputNode:
         if name in self.nodes:
             raise ValueError(f"Node {name} already exists")
+        if self._frozen:
+            raise ValueError("Cannot add nodes after graph has been frozen")
 
         self.nodes[name] = OutputNode(name=name, partition=PARTITION_OUTPUT)
         self.partitions[PARTITION_OUTPUT].add(name)
@@ -199,6 +260,8 @@ class ComputeGraph:
             raise ValueError(f"Node {name} already exists")
         if self._active_partition is None:
             raise ValueError(f"Node {name} must be created within a partition")
+        if self._frozen:
+            raise ValueError("Cannot add nodes after graph has been frozen")
 
         self.nodes[name] = ConstantNode(name=name, partition=self._active_partition, tensor_name=tensor_name)
         self.partitions[self._active_partition].add(name)
@@ -210,6 +273,8 @@ class ComputeGraph:
             raise ValueError(f"Node {name} already exists")
         if self._active_partition is None:
             raise ValueError(f"Node {name} must be created within a partition")
+        if self._frozen:
+            raise ValueError("Cannot add nodes after graph has been frozen")
 
         self.nodes[name] = MatmulNode(name=name, partition=self._active_partition)
         self.partitions[self._active_partition].add(name)
@@ -220,7 +285,7 @@ class ComputeGraph:
     
     def extract_partition(self, name: PartitionName) -> "ComputeGraph":
         """
-        Extract a partition from the compute graph.
+        Extract a frozen partition from the compute graph.
 
         By definition, the new graph will have exactly one partition named name
         containing the entire graph.
@@ -236,12 +301,16 @@ class ComputeGraph:
             for edge in self._backward_edges[node_name]:
                 if edge.src in self.partitions[name] and edge.dst in self.partitions[name]:
                     new_graph._backward_edges[edge.dst].append(edge)
+        new_graph._frozen = True
         return new_graph
     
     def identify_forward_cuts(self, partition: PartitionName) -> set[ComputeGraphEdge]:
         """
-        Returns a list of forward edges that are cut by a partition.
+        Returns a list of forward edges (edges flowing *into* the partition) that are cut by a partition.
         """
+        if self._frozen and partition in self._cached_forward_cuts:
+            return self._cached_forward_cuts[partition]
+
         result = set()
         for dst, edges in self._backward_edges.items():
             if dst not in self.partitions[partition]:
@@ -249,12 +318,19 @@ class ComputeGraph:
             for edge in edges:
                 if edge.src not in self.partitions[partition]:
                     result.add(edge)
+
+        if self._frozen:
+            self._cached_forward_cuts[partition] = result
+
         return result
 
     def identify_backward_cuts(self, partition: PartitionName) -> set[ComputeGraphEdge]:
         """
-        Returns a list of backward edges that are cut by a partition.
+        Returns a list of backward edges (edges flowing *out of* the partition) that are cut by a partition.
         """
+        if self._frozen and partition in self._cached_backward_cuts:
+            return self._cached_backward_cuts[partition]
+
         result = set()
         for src, edges in self._forward_edges.items():
             if src not in self.partitions[partition]:
@@ -262,11 +338,8 @@ class ComputeGraph:
             for edge in edges:
                 if edge.dst not in self.partitions[partition]:
                     result.add(edge)
+
+        if self._frozen:
+            self._cached_backward_cuts[partition] = result
+
         return result
-
-class ComputePipeline:
-    """
-    A compute pipeline stores the execution state of a compute graph
-    """
-
-    pass
