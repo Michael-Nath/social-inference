@@ -29,6 +29,22 @@ def test_graph_partition():
     p0 = g.extract_partition("p0")
     assert p0.nodes["z"] == z
     assert p0.partitions["p0"] == {"z"}
+    assert p0.get_forward_edges("x") == set()
+    assert p0.get_forward_edges("y") == set()
+    assert p0.get_forward_edges("z") == set()
+    assert p0.get_backward_edges("z") == set()
+
+    p0_cut = g.extract_partition("p0", include_cut_edges=True)
+    assert p0_cut.nodes["z"] == z
+    assert p0_cut.partitions["p0"] == {"z"}
+    assert p0_cut.get_forward_edges("x") == {ComputeGraphEdge(src="x", src_output="output", dst="z", dst_input="lhs")}
+    assert p0_cut.get_forward_edges("y") == {ComputeGraphEdge(src="y", src_output="output", dst="z", dst_input="rhs")}
+    assert p0_cut.get_forward_edges("z") == {ComputeGraphEdge(src="z", src_output="output", dst="o", dst_input="input")}
+    assert p0_cut.get_backward_edges("z") == {
+        ComputeGraphEdge(src="y", src_output="output", dst="z", dst_input="rhs"),
+        ComputeGraphEdge(src="x", src_output="output", dst="z", dst_input="lhs"),
+    }
+
 
 def test_graph_cuts():
     g = ComputeGraph()

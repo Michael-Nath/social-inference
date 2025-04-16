@@ -161,7 +161,6 @@ class SafeTensorCache:
       for k, v in header.items():
         if k == "__metadata__":
           continue
-        print(v)
         self._cache[k] = CacheEntry(
           file=url,
           tensor=k,
@@ -200,7 +199,6 @@ class SafeTensorCache:
   @contextmanager
   def get_tensor(self, tensor: str):
     try:
-      print("Acquiring lock")
       self._lock.acquire()
       try:
         self._build_cache()
@@ -210,7 +208,6 @@ class SafeTensorCache:
           # Cache miss
           self._stats.misses += 1
           self._stats.misses_bytes += entry.size()
-          print("Cache miss for tensor", tensor)
 
           # Evict tensors if needed to make space
           required_space = entry.size()
@@ -241,13 +238,11 @@ class SafeTensorCache:
                   self._stats.present -= 1
                   self._stats.present_bytes -= e.size()
           entry.fill()
-          print("Cache filled for tensor", tensor)
         else:
           # Cache hit
           self._stats.hits += 1
           self._stats.hits_bytes += entry.size()
           entry.last_use = time.time()
-          print("Cache hit for tensor", tensor)
         
         # Update present
         if entry.present():
@@ -257,7 +252,6 @@ class SafeTensorCache:
         #entry.pin()
       finally:
         self._lock.release()
-        print("Released lock")
       yield entry.data
     finally:
       pass

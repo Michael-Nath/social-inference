@@ -4,16 +4,7 @@ import threading
 from pydantic import BaseModel
 
 from .graph import ComputeGraphEdge
-from .tensor import Tensor
-
-class CorrelatedTensor(BaseModel):
-    """
-    A correlated tensor is a tensor with a correlation ID
-
-    Inherits from pydantic.BaseModel to allow for easy serialization
-    """
-    correlation_id: str
-    tensor: Tensor
+from .tensor import CorrelatedTensor
 
 class CorrelatedQueue:
     """
@@ -109,8 +100,6 @@ class CorrelatedQueue:
                         self.completed.remove(head_id)
                         self.arrival_order.popleft()
                         result = self.pending.pop(head_id)
-                        # print(result)
-                        # assert all(item is not None for item in result.values())
                         return result # Return the completed set
 
                 # If the head of arrival order wasn't ready, decide whether to block or return

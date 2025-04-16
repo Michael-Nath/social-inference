@@ -2,12 +2,53 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Annotated, Literal, Union
+from copy import deepcopy
+from pydantic import BaseModel, Field
 
 type NodeName = str
 type PartitionName = str
 
 PARTITION_INPUT: PartitionName = "__input__"
 PARTITION_OUTPUT: PartitionName = "__output__"
+
+class ConstantNodeEncoding(BaseModel):
+    """
+    API-encoded constant node.
+    """
+    type: Literal["constant"]
+    name: NodeName
+    tensor_name: str
+
+class MatmulNodeEncoding(BaseModel):
+    """
+    API-encoded matmul node.
+    """
+    type: Literal["matmul"]
+    name: NodeName
+
+type NodeEncoding = Annotated[Union[MatmulNodeEncoding, ConstantNodeEncoding], Field(discriminator="type")]
+"""
+API-encoded node.
+
+No Input/Output nodes since those are never sent to workers.
+"""
+
+class EdgeEncoding(BaseModel):
+    """
+    API-encoded edge.
+    """
+    src: NodeName
+    src_output: str
+    dst: NodeName
+    dst_input: str
+
+class GraphEncoding(BaseModel):
+    """
+    API-encoded graph.
+    """
+    nodes: dict[NodeName, NodeEncoding]
+    edges: list[EdgeEncoding]
 
 class ComputeGraphNode(ABC):
     """
@@ -86,7 +127,7 @@ class MatmulNode(ComputeGraphNode):
 
     def get_output_names(self) -> set[str]:
         return {"output"}
-
+    
 def _check_partition_name(name: PartitionName):
     if name == PARTITION_INPUT or name == PARTITION_OUTPUT:
         raise ValueError(f"Invalid partition name: {name}")
@@ -124,12 +165,12 @@ class ComputeGraph:
     Partitions keyed by name
     """
 
-    _forward_edges: defaultdict[NodeName, list[ComputeGraphEdge]]
+    _forward_edges: defaultdict[NodeName, set[ComputeGraphEdge]]
     """
     Edges keyed by source node
     """
 
-    _backward_edges: defaultdict[NodeName, list[ComputeGraphEdge]]
+    _backward_edges: defaultdict[NodeName, set[ComputeGraphEdge]]
     """
     Edges keyed by destination node
     """
@@ -155,9 +196,36 @@ class ComputeGraph:
         self.nodes = {}
         self._active_partition = None
         self.partitions = defaultdict(lambda: set())
-        self._forward_edges = defaultdict(lambda: [])
-        self._backward_edges = defaultdict(lambda: [])
+        self._forward_edges = defaultdict(lambda: set())
+        self._backward_edges = defaultdict(lambda: set())
+        self._cached_forward_cuts = {}
+        self._cached_backward_cuts = {}
         self._frozen = False
+
+    @classmethod
+    def from_nodes_and_edges(cls, nodes: list[ComputeGraphNode], edges: list[ComputeGraphEdge], copy: bool = False) -> "ComputeGraph":
+        """
+        Construct a compute graph from a list of nodes and edges.
+
+        This function does *no* error checking, and will create edges as-given.
+
+        Args:
+            nodes: List of nodes to add to the graph
+            edges: List of edges to add to the graph
+        Keyword Args:
+            copy: If True (default False), deepcopy nodes
+        """
+
+        graph = cls()
+        for node in nodes:
+            graph.nodes[node.name] = deepcopy(node) if copy else node
+            graph.partitions[node.partition].add(node.name)
+
+        for edge in edges:
+            graph._forward_edges[edge.src].add(edge)
+            graph._backward_edges[edge.dst].add(edge)
+
+        return graph
 
     @contextmanager
     def partition(self, name: PartitionName):
@@ -187,8 +255,8 @@ class ComputeGraph:
             raise ValueError(f"Node {dst} does not have input {dst_input}")
 
         # Make the edge
-        self._forward_edges[src].append(ComputeGraphEdge(src, src_output, dst, dst_input))
-        self._backward_edges[dst].append(ComputeGraphEdge(src, src_output, dst, dst_input))
+        self._forward_edges[src].add(ComputeGraphEdge(src, src_output, dst, dst_input))
+        self._backward_edges[dst].add(ComputeGraphEdge(src, src_output, dst, dst_input))
 
     def get_partition(self, node: NodeName) -> PartitionName:
         """
@@ -198,20 +266,39 @@ class ComputeGraph:
             if node in nodes:
                 return partition
 
-    def get_forward_edges(self, src: NodeName, src_output: str | None = None) -> list[ComputeGraphEdge]:
+    def get_forward_edges(self, src: NodeName, src_output: str | None = None) -> set[ComputeGraphEdge]:
         """
-        Get the forward edges for a given node and output. In other words, the inputs this output flows into.
+        Get the forward edges for a given node and output. In other words, the
+        inputs this output flows into.
+
+        Args:
+            src: The source node
+            src_output: Optional output from the source node. If not provided, all forward edges for the source node are returned.
+
+        Returns:
+            The forward edges for the given node and output.
         """
         if src_output is None:
             return self._forward_edges[src]
         else:
-            return [e for e in self._forward_edges[src] if e.src_output == src_output]
+            return {e for e in self._forward_edges[src] if e.src_output == src_output}
         
-    def get_backward_edge(self, dst: NodeName, dst_input: str) -> ComputeGraphEdge:
+    def get_backward_edges(self, dst: NodeName, dst_input: str | None = None) -> set[ComputeGraphEdge]:
         """
-        Get the backward edge for a given node and input. In other words, the output that flows into this input.
+        Get the backward edges for a given node and input. In other words, the
+        outputs that flow into this input.
+
+        Args:
+            dst: The destination node
+            dst_input: Optional input to the destination node. If not provided, all backward edges for the destination node are returned.
+
+        Returns:
+            The backward edges for the given node and input.
         """
-        raise NotImplementedError("Not implemented")
+        if dst_input is None:
+            return self._backward_edges[dst]
+        else:
+            return {e for e in self._backward_edges[dst] if e.dst_input == dst_input}
 
     def freeze(self):
         """
@@ -283,25 +370,37 @@ class ComputeGraph:
 
         return self.nodes[name]
     
-    def extract_partition(self, name: PartitionName) -> "ComputeGraph":
+    def extract_partition(self, name: PartitionName, include_cut_edges: bool = False, copy: bool = False) -> "ComputeGraph":
         """
         Extract a frozen partition from the compute graph.
 
         By definition, the new graph will have exactly one partition named name
         containing the entire graph.
+
+        Args:
+            partition: The name of the partition to extract
+        Keyword Args:
+            include_cut_edges: If True (default False), the new graph will include the edges
+                that were cut by the partition. This is useful for execution, 
+                since we assign values per-edge and input/output edges will be cut.
+            copy: If True (default False), deepcopy nodes. Otherwise, creates a view.
         """
-        new_graph = ComputeGraph()
-        for node_name in self.partitions[name]:
-            new_graph.nodes[node_name] = self.nodes[node_name]
-            new_graph.partitions[name].add(node_name)
-            # Copy forward and backward edges that are within the partition
-            for edge in self._forward_edges[node_name]:
-                if edge.src in self.partitions[name] and edge.dst in self.partitions[name]:
-                    new_graph._forward_edges[edge.src].append(edge)
-            for edge in self._backward_edges[node_name]:
-                if edge.src in self.partitions[name] and edge.dst in self.partitions[name]:
-                    new_graph._backward_edges[edge.dst].append(edge)
-        new_graph._frozen = True
+        partition_node_names = self.partitions[name]
+        partition_nodes = [self.nodes[name] for name in partition_node_names]
+
+        # Extract edges
+        partition_edges = []
+        for edges in self._forward_edges.values():
+            for edge in edges:
+                in_both = edge.src in partition_node_names and edge.dst in partition_node_names
+                in_one = edge.src in partition_node_names or edge.dst in partition_node_names
+                include_edge = in_both or (include_cut_edges and in_one)
+                if include_edge:
+                    partition_edges.append(edge)
+
+        # Do not copy since we are creating an immutable view
+        new_graph = ComputeGraph.from_nodes_and_edges(partition_nodes, partition_edges, copy=copy)
+        new_graph.freeze()
         return new_graph
     
     def identify_forward_cuts(self, partition: PartitionName) -> set[ComputeGraphEdge]:
@@ -343,3 +442,19 @@ class ComputeGraph:
             self._cached_backward_cuts[partition] = result
 
         return result
+    
+    def encode(self) -> GraphEncoding:
+        """
+        Encode the graph into API format.
+        """
+        nodes: dict[NodeName, NodeEncoding] = {}
+        for node_name, node in self.nodes.items():
+            if isinstance(node, MatmulNode):
+                nodes[node_name] = MatmulNodeEncoding(type="matmul", name=node_name)
+            elif isinstance(node, ConstantNode):
+                nodes[node_name] = ConstantNodeEncoding(type="constant", name=node_name, tensor_name=node.tensor_name)
+        edges: list[EdgeEncoding] = []
+        for e in self._forward_edges.values():
+            for edge in e:
+                edges.append(EdgeEncoding(src=edge.src, src_output=edge.src_output, dst=edge.dst, dst_input=edge.dst_input))
+        return GraphEncoding(nodes=nodes, edges=edges)
