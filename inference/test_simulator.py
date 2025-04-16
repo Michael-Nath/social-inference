@@ -1,7 +1,7 @@
 from .graph import ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, MatmulNode
 from .simulator import simulate
 from .pipeline import PartitionWork, InputAssignment
-from .test_util import random_2d_tensor, llama_1b_cache
+from .test_util import random_correlated_2d_tensor, llama_1b_cache
 
 import numpy as np
 
@@ -16,8 +16,8 @@ def test_simulate_simple_matmul():
 
     ge = g.extract_partition("p0", include_cut_edges=False).encode()
 
-    lhs = random_2d_tensor("1", (5, 5)).tensor
-    rhs = random_2d_tensor("1", (5, 5)).tensor
+    lhs = random_correlated_2d_tensor("1", (5, 5)).tensor
+    rhs = random_correlated_2d_tensor("1", (5, 5)).tensor
     work = PartitionWork(
         correlation_id="1",
         partition="p0",

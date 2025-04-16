@@ -1,14 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from models import ModelCache
-from models import Pipeline
-from models.model import Registration, RegistrationRequest, Work, WorkResult
+from inference import ModelCache, Registration, ComputePipeline, WorkerManager, PartitionWork, PartitionWorkResult, PartitionName, PipelineInput, PipelineOutput
+from models import simple_matmul
 
 model_cache = ModelCache()
 
-pipeline = Pipeline()
+graph = simple_matmul()
+pipeline = ComputePipeline(graph)
+worker_manager = WorkerManager(graph)
+
 app = FastAPI()
 
 # Configure CORS
@@ -23,51 +26,39 @@ app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
 
 @app.post("/register", response_model=Registration)
-async def register(request: RegistrationRequest):
+async def register():
     """
     Called by clients to register their capabilities and request assignment to work.
     """
+    return worker_manager.register()
 
-    # return model_cache.register(request)
-    return pipeline.register(request)
-    
-@app.get("/work", response_model=Work)
-async def get_work():
+@app.post("/input")
+async def push_input(input: PipelineInput):
+    """
+    Called by clients to push inference inputs
+    """
+    pipeline.enqueue_input(input)
+
+@app.get("/output", response_model=PipelineOutput | None)
+async def get_output():
+    """
+    Called by clients to get inference outputs
+    """
+    return pipeline.dequeue_output(blocking=False)
+
+@app.get("/work/{partition_name}", response_model=PartitionWork)
+async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs
     """
-    return model_cache.get_work()
+    return pipeline.get_partition_work(partition_name)
 
-#     {
-#     operation: {
-#     operation: "matmul",
-#     matrix: {
-#     elements: [....]
-#     shape: [32,32]
-#     }
-#     }
-#     }
-#     """
-#     cache = model_cache.get_cache("meta-llama/Llama-3.2-1B")
-#     with cache.get_tensor("model.layers.0.self_attn.k_proj.weight") as t:
-#         print(t.shape)
-#         t = t.float()[:1024, :2048]
-#         print(t.shape)
-#         print(t.dtype)
-#         return RegisterResponse(
-#             operation=MatMulOperationAssignment(
-#                 operation="matmul",
-#                 matrix=Tensor.from_torch(t)
-#             )
-#         )
-# class WorkResponse(BaseModel):
-#     pass
-# @app.get("/work", response_model=WorkResponse)
-# async def get_work():
-#     """
-#     Called by clients to submit inference results
-#     """
-#     return model_cache.submit_work(work)
+@app.post("/work", response_model=PartitionWorkResult)
+async def submit_work(work: PartitionWorkResult):
+    """
+    Called by clients to submit inference results
+    """
+    return pipeline.submit_partition_work(work)
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

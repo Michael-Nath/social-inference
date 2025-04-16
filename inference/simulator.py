@@ -73,18 +73,6 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             tensor=Tensor.from_numpy(output_table[(node, DEFAULT_NODE_OUTPUT)])
         ))
 
-    # print("Input table:")
-    # for key, value in input_table.items():
-    #     print(f"{key}: {value}")
-    # print("Edges:")
-    # for edge in graph.edges:
-    #     print(f"{edge.src} ({edge.src_output}) -> {edge.dst} ({edge.dst_input})")
-    # print("Output nodes:")
-    # print(output_nodes)
-    # print("Output table:")
-    # for key, value in output_table.items():
-    #     print(f"{key}: {value}")
-
     result = PartitionWorkResult(
         correlation_id=work.correlation_id,
         partition=work.partition,

@@ -8,6 +8,21 @@ from .graph import ComputeGraph, ComputeGraphEdge, GraphEncoding, NodeName, Part
 from .tensor import Tensor
 from .queue import CorrelatedQueue, CorrelatedTensor
 
+class PipelineInput(BaseModel):
+    """
+    Input to the pipeline
+    """
+    correlation_id: str
+    inputs: dict[NodeName, Tensor]
+
+class PipelineOutput(BaseModel):
+    """
+    Output from the pipeline
+    """
+    correlation_id: str
+    outputs: dict[NodeName, Tensor]
+
+
 class InputAssignment(BaseModel):
     node: NodeName
     input: str
@@ -74,10 +89,15 @@ class ComputePipeline:
                 for edge in edges:
                     self.edge_queues[edge] = queue
 
-    def enqueue_input(self, elements: dict[NodeName, CorrelatedTensor]):
+    def enqueue_input(self, input: PipelineInput):
         """
         Enqueues elements for the pipeline
         """
+        # Build correlated elements
+        elements = {}
+        for node, tensor in input.inputs.items():
+            elements[node] = CorrelatedTensor(correlation_id=input.correlation_id, tensor=tensor)
+
         # Ensure that all elements in the PARTITION_INPUT partition are covered
         for node in self.graph.list_partition(PARTITION_INPUT):
             if node not in elements:
@@ -142,7 +162,7 @@ class ComputePipeline:
             for edge in forward_edges:
                 self.edge_queues[edge].put(edge, CorrelatedTensor(correlation_id=work.correlation_id, tensor=output.tensor))
 
-    def dequeue_output(self, blocking: bool = True, timeout: float | None = None) -> dict[NodeName, CorrelatedTensor] | None:
+    def dequeue_output(self, blocking: bool = True, timeout: float | None = None) -> PipelineOutput | None:
         """
         Dequeues an output from the pipeline
         """
@@ -151,5 +171,10 @@ class ComputePipeline:
         if correlated_elements is None:
             return None
 
-        # Return the elements
-        return {edge.dst: element for edge, element in correlated_elements.items()}
+        # Build the output
+        outputs: dict[NodeName, Tensor] = {}
+        for edge, element in correlated_elements.items():
+            outputs[edge.dst] = element.tensor
+
+        # Return the output
+        return PipelineOutput(correlation_id=element.correlation_id, outputs=outputs)
