@@ -3,7 +3,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from inference import ModelCache, Registration, ComputePipeline, WorkerManager, PartitionWork, PartitionWorkResult, PartitionName, PipelineInput, PipelineOutput
+from inference import (
+    ModelCache, Registration, ComputePipeline, WorkerManager, 
+    PartitionWork, PartitionWorkResult, PartitionName, 
+    PipelineInput, PipelineOutput, Tensor
+)
 from models import simple_matmul
 
 model_cache = ModelCache()
@@ -45,6 +49,15 @@ async def get_output():
     Called by clients to get inference outputs
     """
     return pipeline.dequeue_output(blocking=False)
+
+@app.get("/constant/{model_name}/{tensor_name}", response_model=Tensor)
+async def get_constant(model_name: str, tensor_name: str):
+    """
+    Called by clients to get a constant tensor
+    """
+    tensor_cache = model_cache.get_cache(model_name)
+    with tensor_cache.get_tensor(tensor_name) as tensor:
+        return Tensor.from_torch(tensor)
 
 @app.get("/work/{partition_name}", response_model=PartitionWork)
 async def get_work(partition_name: PartitionName):
