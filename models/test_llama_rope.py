@@ -46,7 +46,6 @@ def test_llama_rope():
     
     # Build graph
     g = builder.build()
-    print(g.validate_graph())
 
     # Create pipeline and enqueue inputs
     pipeline = ComputePipeline(g)

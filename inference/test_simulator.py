@@ -1,8 +1,10 @@
 import torch
+
+from inference.tensor import Tensor
 from .graph import (
-    ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT,
+    ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, IndexNode,
     MatmulNode, SliceNode, UnsqueezeNode, BroadcastNode,
-    CatNode, FixedNode, HadamardNode, SoftmaxNode
+    CatNode, FixedNode, HadamardNode, ShapeNode, SoftmaxNode
 )
 from .simulator import simulate
 from .pipeline import PartitionWork, InputAssignment
@@ -254,4 +256,79 @@ def test_simulate_softmax():
     assert output.node == z.name
     assert output.output == DEFAULT_NODE_OUTPUT
     expected = torch.nn.functional.softmax(input_tensor.to_torch(), dim=1)
+    assert torch.allclose(output.tensor.to_torch(), expected)
+
+def test_simulate_index():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    idx = builder.input("idx")
+    with builder.partition("p0"):
+        # Index into a tensor using another tensor as indices
+        z = builder.index("z", x, idx)
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    # Create a 3D tensor for testing
+    input_tensor = Tensor.from_torch(torch.randn(5,4,3))
+    
+    # Create an index tensor with valid indices
+    index_tensor = Tensor.from_torch(torch.tensor([2, 3]))
+    
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[
+            InputAssignment(node=z.name, input=IndexNode.INPUT, tensor=input_tensor),
+            InputAssignment(node=z.name, input=IndexNode.INDEX, tensor=index_tensor)
+        ]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    
+    # Expected result is the value at indices [2, 3] in the input tensor
+    expected = input_tensor.to_torch()[2, 3]
+    assert torch.allclose(output.tensor.to_torch(), expected)
+
+def test_simulate_shape():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    with builder.partition("p0"):
+        # Get the shape of the input tensor
+        z = builder.shape("z", x)
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    # Create a 3D tensor for testing
+    input_tensor = Tensor.from_torch(torch.randn(5,4,3))
+    
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[InputAssignment(node=z.name, input=ShapeNode.INPUT, tensor=input_tensor)]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    
+    # Expected result is the shape of the input tensor as a 1D tensor
+    expected = torch.tensor(input_tensor.to_torch().shape, dtype=torch.long)
     assert torch.allclose(output.tensor.to_torch(), expected)

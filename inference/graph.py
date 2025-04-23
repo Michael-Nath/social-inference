@@ -133,6 +133,20 @@ class HadamardNodeEncoding(BaseModel):
     type: Literal["hadamard"]
     name: NodeName
 
+class IndexNodeEncoding(BaseModel):
+    """
+    API-encoded index node.
+    """
+    type: Literal["index"]
+    name: NodeName
+
+class ShapeNodeEncoding(BaseModel):
+    """
+    API-encoded shape node.
+    """
+    type: Literal["shape"]
+    name: NodeName
+
 class AddNode(ComputeGraphNode):
     """
     Add two tensors together.
@@ -167,7 +181,9 @@ type NodeEncoding = Annotated[
         CatNodeEncoding,
         FixedNodeEncoding,
         HadamardNodeEncoding,
+        IndexNodeEncoding,
         AddNodeEncoding,
+        ShapeNodeEncoding,
     ],
     Field(discriminator="type")
 ]
@@ -372,7 +388,41 @@ class HadamardNode(ComputeGraphNode):
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
+
+class IndexNode(ComputeGraphNode):
+    """
+    Index into a tensor
+
+    The index is also a tensor, specifically a [N] shaped tensor, where each
+    element is a selection into a dimension of the input tensor.
+    """
+
+    INPUT: NodeInput = "input"
+    INDEX: NodeInput = "index"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
     
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT, self.INDEX}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class ShapeNode(ComputeGraphNode):
+    """
+    Returns the shape of a tensor as a 1D tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
 
 def _check_partition_name(name: PartitionName):
     if name == PARTITION_INPUT or name == PARTITION_OUTPUT:
@@ -544,7 +594,24 @@ class ComputeGraphBuilder:
         self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, AddNode.A)
         self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, AddNode.B)
         return self._nodes[name]
+    
+    def index(self, name: NodeName, input: ComputeGraphNode, index: ComputeGraphNode) -> IndexNode:
+        name = NameScope.name(name)
+        self._check_node(name)
 
+        self._nodes[name] = IndexNode(name=name, partition=self._active_partition)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, IndexNode.INPUT)
+        self._make_edge(index.name, DEFAULT_NODE_OUTPUT, name, IndexNode.INDEX)
+        return self._nodes[name]
+
+    def shape(self, name: NodeName, input: ComputeGraphNode) -> ShapeNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = ShapeNode(name=name, partition=self._active_partition)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, ShapeNode.INPUT)
+        return self._nodes[name]
+    
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -799,9 +866,15 @@ class ComputeGraph:
                 nodes[node_name] = AddNodeEncoding(type="add", name=node_name)
             elif isinstance(node, SoftmaxNode):
                 nodes[node_name] = SoftmaxNodeEncoding(type="softmax", name=node_name, dim=node.dim)
+            elif isinstance(node, IndexNode):
+                nodes[node_name] = IndexNodeEncoding(type="index", name=node_name)
+            elif isinstance(node, ShapeNode):
+                nodes[node_name] = ShapeNodeEncoding(type="shape", name=node_name)
+            elif isinstance(node, InputNode) or isinstance(node, OutputNode):
+                pass
             else:
-                raise NotImplementedError
-            # Input/Output nodes are not encoded since they are never sent to workers
+                raise NotImplementedError(f"Node type {node.__class__.__name__} has no encoding")
+            
 
         edges: list[EdgeEncoding] = []
         for e in self._forward_edges.values():
