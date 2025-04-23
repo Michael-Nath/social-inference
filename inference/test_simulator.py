@@ -2,7 +2,7 @@ import torch
 from .graph import (
     ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT,
     MatmulNode, SliceNode, UnsqueezeNode, BroadcastNode,
-    CatNode, FixedNode, HadamardNode
+    CatNode, FixedNode, HadamardNode, SoftmaxNode
 )
 from .simulator import simulate
 from .pipeline import PartitionWork, InputAssignment
@@ -224,4 +224,34 @@ def test_simulate_hadamard():
     assert output.node == z.name
     assert output.output == DEFAULT_NODE_OUTPUT
     expected = input1.to_torch() * input2.to_torch()
+    assert torch.allclose(output.tensor.to_torch(), expected)
+
+def test_simulate_softmax():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    with builder.partition("p0"):
+        # Apply softmax along dimension 1
+        z = builder.softmax("z", x, dim=1)
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    input_tensor = random_correlated_2d_tensor("1", (5, 5)).tensor
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[InputAssignment(node=z.name, input=SoftmaxNode.INPUT, tensor=input_tensor)]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    expected = torch.nn.functional.softmax(input_tensor.to_torch(), dim=1)
     assert torch.allclose(output.tensor.to_torch(), expected)

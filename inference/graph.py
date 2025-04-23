@@ -74,6 +74,15 @@ class MatmulNodeEncoding(BaseModel):
     type: Literal["matmul"]
     name: NodeName
 
+class SoftmaxNodeEncoding(BaseModel):
+    """
+    API-encoded softmax node.
+    """
+
+    type: Literal["softmax"]
+    name: NodeName
+    dim: int
+
 class SliceNodeEncoding(BaseModel):
     """
     API-encoded slice node.
@@ -151,13 +160,14 @@ type NodeEncoding = Annotated[
     Union[
         MatmulNodeEncoding,
         ConstantNodeEncoding,
+        SoftmaxNodeEncoding,
         SliceNodeEncoding,
         UnsqueezeNodeEncoding,
         BroadcastNodeEncoding,
         CatNodeEncoding,
         FixedNodeEncoding,
         HadamardNodeEncoding,
-        AddNodeEncoding
+        AddNodeEncoding,
     ],
     Field(discriminator="type")
 ]
@@ -232,6 +242,20 @@ class MatmulNode(ComputeGraphNode):
     def get_input_names(self) -> set[str]:
         return {self.LHS, self.RHS}
 
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class SoftmaxNode(ComputeGraphNode):
+    "Perform a softmax"
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName, dim: int):
+        super().__init__(name, partition)
+        self.dim = dim
+    
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
     
@@ -456,6 +480,13 @@ class ComputeGraphBuilder:
         self._make_edge(rhs.name, DEFAULT_NODE_OUTPUT, name, MatmulNode.RHS)
         return self._nodes[name]
     
+    def softmax(self, name: NodeName, input: ComputeGraphNode, dim: int) -> SoftmaxNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        self._nodes[name] = SoftmaxNode(name=name, partition=self._active_partition, dim=dim)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, SoftmaxNode.INPUT)
+        return self._nodes[name]
+
     def slice(self, name: NodeName, input: ComputeGraphNode, dim: int, start: int, end: int) -> SliceNode:
         name = NameScope.name(name)
         self._check_node(name)
@@ -766,6 +797,10 @@ class ComputeGraph:
                 nodes[node_name] = HadamardNodeEncoding(type="hadamard", name=node_name)
             elif isinstance(node, AddNode):
                 nodes[node_name] = AddNodeEncoding(type="add", name=node_name)
+            elif isinstance(node, SoftmaxNode):
+                nodes[node_name] = SoftmaxNodeEncoding(type="softmax", name=node_name, dim=node.dim)
+            else:
+                raise NotImplementedError
             # Input/Output nodes are not encoded since they are never sent to workers
 
         edges: list[EdgeEncoding] = []

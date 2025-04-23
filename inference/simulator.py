@@ -5,7 +5,7 @@ from .tensor import Tensor
 from .graph import (
     EdgeEncoding, NodeName, MatmulNode, InputNode, OutputNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
-    FixedNode, HadamardNode, AddNode
+    FixedNode, HadamardNode, AddNode, SoftmaxNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -122,6 +122,11 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 output = a * b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
+            elif encoded_node.type == "softmax":
+                input_tensor = resolve_input(node, SoftmaxNode.INPUT) 
+                dim = encoded_node.dim
+                output = torch.softmax(input_tensor, dim=dim)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
             elif encoded_node.type == "add":
                 a = resolve_input(node, AddNode.A)
                 b = resolve_input(node, AddNode.B)
