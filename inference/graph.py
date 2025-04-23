@@ -93,6 +93,14 @@ class SliceNodeEncoding(BaseModel):
     start: int
     end: int
 
+class ReshapeNodeEncoding(BaseModel):
+    """
+    API-encoded reshape node.
+    """
+
+    type: Literal["reshape"]
+    name: NodeName
+
 class UnsqueezeNodeEncoding(BaseModel):
     """
     API-encoded unsqueeze node.
@@ -147,6 +155,15 @@ class ShapeNodeEncoding(BaseModel):
     type: Literal["shape"]
     name: NodeName
 
+class TransposeNodeEncoding(BaseModel):
+    """
+    API-encoded transpose node.
+    """
+    type: Literal["transpose"]
+    name: NodeName
+    dim0: int
+    dim1: int
+
 class AddNode(ComputeGraphNode):
     """
     Add two tensors together.
@@ -184,6 +201,8 @@ type NodeEncoding = Annotated[
         IndexNodeEncoding,
         AddNodeEncoding,
         ShapeNodeEncoding,
+        ReshapeNodeEncoding,
+        TransposeNodeEncoding,
     ],
     Field(discriminator="type")
 ]
@@ -424,6 +443,42 @@ class ShapeNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
+class ReshapeNode(ComputeGraphNode):
+    """
+    Reshapes an tensor.
+    """
+    INPUT: NodeInput  = "input"
+    DIMS:  NodeInput  = "dims"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return { self.INPUT, self.DIMS }
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class TransposeNode(ComputeGraphNode):
+    """
+    Transpose two dimensions of a tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    dim0: int
+    dim1: int
+
+    def __init__(self, name: NodeName, partition: PartitionName, dim0: int, dim1: int):
+        super().__init__(name, partition)
+        self.dim0 = dim0
+        self.dim1 = dim1
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 def _check_partition_name(name: PartitionName):
     if name == PARTITION_INPUT or name == PARTITION_OUTPUT:
         raise ValueError(f"Invalid partition name: {name}")
@@ -561,6 +616,14 @@ class ComputeGraphBuilder:
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, BroadcastNode.INPUT)
         return self._nodes[name]
     
+    def reshape(self, name: NodeName, input: ComputeGraphNode, dims: ComputeGraphNode):
+        name = NameScope.name(name)
+        self._check_node(name)
+        self._nodes[name] = ReshapeNode(name=name, partition=self._active_partition)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, ReshapeNode.INPUT)
+        self._make_edge(dims.name, DEFAULT_NODE_OUTPUT,  name, ReshapeNode.DIMS)
+        return self._nodes[name]
+    
     def cat(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode, dim: int) -> CatNode:
         name = NameScope.name(name)
         self._check_node(name)
@@ -612,6 +675,14 @@ class ComputeGraphBuilder:
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, ShapeNode.INPUT)
         return self._nodes[name]
     
+    def transpose(self, name: NodeName, input: ComputeGraphNode, dim0: int, dim1: int) -> TransposeNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = TransposeNode(name=name, partition=self._active_partition, dim0=dim0, dim1=dim1)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, TransposeNode.INPUT)
+        return self._nodes[name]
+
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -870,6 +941,10 @@ class ComputeGraph:
                 nodes[node_name] = IndexNodeEncoding(type="index", name=node_name)
             elif isinstance(node, ShapeNode):
                 nodes[node_name] = ShapeNodeEncoding(type="shape", name=node_name)
+            elif isinstance(node, ReshapeNode):
+                nodes[node_name] = ReshapeNodeEncoding(type="reshape", name=node_name)
+            elif isinstance(node, TransposeNode):
+                nodes[node_name] = TransposeNodeEncoding(type="transpose", name=node_name, dim0=node.dim0, dim1=node.dim1)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:

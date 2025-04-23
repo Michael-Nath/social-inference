@@ -4,7 +4,7 @@ from inference.tensor import Tensor
 from .graph import (
     ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, IndexNode,
     MatmulNode, SliceNode, UnsqueezeNode, BroadcastNode,
-    CatNode, FixedNode, HadamardNode, ShapeNode, SoftmaxNode
+    CatNode, FixedNode, HadamardNode, ShapeNode, SoftmaxNode, TransposeNode, ReshapeNode
 )
 from .simulator import simulate
 from .pipeline import PartitionWork, InputAssignment
@@ -331,4 +331,67 @@ def test_simulate_shape():
     
     # Expected result is the shape of the input tensor as a 1D tensor
     expected = torch.tensor(input_tensor.to_torch().shape, dtype=torch.long)
+    assert torch.allclose(output.tensor.to_torch(), expected)
+
+def test_simulate_transpose():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    with builder.partition("p0"):
+        # Transpose dimensions 0 and 1 of a 2D tensor
+        z = builder.transpose("z", x, dim0=0, dim1=1)
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    input_tensor = random_correlated_2d_tensor("1", (5, 3)).tensor
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[InputAssignment(node=z.name, input=TransposeNode.INPUT, tensor=input_tensor)]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    expected = input_tensor.to_torch().transpose(0, 1)
+    assert torch.allclose(output.tensor.to_torch(), expected)
+
+def test_simulate_reshape():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    # Create a fixed tensor for the target shape
+    with builder.partition("p0"):
+        shape_tensor = torch.tensor([2, 10], dtype=torch.long)
+        shape_node = builder.fixed("shape", shape_tensor)
+        # Reshape a 4x5 tensor into a 2x10 tensor
+        z = builder.reshape("z", x, shape_node)
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    input_tensor = random_correlated_2d_tensor("1", (4, 5)).tensor
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[InputAssignment(node=z.name, input=ReshapeNode.INPUT, tensor=input_tensor)]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    expected = input_tensor.to_torch().reshape(2, 10)
     assert torch.allclose(output.tensor.to_torch(), expected)

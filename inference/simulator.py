@@ -5,7 +5,7 @@ from .tensor import Tensor
 from .graph import (
     EdgeEncoding, NodeName, MatmulNode, InputNode, OutputNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
-    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode
+    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, ReshapeNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -159,7 +159,6 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 a = resolve_input(node, AddNode.A)
                 b = resolve_input(node, AddNode.B)
                 check_shapes(a,b)
-
                 output = a + b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -193,6 +192,12 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 input_tensor = resolve_input(node, ShapeNode.INPUT)
                 output = torch.tensor(input_tensor.shape, dtype=torch.long)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "reshape":
+                input_tensor = resolve_input(node, ReshapeNode.INPUT)
+                shape = resolve_input(node, ReshapeNode.DIMS)
+                output = torch.reshape(input_tensor, shape)
+                output_table[((node, DEFAULT_NODE_OUTPUT))] = output
                 return output
             else:
                 raise ValueError(f"Unknown node type: {encoded_node.type}")
