@@ -44,9 +44,10 @@ def trace_inner_model(model):
     return trace_model(core) 
 
 # Load the HuggingFace model.
-config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-1B")
-with init_empty_weights():
-    model = AutoModel.from_config(config)
+# config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-1B")
+# with init_empty_weights(include_buffers=True):
+#     model = AutoModel.from_config(config)
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B")
 # Trace the inner forward function.
 exported_module, dummy_args = trace_model(model)
 # Now the exported module expects one argument (a dict of dummy inputs).
@@ -85,4 +86,4 @@ for t in targets:
     print(t)
 # g.graph.print_tabular()
 # graph = exported_module.graph
-print(g.code)
+# print(g.code)

@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, Union
 from copy import deepcopy
 from pydantic import BaseModel, Field
+import torch
+
+from inference.tensor import Tensor
+from inference.name_scope import NameScope
 
 type NodeName = str
 type NodeInput = str
@@ -20,44 +24,6 @@ DEFAULT_NODE_OUTPUT: NodeOutput = "output"
 """
 Our logic mostly supports multiple outputs from a node, but not fully. Use this.
 """
-
-class ConstantNodeEncoding(BaseModel):
-    """
-    API-encoded constant node.
-    """
-    type: Literal["constant"]
-    name: NodeName
-    tensor_name: str
-
-class MatmulNodeEncoding(BaseModel):
-    """
-    API-encoded matmul node.
-    """
-    type: Literal["matmul"]
-    name: NodeName
-
-type NodeEncoding = Annotated[Union[MatmulNodeEncoding, ConstantNodeEncoding], Field(discriminator="type")]
-"""
-API-encoded node.
-
-No Input/Output nodes since those are never sent to workers.
-"""
-
-class EdgeEncoding(BaseModel):
-    """
-    API-encoded edge.
-    """
-    src: NodeName
-    src_output: NodeOutput
-    dst: NodeName
-    dst_input: NodeInput
-
-class GraphEncoding(BaseModel):
-    """
-    API-encoded graph.
-    """
-    nodes: dict[NodeName, NodeEncoding]
-    edges: list[EdgeEncoding]
 
 class ComputeGraphNode(ABC):
     """
@@ -90,6 +56,132 @@ class ComputeGraphNode(ABC):
         Get the names of the outputs from this node.
         """
         pass
+
+type Node = ComputeGraphNode
+
+class ConstantNodeEncoding(BaseModel):
+    """
+    API-encoded constant node.
+    """
+    type: Literal["constant"]
+    name: NodeName
+    tensor_name: str
+
+class MatmulNodeEncoding(BaseModel):
+    """
+    API-encoded matmul node.
+    """
+    type: Literal["matmul"]
+    name: NodeName
+
+class SliceNodeEncoding(BaseModel):
+    """
+    API-encoded slice node.
+    """
+    type: Literal["slice"]
+    name: NodeName
+    dim: int
+    start: int
+    end: int
+
+class UnsqueezeNodeEncoding(BaseModel):
+    """
+    API-encoded unsqueeze node.
+    """
+    type: Literal["unsqueeze"]
+    name: NodeName
+    dim: int
+
+class BroadcastNodeEncoding(BaseModel):
+    """
+    API-encoded broadcast node.
+    """
+    type: Literal["broadcast"]
+    name: NodeName
+    dim: int
+    n: int
+
+class CatNodeEncoding(BaseModel):
+    """
+    API-encoded concatenation node.
+    """
+    type: Literal["cat"]
+    name: NodeName
+    dim: int
+
+class FixedNodeEncoding(BaseModel):
+    """
+    API-encoded fixed tensor node.
+    """
+    type: Literal["fixed"]
+    name: NodeName
+    tensor: Tensor
+
+class HadamardNodeEncoding(BaseModel):
+    """
+    API-encoded hadamard product node.
+    """
+    type: Literal["hadamard"]
+    name: NodeName
+
+class AddNode(ComputeGraphNode):
+    """
+    Add two tensors together.
+    """
+    A: NodeInput = "a"
+    B: NodeInput = "b"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {AddNode.A, AddNode.B}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class AddNodeEncoding(BaseModel):
+    """
+    API-encoded add node.
+    """
+    type: Literal["add"]
+    name: NodeName
+
+type NodeEncoding = Annotated[
+    Union[
+        MatmulNodeEncoding,
+        ConstantNodeEncoding,
+        SliceNodeEncoding,
+        UnsqueezeNodeEncoding,
+        BroadcastNodeEncoding,
+        CatNodeEncoding,
+        FixedNodeEncoding,
+        HadamardNodeEncoding,
+        AddNodeEncoding
+    ],
+    Field(discriminator="type")
+]
+"""
+API-encoded node.
+
+No Input/Output nodes since those are never sent to workers.
+"""
+
+class EdgeEncoding(BaseModel):
+    """
+    API-encoded edge.
+    """
+    src: NodeName
+    src_output: NodeOutput
+    dst: NodeName
+    dst_input: NodeInput
+
+class GraphEncoding(BaseModel):
+    """
+    API-encoded graph.
+    """
+    nodes: dict[NodeName, NodeEncoding]
+    edges: list[EdgeEncoding]
 
 class InputNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
@@ -143,6 +235,121 @@ class MatmulNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
     
+class SliceNode(ComputeGraphNode):
+    """
+    Slice a tensor along a given dimension.
+    """
+    INPUT: NodeInput = "input"
+
+
+    dim: int
+    start: int
+    end: int
+
+    def __init__(self, name: NodeName, partition: PartitionName, dim: int, start: int, end: int):
+        super().__init__(name, partition)
+        self.dim = dim
+        self.start = start
+        self.end = end
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+    
+class UnsqueezeNode(ComputeGraphNode):
+    """
+    Unsqueeze a tensor along a given dimension.
+    """
+    INPUT: NodeInput = "input"
+
+    dim: int
+    
+    def __init__(self, name: NodeName, partition: PartitionName, dim: int):
+        super().__init__(name, partition)
+        self.dim = dim
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class BroadcastNode(ComputeGraphNode):
+    """
+    Broadcast a unit dimension to a given size.
+    """
+    INPUT: NodeInput = "input"
+
+    dim: int
+    n: int
+
+    def __init__(self, name: NodeName, partition: PartitionName, dim: int, n: int):
+        super().__init__(name, partition)
+        self.dim = dim
+        self.n = n
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+    
+class CatNode(ComputeGraphNode):
+    """
+    Concatenate two tensors along a given dimension.
+    """
+    A: NodeInput = "a"
+    B: NodeInput = "b"
+
+    dim: int
+
+    def __init__(self, name: NodeName, partition: PartitionName, dim: int):
+        super().__init__(name, partition)
+        self.dim = dim
+
+    def get_input_names(self) -> set[str]:
+        return {self.A, self.B}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+    
+class FixedNode(ComputeGraphNode):
+    """
+    A node that is fixed to a specific tensor value.
+
+    This should really be called ConstantNode, and ConstantNode should be SafeTensorNode
+    """
+    tensor: torch.Tensor
+    
+    def __init__(self, name: NodeName, partition: PartitionName, tensor: torch.Tensor):
+        super().__init__(name, partition)
+        self.tensor = tensor
+
+    def get_input_names(self) -> set[str]:
+        return {}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+    
+class HadamardNode(ComputeGraphNode):
+    """
+    Apply a hadamard product to two tensors.
+    """
+    A: NodeInput = "a"
+    B: NodeInput = "b"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.A, self.B}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+    
+
 def _check_partition_name(name: PartitionName):
     if name == PARTITION_INPUT or name == PARTITION_OUTPUT:
         raise ValueError(f"Invalid partition name: {name}")
@@ -210,39 +417,101 @@ class ComputeGraphBuilder:
         # Make the edge
         self._edges.append(ComputeGraphEdge(src, src_output, dst, dst_input))
 
-    def input(self, name: NodeName) -> InputNode:
+    def _check_node(self, name: NodeName, check_partition: bool = True):
         if name in self._nodes:
             raise ValueError(f"Node {name} already exists")
+        if check_partition and self._active_partition is None:
+            raise ValueError(f"Node {name} must be created within a partition")
+
+    def input(self, name: NodeName) -> InputNode:
+        name = NameScope.name(name)
+        self._check_node(name, check_partition=False)
 
         self._nodes[name] = InputNode(name=name, partition=PARTITION_INPUT)
         return self._nodes[name]
     
     def output(self, name: NodeName, x: ComputeGraphNode) -> OutputNode:
-        if name in self._nodes:
-            raise ValueError(f"Node {name} already exists")
+        name = NameScope.name(name)
+        self._check_node(name, check_partition=False)
+
         self._nodes[name] = OutputNode(name=name, partition=PARTITION_OUTPUT)
         self._make_edge(x.name, DEFAULT_NODE_OUTPUT, name, OutputNode.INPUT)
         return self._nodes[name]
 
     def constant(self, name: NodeName, tensor_name: str) -> ConstantNode:
-        if name in self._nodes:
-            raise ValueError(f"Node {name} already exists")
-        if self._active_partition is None:
-            raise ValueError(f"Node {name} must be created within a partition")
+        name = NameScope.name(name)
+        self._check_node(name)
 
         self._nodes[name] = ConstantNode(name=name, partition=self._active_partition, tensor_name=tensor_name)
         self._make_edge(name, DEFAULT_NODE_OUTPUT, name, InputNode.INPUT)
         return self._nodes[name]
     
+    
     def matmul(self, name: NodeName, lhs: ComputeGraphNode, rhs: ComputeGraphNode) -> MatmulNode:
-        if name in self._nodes:
-            raise ValueError(f"Node {name} already exists")
-        if self._active_partition is None:
-            raise ValueError(f"Node {name} must be created within a partition")
+        name = NameScope.name(name)
+        self._check_node(name)
 
         self._nodes[name] = MatmulNode(name=name, partition=self._active_partition)
         self._make_edge(lhs.name, DEFAULT_NODE_OUTPUT, name, MatmulNode.LHS)
         self._make_edge(rhs.name, DEFAULT_NODE_OUTPUT, name, MatmulNode.RHS)
+        return self._nodes[name]
+    
+    def slice(self, name: NodeName, input: ComputeGraphNode, dim: int, start: int, end: int) -> SliceNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = SliceNode(name=name, partition=self._active_partition, dim=dim, start=start, end=end)   
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, SliceNode.INPUT)
+        return self._nodes[name]
+    
+    def unsqueeze(self, name: NodeName, input: ComputeGraphNode, dim: int) -> UnsqueezeNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = UnsqueezeNode(name=name, partition=self._active_partition, dim=dim)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, UnsqueezeNode.INPUT)
+        return self._nodes[name]
+    
+    def broadcast(self, name: NodeName, input: ComputeGraphNode, dim: int, n: int) -> BroadcastNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = BroadcastNode(name=name, partition=self._active_partition, dim=dim, n=n)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, BroadcastNode.INPUT)
+        return self._nodes[name]
+    
+    def cat(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode, dim: int) -> CatNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = CatNode(name=name, partition=self._active_partition, dim=dim)
+        self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, CatNode.A)
+        self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, CatNode.B)
+        return self._nodes[name]
+
+    def fixed(self, name: NodeName, tensor: torch.Tensor) -> FixedNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+    
+        self._nodes[name] = FixedNode(name=name, partition=self._active_partition, tensor=tensor)
+        return self._nodes[name]
+    
+    def hadamard(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode) -> HadamardNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = HadamardNode(name=name, partition=self._active_partition)
+        self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, HadamardNode.A)
+        self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, HadamardNode.B)
+        return self._nodes[name]
+
+    def add(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode) -> AddNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = AddNode(name=name, partition=self._active_partition)
+        self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, AddNode.A)
+        self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, AddNode.B)
         return self._nodes[name]
 
     def build(self, copy: bool = False) -> ComputeGraph:
@@ -483,8 +752,99 @@ class ComputeGraph:
                 nodes[node_name] = MatmulNodeEncoding(type="matmul", name=node_name)
             elif isinstance(node, ConstantNode):
                 nodes[node_name] = ConstantNodeEncoding(type="constant", name=node_name, tensor_name=node.tensor_name)
+            elif isinstance(node, SliceNode):
+                nodes[node_name] = SliceNodeEncoding(type="slice", name=node_name, dim=node.dim, start=node.start, end=node.end)
+            elif isinstance(node, UnsqueezeNode):
+                nodes[node_name] = UnsqueezeNodeEncoding(type="unsqueeze", name=node_name, dim=node.dim)
+            elif isinstance(node, BroadcastNode):
+                nodes[node_name] = BroadcastNodeEncoding(type="broadcast", name=node_name, dim=node.dim, n=node.n)
+            elif isinstance(node, CatNode):
+                nodes[node_name] = CatNodeEncoding(type="cat", name=node_name, dim=node.dim)
+            elif isinstance(node, FixedNode):
+                nodes[node_name] = FixedNodeEncoding(type="fixed", name=node_name, tensor=Tensor.from_torch(node.tensor))
+            elif isinstance(node, HadamardNode):
+                nodes[node_name] = HadamardNodeEncoding(type="hadamard", name=node_name)
+            elif isinstance(node, AddNode):
+                nodes[node_name] = AddNodeEncoding(type="add", name=node_name)
+            # Input/Output nodes are not encoded since they are never sent to workers
+
         edges: list[EdgeEncoding] = []
         for e in self._forward_edges.values():
             for edge in e:
                 edges.append(EdgeEncoding(src=edge.src, src_output=edge.src_output, dst=edge.dst, dst_input=edge.dst_input))
         return GraphEncoding(nodes=nodes, edges=edges)
+
+    def validate_graph(self) -> list[str]:
+        """
+        Validates the graph structure and returns a list of errors found.
+        Checks for:
+        - Input nodes without driving edges
+        - Nodes without partitions
+        - Output nodes without edges
+        - All node inputs are connected
+        - All node outputs are connected
+        """
+        errors = []
+
+        # Check for nodes without partitions
+        for node_name, node in self._nodes.items():
+            if node.partition is None:
+                errors.append(f"Node {node_name} has no partition assigned")
+
+        # Check for input nodes without driving edges
+        input_nodes = self.list_partition(PARTITION_INPUT)
+        for input_node in input_nodes:
+            if not self._forward_edges[input_node]:
+                errors.append(f"Input node {input_node} has no driving edges")
+
+        # Check for output nodes without edges
+        output_nodes = self.list_partition(PARTITION_OUTPUT)
+        for output_node in output_nodes:
+            if not self._backward_edges[output_node]:
+                errors.append(f"Output node {output_node} has no incoming edges")
+
+        # Check that all node inputs are connected
+        for node_name, node in self._nodes.items():
+            # Skip input nodes since they have no inputs
+            if isinstance(node, InputNode):
+                continue
+
+            # Get all inputs this node expects
+            expected_inputs = set(node.get_input_names())
+            
+            # Get all inputs that are actually connected
+            connected_inputs = {edge.dst_input for edge in self._backward_edges[node_name]}
+            
+            # Check for missing inputs
+            missing_inputs = expected_inputs - connected_inputs
+            if missing_inputs:
+                errors.append(f"Node {node_name} is missing connections for inputs: {missing_inputs}")
+
+            # Check for extra inputs (not expected by the node)
+            extra_inputs = connected_inputs - expected_inputs
+            if extra_inputs:
+                errors.append(f"Node {node_name} has unexpected input connections: {extra_inputs}")
+
+        # Check that all node outputs are connected
+        for node_name, node in self._nodes.items():
+            # Skip output nodes since they have no outputs
+            if isinstance(node, OutputNode):
+                continue
+
+            # Get all outputs this node provides
+            expected_outputs = set(node.get_output_names())
+            
+            # Get all outputs that are actually connected
+            connected_outputs = {edge.src_output for edge in self._forward_edges[node_name]}
+            
+            # Check for missing outputs
+            missing_outputs = expected_outputs - connected_outputs
+            if missing_outputs:
+                errors.append(f"Node {node_name} has unconnected outputs: {missing_outputs}")
+
+            # Check for extra outputs (not provided by the node)
+            extra_outputs = connected_outputs - expected_outputs
+            if extra_outputs:
+                errors.append(f"Node {node_name} has unexpected output connections: {extra_outputs}")
+
+        return errors
