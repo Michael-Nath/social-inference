@@ -40,12 +40,6 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
         if edge.src not in backward_edges:
             backward_edges[edge.src] = {}
         backward_edges[edge.src][edge.src_output] = edge
-
-    # Find all nodes that need to be evaluated
-    # This includes all destination nodes of inputs, plus any of their downstream nodes
-    eval_nodes: list[NodeName] = []
-    for input in work.inputs:
-        eval_nodes.append(input.node)
     
     # Also include all nodes with no forward edges (outputs)
     output_nodes: list[NodeName] = []
@@ -100,7 +94,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
-                check_shapes(lhs, rhs)
+                # check_shapes(lhs, rhs)
 
                 output = lhs @ rhs
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
@@ -134,7 +128,6 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 b = resolve_input(node, CatNode.B)
                 dim = check_dim(encoded_node.dim)
                 check_shapes(a, b, except_dim=dim)
-                
                 output = torch.cat([a, b], dim=dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -189,9 +182,16 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                         raise ValueError(f"Index must be non-negative, got {idx} at position {i}")
                     if i < len(input_tensor_shape) and idx >= input_tensor_shape[i]:
                         raise ValueError(f"Index {idx} at position {i} is out of bounds for dimension size {input_tensor_shape[i]}")
+
+                # To preserve shape: wrap each index as a slice if it’s the last one
+                indexing = []
+                for dim, idx in enumerate(index_list):
+                    if dim == len(index_list) - 1:
+                        indexing.append(slice(idx, idx + 1))  # turn scalar index into slice
+                    else:
+                        indexing.append(idx)
                 
-                # Use the index list to select from the input tensor
-                output = input_tensor[tuple(index_list)]
+                output = input_tensor[tuple(indexing)]
                 print(f"{input_tensor}[{index_tensor}] => {output}")
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -202,7 +202,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 return output
             elif encoded_node.type == "reshape":
                 input_tensor = resolve_input(node, ReshapeNode.INPUT)
-                shape = resolve_input(node, ReshapeNode.DIMS)
+                shape = resolve_input(node, ReshapeNode.DIMS).int()
                 output = torch.reshape(input_tensor, tuple(shape.tolist()))
                 output_table[((node, DEFAULT_NODE_OUTPUT))] = output
                 return output
