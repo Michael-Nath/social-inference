@@ -4,7 +4,7 @@ from inference.tensor import Tensor
 from .graph import (
     ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, IndexNode,
     MatmulNode, SliceNode, UnsqueezeNode, BroadcastNode,
-    CatNode, FixedNode, HadamardNode, ShapeNode, SoftmaxNode, TransposeNode, ReshapeNode
+    CatNode, FixedNode, HadamardNode, ShapeNode, SoftmaxNode, TransposeNode, ReshapeNode, DivideNode
 )
 from .simulator import simulate
 from .pipeline import PartitionWork, InputAssignment
@@ -394,4 +394,41 @@ def test_simulate_reshape():
     assert output.node == z.name
     assert output.output == DEFAULT_NODE_OUTPUT
     expected = input_tensor.to_torch().reshape(2, 10)
+    assert torch.allclose(output.tensor.to_torch(), expected)
+
+def test_simulate_divide():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    y = builder.input("y")
+    with builder.partition("p0"):
+        # Divide x by y element-wise
+        z = builder.divide("z", x, y)
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    # Create input tensors with non-zero values to avoid division by zero
+    input1 = random_correlated_2d_tensor("1", (5, 5)).tensor
+    input2 = random_correlated_2d_tensor("2", (5, 5)).tensor
+    
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[
+            InputAssignment(node=z.name, input=DivideNode.A, tensor=input1),
+            InputAssignment(node=z.name, input=DivideNode.B, tensor=input2)
+        ]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    expected = input1.to_torch() / input2.to_torch()
     assert torch.allclose(output.tensor.to_torch(), expected)

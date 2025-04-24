@@ -5,7 +5,7 @@ from .tensor import Tensor
 from .graph import (
     EdgeEncoding, NodeName, MatmulNode, InputNode, OutputNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
-    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, ReshapeNode
+    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, ReshapeNode, TransposeNode, DivideNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -162,6 +162,13 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 output = a + b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
+            elif encoded_node.type == "divide":
+                a = resolve_input(node, DivideNode.A)
+                b = resolve_input(node, DivideNode.B)
+                check_shapes(a,b)
+                output = a / b
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
             elif encoded_node.type == "index":
                 input_tensor = resolve_input(node, IndexNode.INPUT)
                 index_tensor = resolve_input(node, IndexNode.INDEX)
@@ -196,8 +203,16 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "reshape":
                 input_tensor = resolve_input(node, ReshapeNode.INPUT)
                 shape = resolve_input(node, ReshapeNode.DIMS)
-                output = torch.reshape(input_tensor, shape)
+                output = torch.reshape(input_tensor, tuple(shape.tolist()))
                 output_table[((node, DEFAULT_NODE_OUTPUT))] = output
+                return output
+            elif encoded_node.type == "transpose":
+                input_tensor = resolve_input(node, TransposeNode.INPUT)
+                dim0 = encoded_node.dim0
+                dim1 = encoded_node.dim1
+
+                output = torch.transpose(input_tensor, dim0, dim1)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             else:
                 raise ValueError(f"Unknown node type: {encoded_node.type}")

@@ -164,6 +164,13 @@ class TransposeNodeEncoding(BaseModel):
     dim0: int
     dim1: int
 
+class DivideNodeEncoding(BaseModel):
+    """
+    API-encoded divide node.
+    """
+    type: Literal["divide"]
+    name: NodeName
+
 class AddNode(ComputeGraphNode):
     """
     Add two tensors together.
@@ -177,6 +184,23 @@ class AddNode(ComputeGraphNode):
     def get_input_names(self) -> set[str]:
         return {AddNode.A, AddNode.B}
 
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class DivideNode(ComputeGraphNode):
+    """
+    Divide two tensors element-wise.
+    """
+
+    A: NodeInput = "a"
+    B: NodeInput = "b"
+    
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+    
+    def get_input_names(self) -> set[str]:
+        return { DivideNode.A, DivideNode.B }
+    
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
@@ -202,6 +226,7 @@ type NodeEncoding = Annotated[
         AddNodeEncoding,
         ShapeNodeEncoding,
         ReshapeNodeEncoding,
+        DivideNodeEncoding,
         TransposeNodeEncoding,
     ],
     Field(discriminator="type")
@@ -683,6 +708,15 @@ class ComputeGraphBuilder:
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, TransposeNode.INPUT)
         return self._nodes[name]
 
+    def divide(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode) -> DivideNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = DivideNode(name=name, partition=self._active_partition)
+        self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, DivideNode.A)
+        self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, DivideNode.B)
+        return self._nodes[name]
+
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -945,6 +979,8 @@ class ComputeGraph:
                 nodes[node_name] = ReshapeNodeEncoding(type="reshape", name=node_name)
             elif isinstance(node, TransposeNode):
                 nodes[node_name] = TransposeNodeEncoding(type="transpose", name=node_name, dim0=node.dim0, dim1=node.dim1)
+            elif isinstance(node, DivideNode):
+                nodes[node_name] = DivideNodeEncoding(type="divide", name=node_name)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
