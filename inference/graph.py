@@ -81,7 +81,6 @@ class SoftmaxNodeEncoding(BaseModel):
 
     type: Literal["softmax"]
     name: NodeName
-    dim: int
 
 class SliceNodeEncoding(BaseModel):
     """
@@ -89,9 +88,6 @@ class SliceNodeEncoding(BaseModel):
     """
     type: Literal["slice"]
     name: NodeName
-    dim: int
-    start: int
-    end: int
 
 class UnsqueezeNodeEncoding(BaseModel):
     """
@@ -99,7 +95,6 @@ class UnsqueezeNodeEncoding(BaseModel):
     """
     type: Literal["unsqueeze"]
     name: NodeName
-    dim: int
 
 class BroadcastNodeEncoding(BaseModel):
     """
@@ -107,8 +102,6 @@ class BroadcastNodeEncoding(BaseModel):
     """
     type: Literal["broadcast"]
     name: NodeName
-    dim: int
-    n: int
 
 class CatNodeEncoding(BaseModel):
     """
@@ -116,7 +109,6 @@ class CatNodeEncoding(BaseModel):
     """
     type: Literal["cat"]
     name: NodeName
-    dim: int
 
 class FixedNodeEncoding(BaseModel):
     """
@@ -170,6 +162,43 @@ class AddNodeEncoding(BaseModel):
     type: Literal["add"]
     name: NodeName
 
+class DivNodeEncoding(BaseModel):
+    """
+    API-encoded division node.
+    """
+    type: Literal["div"]
+    name: NodeName
+
+class DivNode(ComputeGraphNode):
+    """
+    Element-wise division of two tensors.
+    """
+    A: NodeInput = "a"
+    B: NodeInput = "b"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.A, self.B}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class FloorNodeEncoding(BaseModel):
+    """
+    API-encoded floor node.
+    """
+    type: Literal["floor"]
+    name: NodeName
+
+class CeilNodeEncoding(BaseModel):
+    """
+    API-encoded ceil node.
+    """
+    type: Literal["ceil"]
+    name: NodeName
+
 type NodeEncoding = Annotated[
     Union[
         MatmulNodeEncoding,
@@ -184,6 +213,9 @@ type NodeEncoding = Annotated[
         IndexNodeEncoding,
         AddNodeEncoding,
         ShapeNodeEncoding,
+        DivNodeEncoding,
+        FloorNodeEncoding,
+        CeilNodeEncoding,
     ],
     Field(discriminator="type")
 ]
@@ -264,13 +296,13 @@ class MatmulNode(ComputeGraphNode):
 class SoftmaxNode(ComputeGraphNode):
     "Perform a softmax"
     INPUT: NodeInput = "input"
+    DIM: NodeInput = "dim"
 
-    def __init__(self, name: NodeName, partition: PartitionName, dim: int):
+    def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
-        self.dim = dim
     
     def get_input_names(self) -> set[str]:
-        return {self.INPUT}
+        return {self.INPUT, self.DIM}
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -281,19 +313,15 @@ class SliceNode(ComputeGraphNode):
     """
     INPUT: NodeInput = "input"
 
+    DIM: NodeInput = "dim"
+    START: NodeInput = "start"
+    END: NodeInput = "end"
 
-    dim: int
-    start: int
-    end: int
-
-    def __init__(self, name: NodeName, partition: PartitionName, dim: int, start: int, end: int):
+    def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
-        self.dim = dim
-        self.start = start
-        self.end = end
 
     def get_input_names(self) -> set[str]:
-        return {self.INPUT}
+        return {self.INPUT, self.DIM, self.START, self.END} 
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -304,14 +332,13 @@ class UnsqueezeNode(ComputeGraphNode):
     """
     INPUT: NodeInput = "input"
 
-    dim: int
+    DIM: NodeInput = "dim"
     
-    def __init__(self, name: NodeName, partition: PartitionName, dim: int):
+    def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
-        self.dim = dim
 
     def get_input_names(self) -> set[str]:
-        return {self.INPUT}
+        return {self.INPUT, self.DIM}
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -322,16 +349,14 @@ class BroadcastNode(ComputeGraphNode):
     """
     INPUT: NodeInput = "input"
 
-    dim: int
-    n: int
+    DIM: NodeInput = "dim"
+    N: NodeInput = "n"
 
-    def __init__(self, name: NodeName, partition: PartitionName, dim: int, n: int):
+    def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
-        self.dim = dim
-        self.n = n
 
     def get_input_names(self) -> set[str]:
-        return {self.INPUT}
+        return {self.INPUT, self.DIM, self.N}
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -343,14 +368,13 @@ class CatNode(ComputeGraphNode):
     A: NodeInput = "a"
     B: NodeInput = "b"
 
-    dim: int
+    DIM: NodeInput = "dim"
 
-    def __init__(self, name: NodeName, partition: PartitionName, dim: int):
+    def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
-        self.dim = dim
 
     def get_input_names(self) -> set[str]:
-        return {self.A, self.B}
+        return {self.A, self.B, self.DIM}
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -421,6 +445,36 @@ class ShapeNode(ComputeGraphNode):
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
 
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class FloorNode(ComputeGraphNode):
+    """
+    Apply floor operation and convert to integer.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class CeilNode(ComputeGraphNode):
+    """
+    Apply ceil operation and convert to integer.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
@@ -530,44 +584,52 @@ class ComputeGraphBuilder:
         self._make_edge(rhs.name, DEFAULT_NODE_OUTPUT, name, MatmulNode.RHS)
         return self._nodes[name]
     
-    def softmax(self, name: NodeName, input: ComputeGraphNode, dim: int) -> SoftmaxNode:
+    def softmax(self, name: NodeName, input: ComputeGraphNode, dim: ComputeGraphNode) -> SoftmaxNode:
         name = NameScope.name(name)
         self._check_node(name)
-        self._nodes[name] = SoftmaxNode(name=name, partition=self._active_partition, dim=dim)
+        self._nodes[name] = SoftmaxNode(name=name, partition=self._active_partition)
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, SoftmaxNode.INPUT)
+        self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, SoftmaxNode.DIM)
         return self._nodes[name]
 
-    def slice(self, name: NodeName, input: ComputeGraphNode, dim: int, start: int, end: int) -> SliceNode:
+    def slice(self, name: NodeName, input: ComputeGraphNode, dim: ComputeGraphNode, start: ComputeGraphNode, end: ComputeGraphNode) -> SliceNode:
         name = NameScope.name(name)
         self._check_node(name)
 
-        self._nodes[name] = SliceNode(name=name, partition=self._active_partition, dim=dim, start=start, end=end)   
+        self._nodes[name] = SliceNode(name=name, partition=self._active_partition)
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, SliceNode.INPUT)
+        self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, SliceNode.DIM)
+        self._make_edge(start.name, DEFAULT_NODE_OUTPUT, name, SliceNode.START)
+        self._make_edge(end.name, DEFAULT_NODE_OUTPUT, name, SliceNode.END)
         return self._nodes[name]
     
-    def unsqueeze(self, name: NodeName, input: ComputeGraphNode, dim: int) -> UnsqueezeNode:
+    def unsqueeze(self, name: NodeName, input: ComputeGraphNode, dim: ComputeGraphNode) -> UnsqueezeNode:
         name = NameScope.name(name)
         self._check_node(name)
 
-        self._nodes[name] = UnsqueezeNode(name=name, partition=self._active_partition, dim=dim)
+        self._nodes[name] = UnsqueezeNode(name=name, partition=self._active_partition)
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, UnsqueezeNode.INPUT)
+        self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, UnsqueezeNode.DIM)
         return self._nodes[name]
     
-    def broadcast(self, name: NodeName, input: ComputeGraphNode, dim: int, n: int) -> BroadcastNode:
+    def broadcast(self, name: NodeName, input: ComputeGraphNode, dim: ComputeGraphNode, n: ComputeGraphNode) -> BroadcastNode:
         name = NameScope.name(name)
         self._check_node(name)
 
-        self._nodes[name] = BroadcastNode(name=name, partition=self._active_partition, dim=dim, n=n)
+        self._nodes[name] = BroadcastNode(name=name, partition=self._active_partition)
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, BroadcastNode.INPUT)
+        self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, BroadcastNode.DIM)
+        self._make_edge(n.name, DEFAULT_NODE_OUTPUT, name, BroadcastNode.N)
         return self._nodes[name]
     
-    def cat(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode, dim: int) -> CatNode:
+    def cat(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode, dim: ComputeGraphNode) -> CatNode:
         name = NameScope.name(name)
         self._check_node(name)
 
-        self._nodes[name] = CatNode(name=name, partition=self._active_partition, dim=dim)
+        self._nodes[name] = CatNode(name=name, partition=self._active_partition)
         self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, CatNode.A)
         self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, CatNode.B)
+        self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, CatNode.DIM)
         return self._nodes[name]
 
     def fixed(self, name: NodeName, tensor: torch.Tensor) -> FixedNode:
@@ -612,6 +674,31 @@ class ComputeGraphBuilder:
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, ShapeNode.INPUT)
         return self._nodes[name]
     
+    def div(self, name: NodeName, a: ComputeGraphNode, b: ComputeGraphNode) -> DivNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = DivNode(name=name, partition=self._active_partition)
+        self._make_edge(a.name, DEFAULT_NODE_OUTPUT, name, DivNode.A)
+        self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, DivNode.B)
+        return self._nodes[name]
+
+    def floor(self, name: NodeName, input: ComputeGraphNode) -> FloorNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = FloorNode(name=name, partition=self._active_partition)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, FloorNode.INPUT)
+        return self._nodes[name]
+    
+    def ceil(self, name: NodeName, input: ComputeGraphNode) -> CeilNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = CeilNode(name=name, partition=self._active_partition)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, CeilNode.INPUT)
+        return self._nodes[name]
+
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -851,25 +938,31 @@ class ComputeGraph:
             elif isinstance(node, ConstantNode):
                 nodes[node_name] = ConstantNodeEncoding(type="constant", name=node_name, tensor_name=node.tensor_name)
             elif isinstance(node, SliceNode):
-                nodes[node_name] = SliceNodeEncoding(type="slice", name=node_name, dim=node.dim, start=node.start, end=node.end)
+                nodes[node_name] = SliceNodeEncoding(type="slice", name=node_name)
             elif isinstance(node, UnsqueezeNode):
-                nodes[node_name] = UnsqueezeNodeEncoding(type="unsqueeze", name=node_name, dim=node.dim)
+                nodes[node_name] = UnsqueezeNodeEncoding(type="unsqueeze", name=node_name)
             elif isinstance(node, BroadcastNode):
-                nodes[node_name] = BroadcastNodeEncoding(type="broadcast", name=node_name, dim=node.dim, n=node.n)
+                nodes[node_name] = BroadcastNodeEncoding(type="broadcast", name=node_name)
             elif isinstance(node, CatNode):
-                nodes[node_name] = CatNodeEncoding(type="cat", name=node_name, dim=node.dim)
+                nodes[node_name] = CatNodeEncoding(type="cat", name=node_name)
             elif isinstance(node, FixedNode):
                 nodes[node_name] = FixedNodeEncoding(type="fixed", name=node_name, tensor=Tensor.from_torch(node.tensor))
             elif isinstance(node, HadamardNode):
                 nodes[node_name] = HadamardNodeEncoding(type="hadamard", name=node_name)
             elif isinstance(node, AddNode):
                 nodes[node_name] = AddNodeEncoding(type="add", name=node_name)
+            elif isinstance(node, DivNode):
+                nodes[node_name] = DivNodeEncoding(type="div", name=node_name)
             elif isinstance(node, SoftmaxNode):
-                nodes[node_name] = SoftmaxNodeEncoding(type="softmax", name=node_name, dim=node.dim)
+                nodes[node_name] = SoftmaxNodeEncoding(type="softmax", name=node_name)
             elif isinstance(node, IndexNode):
                 nodes[node_name] = IndexNodeEncoding(type="index", name=node_name)
             elif isinstance(node, ShapeNode):
                 nodes[node_name] = ShapeNodeEncoding(type="shape", name=node_name)
+            elif isinstance(node, FloorNode):
+                nodes[node_name] = FloorNodeEncoding(type="floor", name=node_name)
+            elif isinstance(node, CeilNode):
+                nodes[node_name] = CeilNodeEncoding(type="ceil", name=node_name)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
@@ -879,7 +972,9 @@ class ComputeGraph:
         edges: list[EdgeEncoding] = []
         for e in self._forward_edges.values():
             for edge in e:
-                edges.append(EdgeEncoding(src=edge.src, src_output=edge.src_output, dst=edge.dst, dst_input=edge.dst_input))
+                # Only include edges where both src and dst are encodable (not Input/Output)
+                if edge.src in nodes and edge.dst in nodes:
+                    edges.append(EdgeEncoding(src=edge.src, src_output=edge.src_output, dst=edge.dst, dst_input=edge.dst_input))
         return GraphEncoding(nodes=nodes, edges=edges)
 
     def validate_graph(self) -> list[str]:

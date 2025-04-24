@@ -30,7 +30,7 @@ def test_llama_rope():
     # Run our implementation
     builder = ComputeGraphBuilder()
     
-    # Create input nodes
+    # Create input nodes - remove batch dimension
     q_node = builder.input("q")
     k_node = builder.input("k")
     cos_node = builder.input("cos")
@@ -38,7 +38,7 @@ def test_llama_rope():
     
     # Apply RoPE
     with builder.partition("p0"):
-        q_embed, k_embed = apply_llama_rope(builder, head_dim, q_node, k_node, cos_node, sin_node)
+        q_embed, k_embed = apply_llama_rope(builder, q_node, k_node, cos_node, sin_node)
     
     # Create output nodes
     builder.output("q_out", q_embed)
@@ -47,13 +47,13 @@ def test_llama_rope():
     # Build graph
     g = builder.build()
 
-    # Create pipeline and enqueue inputs
+    # Create pipeline and enqueue inputs - remove batch dimension
     pipeline = ComputePipeline(g)
     inputs = {
-        "q": Tensor.from_torch(q),
-        "k": Tensor.from_torch(k),
-        "cos": Tensor.from_torch(cos),
-        "sin": Tensor.from_torch(sin)
+        "q": Tensor.from_torch(q.squeeze(0)),  # Remove batch dimension
+        "k": Tensor.from_torch(k.squeeze(0)),  # Remove batch dimension
+        "cos": Tensor.from_torch(cos.squeeze(0)),  # Remove batch dimension
+        "sin": Tensor.from_torch(sin.squeeze(0))  # Remove batch dimension
     }
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
 
@@ -75,6 +75,6 @@ def test_llama_rope():
     q_out = output.outputs["q_out"].to_torch()
     k_out = output.outputs["k_out"].to_torch()
     
-    # Compare results
-    assert torch.allclose(q_out, hf_q, rtol=1e-3, atol=1e-3)
-    assert torch.allclose(k_out, hf_k, rtol=1e-3, atol=1e-3) 
+    # Compare results - remove batch dimension from HF outputs
+    assert torch.allclose(q_out, hf_q.squeeze(0), rtol=1e-3, atol=1e-3)
+    assert torch.allclose(k_out, hf_k.squeeze(0), rtol=1e-3, atol=1e-3) 
