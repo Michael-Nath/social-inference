@@ -139,7 +139,6 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 a = resolve_input(node, HadamardNode.A)
                 b = resolve_input(node, HadamardNode.B)
                 check_shapes(a,b)
-
                 output = a * b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
