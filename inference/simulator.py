@@ -236,8 +236,9 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 input_tensor = resolve_input(node, TransposeNode.INPUT)
                 dim0 = encoded_node.dim0
                 dim1 = encoded_node.dim1
-
                 output = torch.transpose(input_tensor, dim0, dim1)
+                output_table[(((node, DEFAULT_NODE_OUTPUT)))] = output
+                return output
             elif encoded_node.type == "floor":
                 input_tensor = resolve_input(node, FloorNode.INPUT)
                 output = torch.floor(input_tensor).to(torch.long)

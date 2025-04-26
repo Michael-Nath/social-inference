@@ -473,11 +473,6 @@ class ReshapeNode(ComputeGraphNode):
     """
     INPUT: NodeInput  = "input"
     DIMS:  NodeInput  = "dims"
-class FloorNode(ComputeGraphNode):
-    """
-    Apply floor operation and convert to integer.
-    """
-    INPUT: NodeInput = "input"
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
@@ -488,19 +483,16 @@ class FloorNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
-class TransposeNode(ComputeGraphNode):
+class FloorNode(ComputeGraphNode):
     """
-    Transpose two dimensions of a tensor.
+    Apply floor operation and convert to integer.
     """
     INPUT: NodeInput = "input"
 
-    dim0: int
-    dim1: int
-
-    def __init__(self, name: NodeName, partition: PartitionName, dim0: int, dim1: int):
+    def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
-        self.dim0 = dim0
-        self.dim1 = dim1
+
+    def get_input_names(self) -> set[str]:
         return {self.INPUT}
     
     def get_output_names(self) -> set[str]:
@@ -521,9 +513,26 @@ class CeilNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
-def _check_partition_name(name: PartitionName):
-    if name == PARTITION_INPUT or name == PARTITION_OUTPUT:
-        raise ValueError(f"Invalid partition name: {name}")
+class TransposeNode(ComputeGraphNode):
+    """
+    Transpose two dimensions of a tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    dim0: int
+    dim1: int
+
+    def __init__(self, name: NodeName, partition: PartitionName, dim0: int, dim1: int):
+        super().__init__(name, partition)
+        self.dim0 = dim0
+        self.dim1 = dim1
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 
 @dataclass(eq=True, frozen=True)
 class ComputeGraphEdge:

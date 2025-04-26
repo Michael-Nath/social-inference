@@ -100,7 +100,7 @@ def llama_attn(
     
     bsz_cat_seqlen = b.cat("bsz+seq_len", batch_size, seq_len, 0)
     head_dim_node = b.fixed("head_dim", torch.tensor([head_dim]))
-    nhead_node = b.divide("nheads", hidden_dim, head_dim_node)
+    nhead_node = b.div("nheads", hidden_dim, head_dim_node)
 
     hidden_shape = b.cat("bsz+seq_len+nheads", bsz_cat_seqlen, nhead_node, 0)
     hidden_shape = b.cat("bsz+seq_len+nheads+head_dim", hidden_shape, head_dim_node, 0)
