@@ -3,9 +3,10 @@ from collections import defaultdict
 
 from .tensor import Tensor
 from .graph import (
-    EdgeEncoding, NodeName, MatmulNode, InputNode, OutputNode, DEFAULT_NODE_OUTPUT,
+    EdgeEncoding, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
-    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, ReshapeNode, TransposeNode, DivideNode
+    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
+    FloorNode, CeilNode, ReshapeNode, TransposeNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -63,25 +64,35 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             if dim < 0:
                 raise NotImplementedError("Negative (inferred) dimensions not supported")
             return dim
+        def check_shape(tensor: torch.Tensor, shape: list[int]):
+            """
+            Checks that a tensor matches the expected shape.
+            If shape[i] = -1, it means "don't care" about that dimension.
+            """
+            if len(tensor.shape) != len(shape):
+                raise ValueError(f"Tensor rank {len(tensor.shape)} does not match expected rank {len(shape)}")
             
-        def check_shapes(*args, except_dim: int | None = None):
+            for i, (actual, expected) in enumerate(zip(tensor.shape, shape)):
+                if expected != -1 and actual != expected:
+                    raise ValueError(f"Tensor shape {tensor.shape} does not match expected shape {shape} (mismatch at dimension {i})")
+            return tensor
+
+        def check_shapes_match(*args, except_dim: int | None = None):
             """
             Checks that all shapes are equal (except except_dim if that is set)
             """
             if except_dim is None:
                 # Check all dimensions match exactly
                 for t in args:
-                    if t.shape != args[0].shape:
-                        raise ValueError(f"Shape {t.shape} does not match shape {args[0].shape}")
+                    check_shape(t, list(args[0].shape))
             else:
                 # Check all dimensions except the specified one
                 for t in args:
-                    if len(t.shape) != len(args[0].shape):
-                        raise ValueError(f"Tensor rank {len(t.shape)} does not match {len(args[0].shape)}")
-                    
-                    for i, (s1, s2) in enumerate(zip(t.shape, args[0].shape)):
-                        if i != except_dim and s1 != s2:
-                            raise ValueError(f"Shape {t.shape} does not match shape {args[0].shape} (mismatch at dimension {i})")
+                    # Create expected shape with -1 for the except_dim
+                    expected_shape = list(args[0].shape)
+                    if except_dim < len(expected_shape):
+                        expected_shape[except_dim] = -1
+                    check_shape(t, expected_shape)
 
         # If we've already evaluated this node and output, return the cached result
         if (node, output) in output_table:
@@ -94,31 +105,37 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
-                # check_shapes(lhs, rhs)
+                check_shapes_match(lhs, rhs)
 
                 output = lhs @ rhs
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "slice":
                 input_tensor = resolve_input(node, SliceNode.INPUT)
-                dim = check_dim(encoded_node.dim)
-                start = check_dim(encoded_node.start)
-                end = check_dim(encoded_node.end)
+                dim = check_shape(resolve_input(node, SliceNode.DIM), [1]).item()
+                start = check_shape(resolve_input(node, SliceNode.START), [1]).item()
+                end = check_shape(resolve_input(node, SliceNode.END), [1]).item()
 
                 output = input_tensor.narrow(dim, start, end - start)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "unsqueeze":
                 input_tensor = resolve_input(node, UnsqueezeNode.INPUT)
-                dim = check_dim(encoded_node.dim)
+                # Resolve dim dynamically, ensure it's a 1-element tensor, and get the integer value
+                dim_tensor = resolve_input(node, UnsqueezeNode.DIM)
+                dim = check_shape(dim_tensor, [1]).item()
 
                 output = input_tensor.unsqueeze(dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "broadcast":
                 input_tensor = resolve_input(node, BroadcastNode.INPUT)
-                dim = check_dim(encoded_node.dim)
-                n = check_dim(encoded_node.n) # n is a new dimension size
+                # Resolve dim dynamically
+                dim_tensor = resolve_input(node, BroadcastNode.DIM)
+                dim = check_shape(dim_tensor, [1]).item()
+                # Resolve n dynamically
+                n_tensor = resolve_input(node, BroadcastNode.N)
+                n = check_shape(n_tensor, [1]).item() # n is the new dimension size
 
                 output = input_tensor.expand(*[n if i == dim else -1 for i in range(input_tensor.dim())])
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
@@ -126,8 +143,11 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "cat":
                 a = resolve_input(node, CatNode.A)
                 b = resolve_input(node, CatNode.B)
-                dim = check_dim(encoded_node.dim)
-                check_shapes(a, b, except_dim=dim)
+                # Resolve dim dynamically
+                dim_tensor = resolve_input(node, CatNode.DIM)
+                dim = check_shape(dim_tensor, [1]).item()
+                check_shapes_match(a, b, except_dim=dim)
+                
                 output = torch.cat([a, b], dim=dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -138,26 +158,33 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "hadamard":
                 a = resolve_input(node, HadamardNode.A)
                 b = resolve_input(node, HadamardNode.B)
-                check_shapes(a,b)
+                check_shapes_match(a,b)
+
                 output = a * b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "softmax":
                 input_tensor = resolve_input(node, SoftmaxNode.INPUT) 
-                dim = encoded_node.dim
+                # Resolve dim dynamically
+                dim_tensor = resolve_input(node, SoftmaxNode.DIM)
+                dim = check_shape(dim_tensor, [1]).item()
                 output = torch.softmax(input_tensor, dim=dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                # Need to return the output here
+                return output
             elif encoded_node.type == "add":
                 a = resolve_input(node, AddNode.A)
                 b = resolve_input(node, AddNode.B)
-                check_shapes(a,b)
+                check_shapes_match(a,b)
+
                 output = a + b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "divide":
-                a = resolve_input(node, DivideNode.A)
-                b = resolve_input(node, DivideNode.B)
-                check_shapes(a,b)
+            elif encoded_node.type == "div":
+                a = resolve_input(node, DivNode.A)
+                b = resolve_input(node, DivNode.B)
+                check_shapes_match(a,b)
+
                 output = a / b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -211,12 +238,25 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 dim1 = encoded_node.dim1
 
                 output = torch.transpose(input_tensor, dim0, dim1)
+            elif encoded_node.type == "floor":
+                input_tensor = resolve_input(node, FloorNode.INPUT)
+                output = torch.floor(input_tensor).to(torch.long)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "ceil":
+                input_tensor = resolve_input(node, CeilNode.INPUT)
+                output = torch.ceil(input_tensor).to(torch.long)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             else:
                 raise ValueError(f"Unknown node type: {encoded_node.type}")
         except Exception as e:
             print(f"Error evaluating {node} {output}: {e}")
+            # Print output table for debugging
+            print(f"\nError occurred in node: {node}")
+            print(f"Output table contents:")
+            for (n, out), tensor in output_table.items():
+                print(f"  {n}.{out}: {tensor.shape}")
             raise e
 
     # Evaluate all output nodes
