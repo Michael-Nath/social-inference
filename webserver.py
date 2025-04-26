@@ -59,7 +59,7 @@ async def get_constant(model_name: str, tensor_name: str):
     with tensor_cache.get_tensor(tensor_name) as tensor:
         return Tensor.from_torch(tensor)
 
-@app.get("/work/{partition_name}", response_model=PartitionWork)
+@app.get("/work/{partition_name}", response_model=PartitionWork | None)
 async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs

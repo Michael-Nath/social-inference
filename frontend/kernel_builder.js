@@ -1,4 +1,42 @@
 /**
+ * CPU-side tensor representation
+ */
+class CPUTensor {
+  /*
+   * @param {Object} options - CPUTensor options
+   * @param {Array<number>} options.elements - Flattened array of tensor elements
+   * @param {Array<number>} options.shape - Shape of the tensor
+   * @param {string} options.dtype - Data type of the tensor
+   */
+  constructor(options) {
+    this.data = new Float32Array(options.elements);
+    this.shape = options.shape;
+    this.dtype = options.dtype;
+  }
+
+  /**
+   * @returns {Float32Array} - Flattened array of tensor elements
+   */
+  getData() {
+    return this.data;
+  }
+
+  /**
+   * @returns {Array<number>} - Shape of the tensor
+   */
+  getShape() {
+    return this.shape;
+  }
+
+  /**
+   * @returns {string} - Data type of the tensor
+   */
+  getType() {
+    return this.dtype;
+  }
+}
+
+/**
  * Represents a WebGPU kernel that can be executed by the KernelBuilder.
  */
 export class Kernel {
@@ -57,7 +95,7 @@ export class Kernel {
   /**
    * Adds a persistent tensor to the kernel
    * @param {string} name - Name of the tensor
-   * @param {Object} tensor - Tensor data with elements and shape
+   * @param {CPUTensor} tensor - Tensor data with elements and shape
    * @returns {boolean} - True if the tensor was added, false if it's not a persistent tensor
    */
   addPersistentTensor(name, tensor) {
@@ -84,6 +122,7 @@ export class Kernel {
  * Represents a WebGPU computation session with associated resources.
  */
 class ComputeSession {
+
   /**
    * @param {GPUDevice} device - The WebGPU device
    */
@@ -100,7 +139,7 @@ class ComputeSession {
   /**
    * Adds a tensor to the session
    * @param {string} name - Name of the tensor
-   * @param {Object} tensor - Tensor data with elements and shape
+   * @param {CPUTensor} tensor - Tensor data with elements and shape
    * @returns {ComputeSession} - This session instance for chaining
    */
   addTensor(name, tensor) {
@@ -266,9 +305,7 @@ export class KernelBuilder {
   /**
    * Adds a tensor to the current session and/or to a kernel's persistent tensors
    * @param {string} name - Name of the tensor
-   * @param {Object} tensor - Tensor data with elements and shape
-   * @param {Array<number>} tensor.elements - Flattened array of tensor elements
-   * @param {Array<number>} tensor.shape - Shape of the tensor
+   * @param {CPUTensor} tensor - Tensor data with elements and shape
    * @param {Kernel} [kernel] - Optional kernel to check for persistent tensor
    * @returns {KernelBuilder} - This builder instance for chaining
    */
@@ -278,7 +315,7 @@ export class KernelBuilder {
       // Create a buffer for this persistent tensor if it doesn't exist
       const bufferKey = `${kernel.name}_${name}`;
       if (!this.persistentBufferCache.has(bufferKey)) {
-        const data = tensor;
+        const data = tensor.getData();
         const buffer = this.device.createBuffer({
           size: data.byteLength,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
@@ -315,7 +352,7 @@ export class KernelBuilder {
     
     this.activeSession.pushErrorScope('out-of-memory');
     
-    const data = tensor;
+    const data = tensor.getData();
     const buffer = this.device.createBuffer({
       size: data.byteLength,
       usage: usage,
@@ -434,7 +471,7 @@ export class KernelBuilder {
         
         if (outputTensor) {
           // Use the size of the provided tensor
-          size = outputTensor.byteLength;
+          size = outputTensor.getData().byteLength;
         } else if (config.size) {
           // Fallback to the size specified in the config
           size = config.size;
@@ -625,7 +662,7 @@ export class KernelBuilder {
     const session = this.activeSession;
     this.activeSession = null;
     
-    return {\
+    return {
       results,
       session
     };
