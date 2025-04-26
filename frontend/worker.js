@@ -2,6 +2,8 @@
  * Library to handle interfacing with coordination server
  */
 
+import { CPUTensor } from "./kernel_builder.js";
+
 /* API Objects. Should match BaseModel specs of webserver.py and inference/*.py */
 class Registration {
     /*
@@ -25,6 +27,67 @@ class APITensor {
         this.shape = api_response.shape;
         this.dtype = api_response.dtype;
     }
+
+    /*
+     * @param {CPUTensor} tensor 
+     * @returns {APITensor}
+     */
+    static fromCPU(tensor) {
+	return new APITensor({
+	    elements: Array.from(tensor.elements),
+	    shape: tensor.shape,
+	    dtype: tensor.dtype
+	});
+    }
+
+    /*
+     * @returns {CPUTensor}
+     */
+    toCPU() {
+	return new CPUTensor({
+	    elements: this.elements,
+	    shape: this.shape,
+	    dtype: this.dtype
+	});
+    }
+}
+
+class Edge {
+    /*
+     * @param {Object} api_response
+     * @param {string} api_response.src
+     * @param {string} api_response.src_output
+     * @param {string} api_response.dst
+     * @param {string} api_response.dst_input
+     */
+    constructor(api_response) {
+	this.src = api_response.src;
+	this.src_output = api_response.src_output;
+	this.dst = api_response.dst;
+	this.dst_input = api_response.dst_input;
+    }
+}
+
+class Graph {
+    /*
+     * @param {Object} api_response
+     * @param {Object} api_response.nodes
+     * @param {Edge[]} api_response.edges
+     */
+    constructor(api_response) {
+	this.nodes = {};
+	for (const [key, value] of Object.entries(api_response.nodes)) {
+	    this.nodes[key] = new Node(value);
+	}
+	this.edges = api_response.edges.map((e) => new Edge(e));
+    }
+
+    /*
+     * Dumps graph to console
+     */
+    dump() {
+	console.log(self);
+    }
 }
 
 class InputAssignment {
@@ -37,7 +100,7 @@ class InputAssignment {
     constructor(api_response) {
         this.node = api_response.node;
         this.input = api_response.input;
-        this.tensor = new APITensor(api_response.tensor);
+        this.tensor = (new APITensor(api_response.tensor)).toCPU();
     }
 }
 
@@ -46,12 +109,12 @@ class OutputAssignment {
      * @param {Object} options - Output assignment options
      * @param {string} options.node - Node to assign output to
      * @param {string} options.output - Output to assign
-     * @param {APITensor} options.tensor - Tensor to assign
+     * @param {CPUTensor} options.tensor - Tensor to assign
      */
     constructor(options) {
         this.node = options.node;
         this.output = options.output;
-        this.tensor = new APITensor(options.tensor);
+        this.tensor = APITensor.fromCPU(options.tensor);
     }
 }
 
@@ -118,7 +181,13 @@ export class Coordinator {
 
     /*
      * Submits the partition work to the coordination server
-     * @param {PartitionWork} work - Partition work to submit
+     * @param {string} partition_name - Partition to submit to
+     * @param {PartitionWorkResult} work - Partition work to submit
      */
-    
+    async submit_work(partition_name, work) {
+	await fetch(`${this.url}/work`, {
+	    method: "POST",
+	    body: JSON.stringify(work)
+	});
+    }
 }

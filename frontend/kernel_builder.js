@@ -1,7 +1,7 @@
 /**
  * CPU-side tensor representation
  */
-class CPUTensor {
+export class CPUTensor {
   /*
    * @param {Object} options - CPUTensor options
    * @param {Array<number>} options.elements - Flattened array of tensor elements
