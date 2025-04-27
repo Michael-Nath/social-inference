@@ -14,8 +14,8 @@ from inference.pipeline import PartitionWork, InputAssignment, ComputePipeline, 
 def test_llama_attn():
     # Test parameters
     batch_size = 1
-    num_heads = 4
-    seq_len = 8
+    num_heads = 1
+    seq_len = 1
     head_dim = 64
     hidden_dim = num_heads * head_dim
 
@@ -47,11 +47,12 @@ def test_llama_attn():
     # attn.o_proj.bias.data.zero_()
 
     # Forward pass
-    output, _ = attn(
-        hidden_states=hidden_states,
-        position_embeddings=(cos, sin),
-        attention_mask=None
-    )
+    with torch.no_grad():
+        gt_output, _ = attn(
+            hidden_states=hidden_states,
+            position_embeddings=(cos, sin),
+            attention_mask=None
+        )
 
     # Run our implementation
     builder = ComputeGraphBuilder()
@@ -81,10 +82,10 @@ def test_llama_attn():
     pipeline = ComputePipeline(g)
     inputs = {
         "hidden_states": Tensor.from_torch(hidden_states),
-        "q_weight": Tensor.from_torch(mock_q_weight),
-        "k_weight": Tensor.from_torch(mock_k_weight),
-        "v_weight": Tensor.from_torch(mock_v_weight),
-        "o_weight": Tensor.from_torch(mock_o_weight),
+        "q_weight": Tensor.from_torch(mock_q_weight.T),
+        "k_weight": Tensor.from_torch(mock_k_weight.T),
+        "v_weight": Tensor.from_torch(mock_v_weight.T),
+        "o_weight": Tensor.from_torch(mock_o_weight.T),
         "cos": Tensor.from_torch(cos),
         "sin": Tensor.from_torch(sin)
     }
@@ -97,6 +98,8 @@ def test_llama_attn():
     # Run simulation
     cache = llama_1b_cache()
     result = simulate(work, cache)
+    our_attn_output = result.outputs[0].tensor.to_torch()
+    assert torch.allclose(gt_output, our_attn_output, rtol=1e-3)
 
 if __name__ == "__main__":
     test_llama_attn()

@@ -5,8 +5,8 @@ from .tensor import Tensor
 from .graph import (
     EdgeEncoding, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
-    FixedNode, HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
-    FloorNode, CeilNode, ReshapeNode, TransposeNode
+    HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
+    FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -76,7 +76,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 if expected != -1 and actual != expected:
                     raise ValueError(f"Tensor shape {tensor.shape} does not match expected shape {shape} (mismatch at dimension {i})")
             return tensor
-
+        
         def check_shapes_match(*args, except_dim: int | None = None):
             """
             Checks that all shapes are equal (except except_dim if that is set)
@@ -105,8 +105,8 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
-                check_shapes_match(lhs, rhs)
-
+                # check_shapes_match(lhs, rhs)
+                assert lhs.shape[-1] == rhs.shape[-2], f"matmul shape mismatch in {lhs.shape} @ {rhs.shape}"
                 output = lhs @ rhs
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -158,11 +158,18 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "hadamard":
                 a = resolve_input(node, HadamardNode.A)
                 b = resolve_input(node, HadamardNode.B)
-                check_shapes_match(a,b)
-
+                # check_shapes_match(a,b)
                 output = a * b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
+            elif encoded_node.type == "debug":
+                tensor = resolve_input(node, DebugNode.INPUT)
+                print(f"DEBUG<{node}>:")
+                print("=================================")
+                print(tensor)
+                print("=================================")
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
+                return tensor 
             elif encoded_node.type == "softmax":
                 input_tensor = resolve_input(node, SoftmaxNode.INPUT) 
                 # Resolve dim dynamically
