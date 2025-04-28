@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import torch
 
 from inference import (
     ModelCache, Registration, ComputePipeline, WorkerManager, 
@@ -14,6 +15,13 @@ model_cache = ModelCache()
 
 graph = simple_matmul()
 pipeline = ComputePipeline(graph)
+pipeline.enqueue_input(PipelineInput(
+    correlation_id="1",
+    inputs={
+        "x": Tensor.from_torch(torch.randn(32,32)),
+        "y": Tensor.from_torch(torch.randn(32,32)),
+    },
+))
 worker_manager = WorkerManager(graph)
 
 app = FastAPI()

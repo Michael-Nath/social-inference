@@ -8,7 +8,7 @@ const matmulKernel = new Kernel({
   shaderPath: "kernels/matmul.wgsl",
   entryPoint: "main",
   workGroupSize: {x: 16, y: 16, z: 1},
-  inputConfig: [
+  bindingConfig: [
     {
       name: "dimensions",
       isPersistent: false,

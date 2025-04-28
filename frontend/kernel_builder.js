@@ -1,7 +1,25 @@
+export class Tensor {
+  /*
+   * @param {Object} options - Tensor options
+   * @param {string} options.on - Device type (e.g., "cpu" or "gpu")
+   */
+  constructor(options) {
+    this.on = options.on;
+  }
+
+  onCPU() {
+    return this.on === "cpu";
+  }
+
+  onGPU() {
+    return this.on === "gpu";
+  }
+}
+
 /**
  * CPU-side tensor representation
  */
-export class CPUTensor {
+export class CPUTensor extends Tensor {
   /*
    * @param {Object} options - CPUTensor options
    * @param {Array<number>} options.elements - Flattened array of tensor elements
@@ -9,6 +27,7 @@ export class CPUTensor {
    * @param {string} options.dtype - Data type of the tensor
    */
   constructor(options) {
+    super({ on: "cpu" });
     this.data = new Float32Array(options.elements);
     this.shape = options.shape;
     this.dtype = options.dtype;
@@ -36,6 +55,27 @@ export class CPUTensor {
   }
 }
 
+export class GPUTensor extends Tensor {
+  constructor(options) {
+    super({ on: "gpu" });
+    this.buffer = options.buffer;
+    this.shape = options.shape;
+    this.dtype = options.dtype;
+  }
+
+  getBuffer() {
+    return this.buffer;
+  }
+
+  getShape() {
+    return this.shape;
+  }
+
+  getType() {
+    return this.dtype;
+  }
+}
+
 /**
  * Represents a WebGPU kernel that can be executed by the KernelBuilder.
  */
@@ -49,11 +89,11 @@ export class Kernel {
    * @param {number} options.workgroupSize.x - X dimension of workgroup
    * @param {number} options.workgroupSize.y - Y dimension of workgroup
    * @param {number} options.workgroupSize.z - Z dimension of workgroup (optional)
-   * @param {Array<Object>} options.inputConfig - Configuration for input tensors
-   * @param {string} options.inputConfig[].name - Name of the tensor
-   * @param {boolean} [options.inputConfig[].isPersistent] - Whether the tensor should persist between kernel executions
-   * @param {boolean} [options.inputConfig[].isOutput] - Whether the tensor is an output tensor
-   * @param {string} [options.inputConfig[].type] - Buffer type (e.g., "storage", "uniform")
+   * @param {Array<Object>} options.bindingConfig - Configuration for buffer bindings
+   * @param {string} options.bindingConfig[].name - Name of the tensor
+   * @param {boolean} [options.bindingConfig[].isPersistent] - Whether the tensor should persist between kernel executions
+   * @param {boolean} [options.bindingConfig[].isOutput] - Whether the tensor is an output tensor
+   * @param {string} [options.bindingConfig[].type] - Buffer type (e.g., "storage", "uniform")
    */
 
   constructor(options) {
@@ -61,12 +101,12 @@ export class Kernel {
     this.shaderPath = options.shaderPath;
     this.entryPoint = options.entryPoint || "main";
     this.workgroupSize = options.workgroupSize || { x: 16, y: 16, z: 1 };
-    this.inputConfig = options.inputConfig || [];
+    this.bindingConfig = options.bindingConfig || [];
     
     // Initialize persistentTensors map with null values for each persistent tensor name
     this.persistentTensors = new Map();
-    if (options.inputConfig && Array.isArray(options.inputConfig)) {
-      for (const config of options.inputConfig) {
+    if (options.bindingConfig && Array.isArray(options.bindingConfig)) {
+      for (const config of options.bindingConfig) {
         if (config.isPersistent) {
           this.persistentTensors.set(config.name, null);
         }
@@ -95,7 +135,7 @@ export class Kernel {
   /**
    * Adds a persistent tensor to the kernel
    * @param {string} name - Name of the tensor
-   * @param {CPUTensor} tensor - Tensor data with elements and shape
+   * @param {GPUTensor} tensor - Tensor data with elements and shape
    * @returns {boolean} - True if the tensor was added, false if it's not a persistent tensor
    */
   addPersistentTensor(name, tensor) {
@@ -413,8 +453,8 @@ export class KernelBuilder {
     await this._loadShaderModule(kernel);
     
     
-    // Create bind group layout based on input configuration
-    const entries = kernel.inputConfig.map((input, index) => ({
+    // Create bind group layout based on binding configuration
+    const entries = kernel.bindingConfig.map((input, index) => ({
       binding: index,
       visibility: GPUShaderStage.COMPUTE,
       buffer: { type: input.type || "storage" }
@@ -460,8 +500,8 @@ export class KernelBuilder {
     
     const entries = [];
     
-    for (let i = 0; i < kernel.inputConfig.length; i++) {
-      const config = kernel.inputConfig[i];
+    for (let i = 0; i < kernel.bindingConfig.length; i++) {
+      const config = kernel.bindingConfig[i];
       let buffer;
       
       if (config.isOutput) {

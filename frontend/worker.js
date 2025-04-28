@@ -2,7 +2,44 @@
  * Library to handle interfacing with coordination server
  */
 
-import { CPUTensor } from "./kernel_builder.js";
+import { CPUTensor, KernelBuilder, Kernel } from "./kernel_builder.js";
+
+/*
+ * Kernels
+ */
+
+const matmulKernel = new Kernel({
+    name: "matmul",
+    shaderPath: "kernels/matmul.wgsl",
+    entryPoint: "main",
+    workGroupSize: {x: 16, y: 16, z: 1},
+    bindingConfig: [
+      {
+        name: "dimensions",
+        isPersistent: false,
+        isOutput: false,
+        type: "uniform",
+      },
+      {
+        name: "input",
+        isPersistent: false,
+        isOutput: false,
+        type: "read-only-storage"
+      },
+      {
+        name: "weight",
+        isPersistent: true,
+        isOutput: false,
+        type: "read-only-storage"
+      },
+      {
+        name: "result",
+        isPersistent: false,
+        isOutput: true,
+        type: "storage"
+      }
+    ],
+});
 
 /* API Objects. Should match BaseModel specs of webserver.py and inference/*.py */
 class Registration {
@@ -68,6 +105,131 @@ class Edge {
     }
 }
 
+class Node {
+    /*
+     * @param {Object} api_response - Node response from server
+     * @param {string} api_response.type - Type of node
+     * @param {string} api_response.name - Name of node
+     */
+    constructor(api_response) {
+        this.type = api_response.type;
+        this.name = api_response.name;
+        
+        // Copy any additional properties from the API response
+        for (const [key, value] of Object.entries(api_response)) {
+            if (key !== "type" && key !== "name") {
+                this[key] = value;
+            }
+        }
+    }
+}
+
+class MatmulNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class ConstantNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+        this.tensor_name = api_response.tensor_name;
+    }
+}
+
+class SoftmaxNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class SliceNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class ReshapeNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class UnsqueezeNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class BroadcastNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class CatNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class FixedNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+        this.tensor = (new APITensor(api_response.tensor)).toCPU();
+    }
+}
+
+class HadamardNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class IndexNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class ShapeNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class TransposeNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+        this.dim0 = api_response.dim0;
+        this.dim1 = api_response.dim1;
+    }
+}
+
+class AddNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class DivNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class FloorNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class CeilNode extends Node {
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
 class Graph {
     /*
      * @param {Object} api_response
@@ -75,18 +237,56 @@ class Graph {
      * @param {Edge[]} api_response.edges
      */
     constructor(api_response) {
-	this.nodes = {};
-	for (const [key, value] of Object.entries(api_response.nodes)) {
-	    this.nodes[key] = new Node(value);
-	}
-	this.edges = api_response.edges.map((e) => new Edge(e));
+        this.nodes = {};
+        for (const [key, value] of Object.entries(api_response.nodes)) {
+            // Create the appropriate node type based on the value.type
+            if (value.type === "matmul") {
+                this.nodes[key] = new MatmulNode(value);
+            } else if (value.type === "constant") {
+                this.nodes[key] = new ConstantNode(value);
+            } else if (value.type === "softmax") {
+                this.nodes[key] = new SoftmaxNode(value);
+            } else if (value.type === "slice") {
+                this.nodes[key] = new SliceNode(value);
+            } else if (value.type === "reshape") {
+                this.nodes[key] = new ReshapeNode(value);
+            } else if (value.type === "unsqueeze") {
+                this.nodes[key] = new UnsqueezeNode(value);
+            } else if (value.type === "broadcast") {
+                this.nodes[key] = new BroadcastNode(value);
+            } else if (value.type === "cat") {
+                this.nodes[key] = new CatNode(value);
+            } else if (value.type === "fixed") {
+                this.nodes[key] = new FixedNode(value);
+            } else if (value.type === "hadamard") {
+                this.nodes[key] = new HadamardNode(value);
+            } else if (value.type === "index") {
+                this.nodes[key] = new IndexNode(value);
+            } else if (value.type === "shape") {
+                this.nodes[key] = new ShapeNode(value);
+            } else if (value.type === "transpose") {
+                this.nodes[key] = new TransposeNode(value);
+            } else if (value.type === "add") {
+                this.nodes[key] = new AddNode(value);
+            } else if (value.type === "div") {
+                this.nodes[key] = new DivNode(value);
+            } else if (value.type === "floor") {
+                this.nodes[key] = new FloorNode(value);
+            } else if (value.type === "ceil") {
+                this.nodes[key] = new CeilNode(value);
+            } else {
+                // Throw error for unknown node types
+                throw new Error(`Unknown node type: ${value.type}`);
+            }
+        }
+        this.edges = api_response.edges.map((e) => new Edge(e));
     }
 
     /*
      * Dumps graph to console
      */
     dump() {
-	console.log(self);
+	console.log(this);
     }
 }
 
@@ -129,7 +329,7 @@ class PartitionWork {
     constructor(api_response) {
         this.correlation_id = api_response.correlation_id;
         this.partition = api_response.partition;
-        this.graph = api_response.graph;
+        this.graph = new Graph(api_response.graph);
         this.inputs = api_response.inputs;
     }
 }
@@ -189,5 +389,43 @@ export class Coordinator {
 	    method: "POST",
 	    body: JSON.stringify(work)
 	});
+    }
+}
+
+class PreparedGraph {
+
+}
+
+export class Worker {
+    constructor() {
+        this.prepared_graphs = {};
+    }
+
+    /*
+     * @param {PartitionWork} partition_work - Partition work to execute
+     * @returns {Promise<PartitionWorkResult>}
+     */
+    async execute_work(partition_work) {
+        await this._prepare_partition_work(partition_work);
+        await this._execute_partition_work(partition_work);
+    }
+
+    /*
+     * Prepares the partition work for execution
+     *
+     * @param {PartitionWork} partition_work - Partition work to prepare
+     * @returns {Promise<void>}
+     */
+    async _prepare_partition_work(partition_work) {
+        if (this.prepared_graphs[partition_work.partition]) {
+            return;
+        }
+    }
+
+    /*
+     * @param {PartitionWork} partition_work - Partition work to execute
+     * @returns {Promise<void>}
+     */
+    async _execute_partition_work(partition_work) {
     }
 }
