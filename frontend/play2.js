@@ -30,6 +30,7 @@ async function main() {
       return;
     }
     console.log("Received work with correlation ID:", work.correlation_id);
+    console.log(work);
     
     // 1. Compile
     console.log("--- Starting Compilation ---");

@@ -194,8 +194,196 @@ export class SessionExecutor {
      * @returns {Promise<void>} 
      */
     async _executeGPUSession(session) { 
-        console.warn("_executeGPUSession not implemented"); 
-        // Annotate session.resourcePlan usage here later
+        console.log(`  Executing GPUSession ${this.sessionGraph.sessions.indexOf(session)}...`);
+        if (!session.resourcePlan) {
+            throw new Error(`GPUSession ${this.sessionGraph.sessions.indexOf(session)} is missing its resourcePlan.`);
+        }
+
+        // --- 1. Prepare Input Buffers ---
+        console.log("   Preparing required input buffers...");
+        const sessionInputBuffers = new Map(); // Map<DataKey, GPUBuffer> for this session's use
+
+        for (const [inputKey, spec] of session.resourcePlan.requiredInputs.entries()) {
+            console.log(`    Processing required input: ${inputKey}`);
+            
+            // Retrieve the source data (should be a CPUTensor from initial inputs or a CPU session)
+            const sourceData = this.buffers.get(inputKey);
+            if (!sourceData) {
+                throw new Error(`Executor state error: Missing required input data for key '${inputKey}' needed by session ${this.sessionGraph.sessions.indexOf(session)}.`);
+            }
+
+            // --- Handle Input Source --- 
+            let inputBuffer;
+            if (sourceData instanceof GPUBuffer) {
+                 // Input is already a GPU buffer (from a previous GPUSession)
+                 console.log(`     Reusing existing GPUBuffer for input ${inputKey}`);
+                 inputBuffer = sourceData;
+                 // TODO: Verify buffer usage flags? (e.g., ensure it allows STORAGE or UNIFORM reading)
+                 // We assume the producing session created it with appropriate flags.
+
+            } else if (typeof sourceData === 'object' && sourceData.elements && sourceData.shape && sourceData.dtype) { 
+                // Input is likely a CPUTensor (from initial input or CPUSession)
+                 console.log(`     Creating new GPU buffer for CPUTensor input ${inputKey} (Size: ${spec.byteSize}, Shape: ${spec.shape}, DType: ${spec.dtype})`);
+
+                // Create the GPU buffer on the device
+                const newGpuBuffer = this.device.createBuffer({
+                    size: spec.byteSize,
+                    // Usage: Needs to be written to (COPY_DST) and used as input in shaders (STORAGE or UNIFORM)
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM, // Add UNIFORM just in case
+                    mappedAtCreation: true, // Map it initially for writing
+                });
+
+                // Get the mapped range and copy the data
+                const mappedRange = newGpuBuffer.getMappedRange();
+                let typedArray;
+                // Select the correct TypedArray type based on dtype
+                switch (spec.dtype) {
+                    case 'float32':
+                        typedArray = new Float32Array(mappedRange);
+                        break;
+                    case 'int32':
+                        typedArray = new Int32Array(mappedRange);
+                        break;
+                    // Add cases for other dtypes (float16, int16, int8, uints) as needed
+                    default:
+                        newGpuBuffer.unmap(); // Unmap before throwing
+                        throw new Error(`Unsupported dtype for GPU buffer creation: ${spec.dtype}`);
+                }
+                
+                // Copy data from the source CPU tensor's elements
+                typedArray.set(sourceData.elements); 
+                newGpuBuffer.unmap();
+                inputBuffer = newGpuBuffer; // Use the newly created buffer
+                 console.log(`     New GPU buffer created and data written for ${inputKey}`);
+
+            } else {
+                // Unexpected data type found in the buffer map
+                 throw new Error(`Unexpected data type found for required input '${inputKey}'. Expected GPUBuffer or CPUTensor-like object, got ${typeof sourceData}`);
+            }
+
+            // Store the GPU buffer (either reused or newly created) for use within this session's kernels
+            sessionInputBuffers.set(inputKey, inputBuffer);
+        }
+
+        // --- 2. Prepare Output Buffers ---
+        // TODO: Create buffers for outputs specified in session.resourcePlan.producedOutputs
+        // These need STORAGE | COPY_SRC usage if they need to be read back later.
+        console.log("   Preparing produced output buffers...");
+        const sessionOutputBuffers = new Map(); // Map<DataKey, GPUBuffer> for this session's outputs
+
+        for (const [outputKey, spec] of session.resourcePlan.producedOutputs.entries()) {
+            console.log(`    Processing produced output: ${outputKey} (Size: ${spec.byteSize}, Shape: ${spec.shape}, DType: ${spec.dtype})`);
+
+             // Create the GPU buffer on the device
+            // We don't map this at creation, as the GPU will write to it.
+            const gpuBuffer = this.device.createBuffer({
+                size: spec.byteSize,
+                // Usage: Kernel will write to it (STORAGE), and might need to be copied out (COPY_SRC)
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, 
+            });
+
+            // Store the created (empty) GPU buffer. Kernels will populate it.
+            // Keyed by the original outputKey (e.g., "thisNodeName:thisOutputName")
+            sessionOutputBuffers.set(outputKey, gpuBuffer);
+             console.log(`     GPU buffer created for output ${outputKey}`);
+        }
+
+        // --- 3. Execute Kernels ---
+        console.log("   Executing kernels...");
+        const commandEncoder = this.device.createCommandEncoder();
+        const computePass = commandEncoder.beginComputePass(); // Single compute pass for the session for now
+
+        // We assume session.nodes are already topologically sorted *within* the session
+        for (const node of session.nodes) {
+            const kernel = KernelCompiler.kernelRegistry.get(node.type);
+            if (!kernel) {
+                // Skip nodes that don't have a registered GPU kernel (e.g., placeholder nodes?)
+                 console.log(`    Skipping node ${node.name} (${node.type}): No registered GPU kernel.`);
+                continue; 
+            }
+
+            console.log(`    Preparing to execute kernel for node ${node.name} (${node.type})`);
+
+            // --- a. Gather Buffers for Bind Group ---
+            const bindGroupEntries = [];
+            // TODO: This mapping logic is complex and CRITICAL
+            // We need to map kernel.bindingConfig entries (by name/index) 
+            // to the correct GPUBuffer instances from sessionInputBuffers, sessionOutputBuffers,
+            // potentially uniform buffers, or persistent weight buffers.
+            // Example (HIGHLY SIMPLIFIED - needs actual logic based on node inputs/outputs):
+            for (let i = 0; i < kernel.bindingConfig.length; i++) {
+                const bindingConfig = kernel.bindingConfig[i];
+                let bufferToBind = null;
+
+                // VERY Placeholder Logic - Needs proper mapping!
+                if (bindingConfig.isOutput) {
+                    // Find the corresponding output buffer created in Step 2
+                    const outputKey = `${node.name}:${bindingConfig.name}`; // Assuming output name matches binding name
+                    bufferToBind = sessionOutputBuffers.get(outputKey);
+                     console.log(`      Binding output: ${bindingConfig.name} -> ${outputKey}`);
+                } else {
+                    // Find the corresponding input buffer prepared in Step 1
+                    // How do we know *which* input edge corresponds to this binding?
+                    // We might need to look at originalGraph.edges or node.computedInputShapes keys?
+                    // Let's assume node.computedInputShapes map keys match binding names for now (risky assumption)
+                    const inputKey = null; // <<< NEED TO DETERMINE THE CORRECT inputKey (e.g., "previousNode:previousOutput")
+                    // bufferToBind = sessionInputBuffers.get(inputKey); 
+                    console.warn(`      Binding input: ${bindingConfig.name} -> Cannot determine source buffer yet.`);
+                }
+
+                if (!bufferToBind) {
+                     console.error(`      Failed to find buffer for binding ${i} (${bindingConfig.name}) on node ${node.name}`);
+                     // Should probably throw an error here
+                    continue; // Skip binding if buffer not found (for now)
+                }
+
+                bindGroupEntries.push({ 
+                    binding: i, 
+                    resource: { buffer: bufferToBind }
+                });
+            }
+
+            // --- b. Create Bind Group ---
+            // Requires kernel.bindGroupLayout to be prepared by compiler
+            if (!kernel.bindGroupLayout) {
+                throw new Error(`Kernel ${kernel.name} is missing its bindGroupLayout.`);
+            }
+            const bindGroup = this.device.createBindGroup({
+                layout: kernel.bindGroupLayout,
+                entries: bindGroupEntries,
+            });
+
+            // --- c. Set Pipeline & Bind Group ---
+             if (!kernel.pipeline) {
+                throw new Error(`Kernel ${kernel.name} is missing its pipeline.`);
+            }
+            computePass.setPipeline(kernel.pipeline);
+            computePass.setBindGroup(0, bindGroup); // Assuming bind group index 0
+
+            // --- d. Dispatch Kernel ---
+            // TODO: Calculate dispatch size based on output shape and kernel workgroup size
+            const dispatchX = 1; // Placeholder
+            const dispatchY = 1; // Placeholder
+            const dispatchZ = 1; // Placeholder
+             console.log(`    Dispatching kernel ${kernel.name} for node ${node.name} with workgroups (${dispatchX}, ${dispatchY}, ${dispatchZ})`);
+            computePass.dispatchWorkgroups(dispatchX, dispatchY, dispatchZ);
+
+        }
+
+        computePass.end();
+        this.device.queue.submit([commandEncoder.finish()]);
+        console.log(`   GPU commands for session ${this.sessionGraph.sessions.indexOf(session)} submitted.`);
+
+        // --- 4. Handle Output Transfers / Cleanup ---
+        // TODO: If outputs need to be read back (e.g., for CPU sessions or final results):
+        //  - commandEncoder.copyBufferToBuffer(...) to a staging buffer
+        //  - device.queue.submit(...)
+        //  - stagingBuffer.mapAsync(GPUMapMode.READ)
+        //  - Process mapped data and store in this.buffers
+        // TODO: Destroy temporary buffers?
+
+        console.log(`  GPUSession ${this.sessionGraph.sessions.indexOf(session)} execution steps need further implementation.`);
+        // Placeholder delay
         await new Promise(r => setTimeout(r, 50)); 
     }
     /** 
