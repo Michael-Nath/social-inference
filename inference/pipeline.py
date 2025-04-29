@@ -130,7 +130,9 @@ class ComputePipeline:
         """
         Gets the next partition work for a partition, or None if no work is available.
         """
-        elements = self.partition_queues[partition].pop(blocking=False)
+        # TODO: gotta remove the peek when not debugging lmfao
+        elements = self.partition_queues[partition].peek()
+        # elements = self.partition_queues[partition].pop(blocking=False)
         if elements is None:
             return None
 

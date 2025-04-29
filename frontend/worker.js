@@ -8,6 +8,31 @@ import { CPUTensor, KernelBuilder, Kernel } from "./kernel_builder.js";
  * Kernels
  */
 
+export class Device {
+    constructor() {};
+}
+
+export class GPUDevice extends Device {
+    constructor() {
+        if (GPUDevice._instance) {
+            return GPUDevice.instance;
+        };
+        super();
+        GPUDevice._instance = this;
+        // TODO: will probably need a reference to the WebGPU device here at some point
+    }
+};
+export class CPUDevice extends Device {
+    constructor() {
+        if (CPUDevice._instance) {
+            return CPUDevice.instance;
+        };
+        super();
+        CPUDevice._instance = this;
+    }
+};
+
+
 const matmulKernel = new Kernel({
     name: "matmul",
     shaderPath: "kernels/matmul.wgsl",
@@ -105,15 +130,17 @@ class Edge {
     }
 }
 
-class Node {
-    /*
+export class Node {
+    /** 
      * @param {Object} api_response - Node response from server
      * @param {string} api_response.type - Type of node
      * @param {string} api_response.name - Name of node
+     * @property {Device} device - the device in which this node should be executed on
      */
     constructor(api_response) {
         this.type = api_response.type;
         this.name = api_response.name;
+        this.device = null;
         
         // Copy any additional properties from the API response
         for (const [key, value] of Object.entries(api_response)) {
@@ -127,6 +154,7 @@ class Node {
 class MatmulNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = new GPUDevice();
     }
 }
 
@@ -140,30 +168,35 @@ class ConstantNode extends Node {
 class SoftmaxNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = new GPUDevice();
     }
 }
 
 class SliceNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = CPUDevice();
     }
 }
 
 class ReshapeNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = CPUDevice();
     }
 }
 
 class UnsqueezeNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = CPUDevice();
     }
 }
 
 class BroadcastNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = CPUDevice();
     }
 }
 
@@ -183,6 +216,7 @@ class FixedNode extends Node {
 class HadamardNode extends Node {
     constructor(api_response) {
         super(api_response);
+        this.device = GPUDevice();
     }
 }
 
@@ -230,7 +264,7 @@ class CeilNode extends Node {
     }
 }
 
-class Graph {
+export class Graph {
     /*
      * @param {Object} api_response
      * @param {Object} api_response.nodes
@@ -288,6 +322,57 @@ class Graph {
     dump() {
 	console.log(this);
     }
+
+    /*
+     * Returns a list of nodes in topological order
+     * @returns {Node[]} - List of nodes in dependency-satisfied order
+     */
+    topologicalSort() {
+        // Build adjacency list and in-degree count
+        const adjacencyList = new Map();
+        const inDegree = new Map();
+        
+        // Initialize adjacency list and in-degree for all nodes
+        for (const nodeName of Object.keys(this.nodes)) {
+            adjacencyList.set(nodeName, []);
+            inDegree.set(nodeName, 0);
+        }
+
+        // Build adjacency list and update in-degree counts
+        for (const edge of this.edges) {
+            adjacencyList.get(edge.src).push(edge.dst);
+            inDegree.set(edge.dst, inDegree.get(edge.dst) + 1);
+        }
+
+        // Find all nodes with no incoming edges
+        const queue = [];
+        for (const [nodeName, degree] of inDegree.entries()) {
+            if (degree === 0) {
+                queue.push(nodeName);
+            }
+        }
+
+        const result = [];
+        while (queue.length > 0) {
+            const nodeName = queue.shift();
+            result.push(this.nodes[nodeName]);
+
+            // Decrease in-degree for all neighbors
+            for (const neighbor of adjacencyList.get(nodeName)) {
+                inDegree.set(neighbor, inDegree.get(neighbor) - 1);
+                if (inDegree.get(neighbor) === 0) {
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        // Check for cycles
+        if (result.length !== Object.keys(this.nodes).length) {
+            throw new Error("Graph contains a cycle");
+        }
+
+        return result;
+    }
 }
 
 class InputAssignment {
@@ -318,7 +403,7 @@ class OutputAssignment {
     }
 }
 
-class PartitionWork {
+export class PartitionWork {
     /*
      * @param {Object} api_response - Partition work response from server
      * @param {string} api_response.correlation_id - Correlation ID of the work

@@ -77,6 +77,21 @@ class CorrelatedQueue:
                 # Notify potentially waiting threads that a set might be ready
                 self.cond.notify()
 
+    def peek(self) -> dict[ComputeGraphEdge, CorrelatedTensor] | None:
+        """
+        Looks at the next fully correlated set of PipelineElements without removing it.
+
+        Returns:
+            A dict mapping edges to PipelineElements with the same correlation ID, one from each
+            input queue, or None if no set is ready.
+        """
+        with self.cond:
+            # Check if any already completed ID is at the head of arrival_order
+            if self.arrival_order and self.arrival_order[0] in self.completed:
+                head_id = self.arrival_order[0]
+                return self.pending[head_id]
+            return None
+
     def pop(self, blocking: bool = True, timeout: float | None = None) -> dict[ComputeGraphEdge, CorrelatedTensor] | None:
         """
         Gets the next fully correlated set of PipelineElements.
