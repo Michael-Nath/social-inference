@@ -32,40 +32,6 @@ export class CPUDevice extends Device {
     }
 };
 
-
-const matmulKernel = new Kernel({
-    name: "matmul",
-    shaderPath: "kernels/matmul.wgsl",
-    entryPoint: "main",
-    workGroupSize: {x: 16, y: 16, z: 1},
-    bindingConfig: [
-      {
-        name: "dimensions",
-        isPersistent: false,
-        isOutput: false,
-        type: "uniform",
-      },
-      {
-        name: "input",
-        isPersistent: false,
-        isOutput: false,
-        type: "read-only-storage"
-      },
-      {
-        name: "weight",
-        isPersistent: true,
-        isOutput: false,
-        type: "read-only-storage"
-      },
-      {
-        name: "result",
-        isPersistent: false,
-        isOutput: true,
-        type: "storage"
-      }
-    ],
-});
-
 /* API Objects. Should match BaseModel specs of webserver.py and inference/*.py */
 class Registration {
     /*
@@ -156,6 +122,38 @@ class MatmulNode extends Node {
         super(api_response);
         this.device = new GPUDevice();
     }
+
+    /**
+     * Calculates the output shape for a matrix multiplication.
+     * @param {Map<string, number[]>} inputShapes - A map containing shapes for 'input' and 'weight'.
+     *                                            Example: Map { 'input' => [M, K], 'weight' => [K, N] }
+     * @returns {number[]} The output shape [M, N].
+     * @throws {Error} If input shapes are missing, invalid, or incompatible.
+     */
+    getOutputShape(inputShapes) {
+        const shapeA = inputShapes.get("lhs");
+        const shapeB = inputShapes.get("rhs");
+
+        if (!shapeA || !shapeB) {
+            throw new Error(`MatmulNode (${this.name}): Missing required input shapes ('input' or 'weight').`);
+        }
+
+        if (shapeA.length !== 2 || shapeB.length !== 2) {
+            // TODO: Handle batch dimensions if necessary (e.g., [Batch, M, K])
+            throw new Error(`MatmulNode (${this.name}): Currently only supports 2D matrices. Got shapes ${shapeA} and ${shapeB}.`);
+        }
+
+        const M = shapeA[0];
+        const K_A = shapeA[1];
+        const K_B = shapeB[0];
+        const N = shapeB[1];
+
+        if (K_A !== K_B) {
+            throw new Error(`MatmulNode (${this.name}): Incompatible shapes for matrix multiplication. Inner dimensions do not match: ${shapeA} and ${shapeB}.`);
+        }
+
+        return [M, N];
+    }
 }
 
 class ConstantNode extends Node {
@@ -243,6 +241,37 @@ class TransposeNode extends Node {
 class AddNode extends Node {
     constructor(api_response) {
         super(api_response);
+        // Add nodes typically run on CPU by default unless specified otherwise
+        // Or they could be fused into GPU kernels. Let's assume CPU for now.
+        if (!this.device) {
+             this.device = new CPUDevice();
+        } 
+    }
+
+    /**
+     * Calculates the output shape for an element-wise addition.
+     * Assumes input shapes are identical (no broadcasting yet).
+     * @param {Map<string, number[]>} inputShapes - A map containing shapes for 'inputA' and 'inputB'.
+     *                                            Example: Map { 'inputA' => [X, Y], 'inputB' => [X, Y] }
+     * @returns {number[]} The output shape, same as input shapes.
+     * @throws {Error} If input shapes are missing or incompatible.
+     */
+    getOutputShape(inputShapes) {
+        const shapeA = inputShapes.get("inputA");
+        const shapeB = inputShapes.get("inputB");
+
+        if (!shapeA || !shapeB) {
+            throw new Error(`AddNode (${this.name}): Missing required input shapes ('inputA' or 'inputB').`);
+        }
+
+        // Simple equality check for now (convert to string for easy comparison)
+        // TODO: Implement proper broadcasting rules if needed.
+        if (shapeA.length !== shapeB.length || !shapeA.every((dim, i) => dim === shapeB[i])) {
+             throw new Error(`AddNode (${this.name}): Input shapes must be identical for simple addition. Got ${shapeA} and ${shapeB}.`);
+        }
+
+        // Output shape is the same as the (identical) input shapes
+        return [...shapeA]; // Return a copy
     }
 }
 
