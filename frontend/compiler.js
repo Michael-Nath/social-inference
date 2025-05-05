@@ -133,8 +133,13 @@ export class ComputeSession {
     this.nodes.push(node);
   };
 
-  execute() { } // Placeholder
-  conclude() { } // Placeholder
+  // Implemented by subclasses
+  execute() { 
+    throw new Error("execute() has no default implementation. Must be implemented by subclasses.");
+  } 
+  conclude() { 
+    throw new Error("conclude() has no default implementation. Must be implemented by subclasses.");
+  }
 }
 
 // Represents a session running on the CPU
@@ -325,29 +330,31 @@ export class KernelCompiler {
    */
   static _computeAndAnnotateShapes(graph, partitionInputs) {
       // Map to store computed shapes during propagation: Map<NodeName, Map<OutputName, Shape>>
-      const computedShapes = new Map(); 
+      const outputShapes = new Map(); 
       // Map to gather input shapes for each node: Map<NodeName, Map<InputName, Shape>>
-      const nodeInputShapes = new Map();
+      const inputShapes = new Map();
 
+      
       // 1. Seed known shapes from partition inputs
       for (const assignment of partitionInputs) {
-          if (!nodeInputShapes.has(assignment.node)) {
-              nodeInputShapes.set(assignment.node, new Map());
+          if (!inputShapes.has(assignment.node)) {
+              inputShapes.set(assignment.node, new Map());
           }
           // Store shape by the specific input name it connects to
-          nodeInputShapes.get(assignment.node).set(assignment.input, assignment.tensor.shape);
+          inputShapes.get(assignment.node).set(assignment.input, assignment.tensor.shape);
       }
 
       // 2. Seed shapes from constant/fixed nodes and initialize nodeInputShapes map
       for (const [nodeName, node] of Object.entries(graph.nodes)) {
-          if (!nodeInputShapes.has(nodeName)) {
-              nodeInputShapes.set(nodeName, new Map());
+          if (!inputShapes.has(nodeName)) {
+              inputShapes.set(nodeName, new Map());
           }
 
-          let nodeOutputMap = null;
+          let nodeOutputMap;
           if (node.type === 'fixed' && node.tensor) {
               // Fixed nodes have a known tensor and shape
-              nodeOutputMap = {'output': [...node.tensor.shape]}; // Assume default output name
+              nodeOutputMap = new Map();
+              nodeOutputMap.set('output', [...node.tensor.shape]);
           } else if (node.type === 'constant') {
               // TODO: Handle ConstantNode shape retrieval (needs access to tensor cache/info)
               console.warn(`Shape inference for ConstantNode '${nodeName}' not implemented yet.`);
@@ -355,7 +362,7 @@ export class KernelCompiler {
           }
 
           if (nodeOutputMap) {
-              computedShapes.set(nodeName, nodeOutputMap);
+              outputShapes.set(nodeName, nodeOutputMap);
               node.computedOutputShapes = nodeOutputMap; // Annotate node directly
           }
       }
@@ -366,25 +373,25 @@ export class KernelCompiler {
           const nodeName = node.name;
 
           // Skip nodes whose shapes are already known (Fixed/Constant)
-          if (computedShapes.has(nodeName)) {
+          if (outputShapes.has(nodeName)) {
               // Still need to ensure input shapes are gathered if needed for debugging?
               // Let's gather them anyway for completeness, even if output is known.
               ;
           }
 
           // Gather input shapes for the current node from predecessors
-          const currentNodeInputMap = nodeInputShapes.get(nodeName);
+          const currentNodeInputMap = inputShapes.get(nodeName);
           for (const edge of graph.edges) {
               if (edge.dst === nodeName) {
                   const srcNodeName = edge.src;
                   const srcOutputName = edge.src_output || 'output'; // Assume default output name if not specified
                   const dstInputName = edge.dst_input;
 
-                  if (!computedShapes.has(srcNodeName) || !computedShapes.get(srcNodeName).has(srcOutputName)) {
+                  if (!outputShapes.has(srcNodeName) || !outputShapes.get(srcNodeName).has(srcOutputName)) {
                       throw new Error(`Shape inference error: Missing shape for input '${dstInputName}' of node '${nodeName}' from output '${srcOutputName}' of node '${srcNodeName}'.`);
                   }
                   
-                  const inputShape = computedShapes.get(srcNodeName).get(srcOutputName);
+                  const inputShape = outputShapes.get(srcNodeName).get(srcOutputName);
                   currentNodeInputMap.set(dstInputName, inputShape);
               }
           }
@@ -394,8 +401,9 @@ export class KernelCompiler {
           node.computedInputShapes = new Map(currentNodeInputMap);
           
           // Compute and store output shape for the current node
-          if (computedShapes.has(nodeName)) {
+          if (outputShapes.has(nodeName)) {
               // Already processed (Fixed/Constant), skip re-computation
+              console.log("Already processed node:", nodeName);
               continue;
           }
 
@@ -405,21 +413,22 @@ export class KernelCompiler {
                   const outputShapeResult = node.getOutputShape(currentNodeInputMap); 
                   
                   // Standardize: Ensure result is Map<OutputName, Shape>
-                  let nodeOutputMap;
+                  let nodeOutputMap = new Map();
                   if (Array.isArray(outputShapeResult)) {
                       // Assume single default output 'output'
-                      nodeOutputMap = {'output': outputShapeResult};
-                  } else if (outputShapeResult instanceof Map || typeof outputShapeResult === 'object') {
-                       // If it's already a map-like object (or we want to treat plain objects as maps)
-                       nodeOutputMap = {};
-                       for (const [key, value] of Object.entries(outputShapeResult)) {
-                            nodeOutputMap[key] = value;
-                       } 
+                      nodeOutputMap.set('output', outputShapeResult);
+                  } else if (outputShapeResult instanceof Map) {
+                      // If it's already a Map, use it directly
+                      nodeOutputMap = outputShapeResult;
+                  } else if (typeof outputShapeResult === 'object') {
+                      // Convert plain object to Map
+                      for (const [key, value] of Object.entries(outputShapeResult)) {
+                          nodeOutputMap.set(key, value);
+                      }
                   } else {
-                       throw new Error(`Node ${nodeName} getOutputShape returned unexpected type: ${typeof outputShapeResult}`);
+                      throw new Error(`Node ${nodeName} getOutputShape returned unexpected type: ${typeof outputShapeResult}`);
                   }
-
-                  computedShapes.set(nodeName, nodeOutputMap);
+                  outputShapes.set(nodeName, nodeOutputMap);
                   node.computedOutputShapes = nodeOutputMap; // Annotate node output
               } catch (error) {
                   console.error(`Error computing shape for node ${nodeName} (${node.type}):`, error);
@@ -529,7 +538,7 @@ export class KernelCompiler {
               }
           }
       }
-  
+      console.log("Session Graph created:", finalSessionGraph);
       return finalSessionGraph;
   }
   

@@ -266,8 +266,6 @@ export class SessionExecutor {
         }
 
         // --- 2. Prepare Output Buffers ---
-        // TODO: Create buffers for outputs specified in session.resourcePlan.producedOutputs
-        // These need STORAGE | COPY_SRC usage if they need to be read back later.
         console.log("   Preparing produced output buffers...");
         const sessionOutputBuffers = new Map(); // Map<DataKey, GPUBuffer> for this session's outputs
 

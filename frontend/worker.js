@@ -8,6 +8,9 @@ import { CPUTensor, KernelBuilder, Kernel } from "./kernel_builder.js";
  * Kernels
  */
 
+// Default node output name used by all nodes
+export const DEFAULT_NODE_OUTPUT = "output";
+
 export class Device {
     constructor() {};
 }
@@ -118,6 +121,9 @@ export class Node {
 }
 
 class MatmulNode extends Node {
+    static LHS = "lhs";
+    static RHS = "rhs";
+    
     constructor(api_response) {
         super(api_response);
         this.device = new GPUDevice();
@@ -131,8 +137,8 @@ class MatmulNode extends Node {
      * @throws {Error} If input shapes are missing, invalid, or incompatible.
      */
     getOutputShape(inputShapes) {
-        const shapeA = inputShapes.get("lhs");
-        const shapeB = inputShapes.get("rhs");
+        const shapeA = inputShapes.get(MatmulNode.LHS);
+        const shapeB = inputShapes.get(MatmulNode.RHS);
 
         if (!shapeA || !shapeB) {
             throw new Error(`MatmulNode (${this.name}): Missing required input shapes ('input' or 'weight').`);
@@ -164,6 +170,9 @@ class ConstantNode extends Node {
 }
 
 class SoftmaxNode extends Node {
+    static INPUT = "input";
+    static DIM = "dim";
+    
     constructor(api_response) {
         super(api_response);
         this.device = new GPUDevice();
@@ -171,6 +180,11 @@ class SoftmaxNode extends Node {
 }
 
 class SliceNode extends Node {
+    static INPUT = "input";
+    static DIM = "dim";
+    static START = "start";
+    static END = "end";
+    
     constructor(api_response) {
         super(api_response);
         this.device = CPUDevice();
@@ -178,6 +192,9 @@ class SliceNode extends Node {
 }
 
 class ReshapeNode extends Node {
+    static INPUT = "input";
+    static DIMS = "dims";
+    
     constructor(api_response) {
         super(api_response);
         this.device = CPUDevice();
@@ -185,6 +202,9 @@ class ReshapeNode extends Node {
 }
 
 class UnsqueezeNode extends Node {
+    static INPUT = "input";
+    static DIM = "dim";
+    
     constructor(api_response) {
         super(api_response);
         this.device = CPUDevice();
@@ -192,6 +212,10 @@ class UnsqueezeNode extends Node {
 }
 
 class BroadcastNode extends Node {
+    static INPUT = "input";
+    static DIM = "dim";
+    static N = "n";
+    
     constructor(api_response) {
         super(api_response);
         this.device = CPUDevice();
@@ -199,6 +223,10 @@ class BroadcastNode extends Node {
 }
 
 class CatNode extends Node {
+    static A = "a";
+    static B = "b";
+    static DIM = "dim";
+    
     constructor(api_response) {
         super(api_response);
     }
@@ -212,6 +240,9 @@ class FixedNode extends Node {
 }
 
 class HadamardNode extends Node {
+    static A = "a";
+    static B = "b";
+    
     constructor(api_response) {
         super(api_response);
         this.device = GPUDevice();
@@ -219,18 +250,25 @@ class HadamardNode extends Node {
 }
 
 class IndexNode extends Node {
+    static INPUT = "input";
+    static INDEX = "index";
+    
     constructor(api_response) {
         super(api_response);
     }
 }
 
 class ShapeNode extends Node {
+    static INPUT = "input";
+    
     constructor(api_response) {
         super(api_response);
     }
 }
 
 class TransposeNode extends Node {
+    static INPUT = "input";
+    
     constructor(api_response) {
         super(api_response);
         this.dim0 = api_response.dim0;
@@ -239,6 +277,9 @@ class TransposeNode extends Node {
 }
 
 class AddNode extends Node {
+    static A = "a";
+    static B = "b";
+    
     constructor(api_response) {
         super(api_response);
         // Add nodes typically run on CPU by default unless specified otherwise
@@ -257,8 +298,8 @@ class AddNode extends Node {
      * @throws {Error} If input shapes are missing or incompatible.
      */
     getOutputShape(inputShapes) {
-        const shapeA = inputShapes.get("inputA");
-        const shapeB = inputShapes.get("inputB");
+        const shapeA = inputShapes.get(AddNode.A);
+        const shapeB = inputShapes.get(AddNode.B);
 
         if (!shapeA || !shapeB) {
             throw new Error(`AddNode (${this.name}): Missing required input shapes ('inputA' or 'inputB').`);
@@ -276,18 +317,33 @@ class AddNode extends Node {
 }
 
 class DivNode extends Node {
+    static A = "a";
+    static B = "b";
+    
     constructor(api_response) {
         super(api_response);
     }
 }
 
 class FloorNode extends Node {
+    static INPUT = "input";
+    
     constructor(api_response) {
         super(api_response);
     }
 }
 
 class CeilNode extends Node {
+    static INPUT = "input";
+    
+    constructor(api_response) {
+        super(api_response);
+    }
+}
+
+class DebugNode extends Node {
+    static INPUT = "input";
+    
     constructor(api_response) {
         super(api_response);
     }
