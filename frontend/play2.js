@@ -36,14 +36,14 @@ async function main() {
     console.log("--- Starting Compilation ---");
     const compiler = new KernelCompiler(device);
     const sessionGraph = await compiler.compile(work);
-    // console.log("--- Compilation Complete ---");
+    console.log("--- Compilation Complete ---");
 
-    // // 2. Execute
-    // console.log("--- Starting Execution ---");
-    // const executor = new SessionExecutor(device, sessionGraph);
-    // const finalOutputs = await executor.execute(work); // Pass work for initial inputs
-    // console.log("--- Execution Complete ---");
-    // console.log("Final Outputs:", finalOutputs); // Log the final results
+    // 2. Execute
+    console.log("--- Starting Execution ---");
+    const executor = new SessionExecutor(device, sessionGraph);
+    const finalOutputs = await executor.execute(work); // Pass work for initial inputs
+    console.log("--- Execution Complete ---");
+    console.log("Final Outputs:", finalOutputs); // Log the final results
 
     // TODO: Submit finalOutputs back to coordinator? 
     // e.g., coordinator.submit_work(...) 

@@ -1,11 +1,16 @@
 // executor.js
-import { SessionGraph, GPUSession, CPUSession, ComputeSession } from './compiler.js';
-import { PartitionWork } from './worker.js'; 
+import { SessionGraph, GPUSession, CPUSession, ComputeSession, KernelCompiler } from './compiler.js';
+import { PartitionWork } from './worker.js';
+import { GPUTensor, CPUTensor } from './kernel.js';
+
+/** @typedef {import('./kernel.js').Tensor} Tensor */
+/** @typedef {import('./kernel.js').GPUKernel} GPUKernel */
 
 /** 
  * @typedef {GPUBuffer | Tensor} BufferData - Represents stored data (GPU or CPU Tensor)
- * @typedef {string} DataKey - A key identifying a piece of data, e.g., "nodeName:outputName" or "nodeName:inputName"
+ * @typedef {string} DataKey - A key nodename:outputname identifying a piece of data, e.g., "nodeName:outputName" 
  */
+
 
 export class SessionExecutor {
     /** @type {GPUDevice} */
@@ -21,6 +26,15 @@ export class SessionExecutor {
     /** @type {Map<ComputeSession, number>} */
     sessionInDegree;
 
+    /** @type {Map<DataKey, CPUTensor>} */
+    cpuInputs; // edge case (keyed by input, not output); inputs from the partition work
+    /** @type {Map<DataKey, GPUTensor>} */
+    gpuInputs; // edge case (keyed by input, not output); inputs from the partition work
+    /** @type {Map<DataKey, CPUTensor>} */
+    cpuOutputs; // outputs from nodes, keyed by output
+    /** @type {Map<DataKey, GPUTensor>} */
+    gpuOutputs; // outputs from nodes, keyed by output
+
     /**
      * @param {GPUDevice} device - The WebGPU device instance.
      * @param {SessionGraph} sessionGraph - The compiled and annotated session graph.
@@ -32,10 +46,40 @@ export class SessionExecutor {
         this.device = device;
         this.sessionGraph = sessionGraph;
 
-        this.sessionStatus = new Map(); 
-        this.buffers = new Map(); 
-        this.readyQueue = []; 
-        this.sessionInDegree = new Map(); 
+        this.sessionStatus = new Map();
+        this.buffers = new Map();
+        this.readyQueue = [];
+        this.sessionInDegree = new Map();
+
+        this.cpuInputs = new Map();
+        this.gpuInputs = new Map();
+        this.cpuOutputs = new Map();
+        this.gpuOutputs = new Map();
+    }
+
+    /**
+     * @param {CPUTensor} cpuTensor
+     * @returns {Promise<GPUTensor>}
+     */
+    async _cpuToGPU(cpuTensor) {
+        const gpuBuffer = await this.device.createBuffer({
+            size: cpuTensor.getSize(),
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+        });
+
+        const mappedRange = gpuBuffer.getMappedRange();
+        const typedArray = new Float32Array(mappedRange);
+        typedArray.set(cpuTensor.getData()); // Copies here
+        gpuBuffer.unmap(); // Boundary here
+
+        const gpuTensor = new GPUTensor({
+            buffer: gpuBuffer,
+            shape: cpuTensor.getShape(),
+            dtype: cpuTensor.getType(),
+        });
+
+        return gpuTensor;
     }
 
     /**
@@ -45,49 +89,86 @@ export class SessionExecutor {
      */
     async execute(partitionWork) {
         console.log("SessionExecutor: Starting execution...");
-        this._initializeState(partitionWork);
+        await this._initializeState(partitionWork);
         // Initial ready sessions are found within _initializeState
 
         // Main execution loop (simplified view)
         let runningTasks = 0;
         const maxConcurrency = navigator.hardwareConcurrency || 4; // Limit concurrent tasks somewhat
+
+
         const promises = [];
+        const sessionTask = (session) => {
+            return (async () => {
+                // Wait on all dependency promises
+                const dependencyPromises = [];
+                for (const dependency of this.sessionGraph.getPredecessorSessions(session)) {
+                    dependencyPromises.push(promises[dependency.index]);
+                }
+                console.log(`Session ${session.index} waiting on ${dependencyPromises.length} dependencies.`);
+                await Promise.all(dependencyPromises);
+                console.log(`Session ${session.index} ready to run!`);
+
+                try {
+                    if (session instanceof GPUSession) {
+                        await this._executeGPUSession(session);
+                    } else if (session instanceof CPUSession) {
+                        await this._executeCPUSession(session);
+                    } else {
+                        throw new Error("Unknown session type encountered.");
+                    }
+                } catch (error) {
+                    console.error(`Error executing session ${session.index}:`, error);
+                    throw error;
+                }
+
+                console.log(`Session ${session.index} done!`);
+            })();
+        }
+
+        for (const session of this.sessionGraph.sessions) {
+            promises.push(sessionTask(session));
+        }
+
+        await Promise.all(promises);
+
+        return;
 
         const processQueue = async () => {
             while (this.readyQueue.length > 0 && runningTasks < maxConcurrency) {
-                 runningTasks++;
-                 const sessionToRun = this.readyQueue.shift();
-                 this.sessionStatus.set(sessionToRun, 'running');
-                 console.log(`SessionExecutor: Starting session ${this.sessionGraph.sessions.indexOf(sessionToRun)} (${sessionToRun.constructor.name})`);
+                runningTasks++;
+                const sessionToRun = this.readyQueue.shift();
+                this.sessionStatus.set(sessionToRun, 'running');
+                console.log(`SessionExecutor: Starting session ${this.sessionGraph.sessions.indexOf(sessionToRun)} (${sessionToRun.constructor.name})`);
 
-                 const taskPromise = (async () => {
-                      try {
-                          if (sessionToRun instanceof GPUSession) {
-                              await this._executeGPUSession(sessionToRun);
-                          } else if (sessionToRun instanceof CPUSession) {
-                              await this._executeCPUSession(sessionToRun); // Could be sync or async
-                          } else {
-                              throw new Error("Unknown session type encountered.");
-                          }
+                const taskPromise = (async () => {
+                    try {
+                        if (sessionToRun instanceof GPUSession) {
+                            await this._executeGPUSession(sessionToRun);
+                        } else if (sessionToRun instanceof CPUSession) {
+                            await this._executeCPUSession(sessionToRun); // Could be sync or async
+                        } else {
+                            throw new Error("Unknown session type encountered.");
+                        }
 
-                          // Mark as complete and update dependents
-                          this.sessionStatus.set(sessionToRun, 'complete');
-                          console.log(`SessionExecutor: Completed session ${this.sessionGraph.sessions.indexOf(sessionToRun)}`);
-                          this._updateReadyQueue(sessionToRun);
+                        // Mark as complete and update dependents
+                        this.sessionStatus.set(sessionToRun, 'complete');
+                        console.log(`SessionExecutor: Completed session ${this.sessionGraph.sessions.indexOf(sessionToRun)}`);
+                        this._updateReadyQueue(sessionToRun);
 
-                      } catch (error) {
-                          console.error(`Error executing session ${this.sessionGraph.sessions.indexOf(sessionToRun)}:`, error);
-                          // Handle error: Mark as failed? Stop execution?
-                          this.sessionStatus.set(sessionToRun, 'failed'); // Mark as failed
-                           throw error; // Re-throw to be caught by Promise.all
-                      } finally {
-                           runningTasks--;
-                           // Check if more tasks can be started
-                           // Use setImmediate/setTimeout to avoid blocking the event loop excessively
-                           setTimeout(processQueue, 0);
-                      }
-                 })();
-                 promises.push(taskPromise);
+                    } catch (error) {
+                        console.error(`Error executing session ${this.sessionGraph.sessions.indexOf(sessionToRun)}:`, error);
+                        // Handle error: Mark as failed? Stop execution?
+                        this.sessionStatus.set(sessionToRun, 'failed'); // Mark as failed
+                        throw error; // Re-throw to be caught by Promise.all
+                    } finally {
+                        runningTasks--;
+                        // Check if more tasks can be started
+                        // Use setImmediate/setTimeout to avoid blocking the event loop excessively
+                        setTimeout(processQueue, 0);
+                    }
+                })();
+                promises.push(taskPromise);
             }
         };
 
@@ -99,12 +180,12 @@ export class SessionExecutor {
         // Check if all sessions completed successfully
         const allComplete = [...this.sessionStatus.values()].every(status => status === 'complete');
         if (!allComplete) {
-             console.error("SessionExecutor: Execution finished with errors.");
+            console.error("SessionExecutor: Execution finished with errors.");
             throw new Error("One or more sessions failed during execution.");
         } else {
-             console.log("SessionExecutor: Execution finished successfully.");
+            console.log("SessionExecutor: Execution finished successfully.");
         }
-       
+
         return this._gatherFinalOutputs();
     }
 
@@ -113,8 +194,8 @@ export class SessionExecutor {
      * @param {PartitionWork} partitionWork 
      * @private
      */
-    _initializeState(partitionWork) {
-        console.log(" Initializing executor state...");
+    async _initializeState(partitionWork) {
+        console.group("Initialization");
         this.sessionStatus.clear();
         this.buffers.clear();
         this.readyQueue = [];
@@ -139,27 +220,24 @@ export class SessionExecutor {
         sessions.forEach(s => {
             if (this.sessionInDegree.get(s) === 0) {
                 this.readyQueue.push(s);
-                console.log(`  Session ${sessions.indexOf(s)} added to initial ready queue (in-degree 0).`);
+                console.log(`Session ${sessions.indexOf(s)} added to initial ready queue (in-degree 0).`);
             }
         });
 
         // --- Store Initial Inputs --- 
-        // Keying convention: "nodeName:outputName" for data producers
-        // InputAssignments tell us where the data goes (`node`, `input`) 
-        // but not where it *originated* outside the partition. 
-        // This mapping might need adjustment based on how external inputs are represented.
-        // For now, let's store based on the target node/input, assuming it's unique.
-        // A better approach might be needed if multiple external sources feed the same node input.
-        console.log(" Storing initial inputs...");
+        console.group("Loading Inputs");
         for (const assignment of partitionWork.inputs) {
-             // Example Key: "TargetNodeName:TargetInputName"
-             // This represents the data *required* at this input slot.
-            const dataKey = `${assignment.node}:${assignment.input}`; 
-            console.log(`  Storing initial input for ${dataKey}`);
-            // Store raw tensor for now; conversion/buffer creation happens in session execution
-            this.buffers.set(dataKey, assignment.tensor); 
+            const dataKey = `${assignment.node}:${assignment.input}`;
+            // Check if input is needed by CPUSession
+            if (this.sessionGraph._nodeToSession.get(assignment.node) instanceof CPUSession) {
+                this.cpuInputs.set(dataKey, assignment.tensor);
+            } else {
+                this.gpuInputs.set(dataKey, await this._cpuToGPU(assignment.tensor));
+            }
+            console.log(`Stored initial input for ${dataKey}`);
         }
-        console.log(" Initialization complete.");
+        console.groupEnd();
+        console.groupEnd();
     }
 
     /** 
@@ -169,7 +247,7 @@ export class SessionExecutor {
      */
     _updateReadyQueue(completedSession) {
         const dependentSessions = this.sessionGraph.getDependentSessions(completedSession);
-        
+
         console.log(` Session ${this.sessionGraph.sessions.indexOf(completedSession)} completed. Checking dependents: ${dependentSessions.map(s => this.sessionGraph.sessions.indexOf(s)).join(', ')}`);
 
         for (const dependent of dependentSessions) {
@@ -187,159 +265,142 @@ export class SessionExecutor {
         }
     }
 
-    // --- Placeholder/Stub Methods --- 
     /** 
      * @param {GPUSession} session 
      * @private 
      * @returns {Promise<void>} 
      */
-    async _executeGPUSession(session) { 
-        console.log(`  Executing GPUSession ${this.sessionGraph.sessions.indexOf(session)}...`);
+    async _executeGPUSession(session) {
+        const sessionIndex = this.sessionGraph.sessions.indexOf(session);
+        const start = performance.now();
+        console.group(`Executing GPUSession ${sessionIndex}...`);
         if (!session.resourcePlan) {
-            throw new Error(`GPUSession ${this.sessionGraph.sessions.indexOf(session)} is missing its resourcePlan.`);
+            throw new Error(`GPUSession ${sessionIndex} is missing its resourcePlan.`);
         }
 
-        // --- 1. Prepare Input Buffers ---
-        console.log("   Preparing required input buffers...");
-        const sessionInputBuffers = new Map(); // Map<DataKey, GPUBuffer> for this session's use
-
-        for (const [inputKey, spec] of session.resourcePlan.requiredInputs.entries()) {
-            console.log(`    Processing required input: ${inputKey}`);
-            
-            // Retrieve the source data (should be a CPUTensor from initial inputs or a CPU session)
-            const sourceData = this.buffers.get(inputKey);
-            if (!sourceData) {
-                throw new Error(`Executor state error: Missing required input data for key '${inputKey}' needed by session ${this.sessionGraph.sessions.indexOf(session)}.`);
-            }
-
-            // --- Handle Input Source --- 
-            let inputBuffer;
-            if (sourceData instanceof GPUBuffer) {
-                 // Input is already a GPU buffer (from a previous GPUSession)
-                 console.log(`     Reusing existing GPUBuffer for input ${inputKey}`);
-                 inputBuffer = sourceData;
-                 // TODO: Verify buffer usage flags? (e.g., ensure it allows STORAGE or UNIFORM reading)
-                 // We assume the producing session created it with appropriate flags.
-
-            } else if (typeof sourceData === 'object' && sourceData.elements && sourceData.shape && sourceData.dtype) { 
-                // Input is likely a CPUTensor (from initial input or CPUSession)
-                 console.log(`     Creating new GPU buffer for CPUTensor input ${inputKey} (Size: ${spec.byteSize}, Shape: ${spec.shape}, DType: ${spec.dtype})`);
-
-                // Create the GPU buffer on the device
-                const newGpuBuffer = this.device.createBuffer({
-                    size: spec.byteSize,
-                    // Usage: Needs to be written to (COPY_DST) and used as input in shaders (STORAGE or UNIFORM)
-                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM, // Add UNIFORM just in case
-                    mappedAtCreation: true, // Map it initially for writing
-                });
-
-                // Get the mapped range and copy the data
-                const mappedRange = newGpuBuffer.getMappedRange();
-                let typedArray;
-                // Select the correct TypedArray type based on dtype
-                switch (spec.dtype) {
-                    case 'float32':
-                        typedArray = new Float32Array(mappedRange);
-                        break;
-                    case 'int32':
-                        typedArray = new Int32Array(mappedRange);
-                        break;
-                    // Add cases for other dtypes (float16, int16, int8, uints) as needed
-                    default:
-                        newGpuBuffer.unmap(); // Unmap before throwing
-                        throw new Error(`Unsupported dtype for GPU buffer creation: ${spec.dtype}`);
-                }
-                
-                // Copy data from the source CPU tensor's elements
-                typedArray.set(sourceData.elements); 
-                newGpuBuffer.unmap();
-                inputBuffer = newGpuBuffer; // Use the newly created buffer
-                 console.log(`     New GPU buffer created and data written for ${inputKey}`);
-
-            } else {
-                // Unexpected data type found in the buffer map
-                 throw new Error(`Unexpected data type found for required input '${inputKey}'. Expected GPUBuffer or CPUTensor-like object, got ${typeof sourceData}`);
-            }
-
-            // Store the GPU buffer (either reused or newly created) for use within this session's kernels
-            sessionInputBuffers.set(inputKey, inputBuffer);
-        }
-
-        // --- 2. Prepare Output Buffers ---
-        console.log("   Preparing produced output buffers...");
-        const sessionOutputBuffers = new Map(); // Map<DataKey, GPUBuffer> for this session's outputs
-
-        for (const [outputKey, spec] of session.resourcePlan.producedOutputs.entries()) {
-            console.log(`    Processing produced output: ${outputKey} (Size: ${spec.byteSize}, Shape: ${spec.shape}, DType: ${spec.dtype})`);
-
-             // Create the GPU buffer on the device
-            // We don't map this at creation, as the GPU will write to it.
-            const gpuBuffer = this.device.createBuffer({
-                size: spec.byteSize,
-                // Usage: Kernel will write to it (STORAGE), and might need to be copied out (COPY_SRC)
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, 
-            });
-
-            // Store the created (empty) GPU buffer. Kernels will populate it.
-            // Keyed by the original outputKey (e.g., "thisNodeName:thisOutputName")
-            sessionOutputBuffers.set(outputKey, gpuBuffer);
-             console.log(`     GPU buffer created for output ${outputKey}`);
-        }
-
-        // --- 3. Execute Kernels ---
-        console.log("   Executing kernels...");
-        const commandEncoder = this.device.createCommandEncoder();
-        const computePass = commandEncoder.beginComputePass(); // Single compute pass for the session for now
+        const commandEncoder = this.device.createCommandEncoder({ label: `CommandEncoder_Session_${sessionIndex}` });
+        
+        console.log("Executing kernels...");
+        const computePass = commandEncoder.beginComputePass({ label: `ComputePass_Session_${sessionIndex}` });
 
         // We assume session.nodes are already topologically sorted *within* the session
         for (const node of session.nodes) {
-            const kernel = KernelCompiler.kernelRegistry.get(node.type);
+            console.group(`Node: ${node.name} (${node.type})`);
+
+            /** @type {GPUKernel} */
+            const rawKernel = await node.getKernel();
+            const kernelKey = rawKernel.key();
+            const kernel = KernelCompiler.getKernel(kernelKey);
+            console.log(`Kernel: ${kernel.name} (${kernelKey})`);
+
             if (!kernel) {
-                // Skip nodes that don't have a registered GPU kernel (e.g., placeholder nodes?)
-                 console.log(`    Skipping node ${node.name} (${node.type}): No registered GPU kernel.`);
-                continue; 
+                throw new Error(`Missing GPU kernel for node ${node.name} of type ${node.type}`);
             }
 
-            console.log(`    Preparing to execute kernel for node ${node.name} (${node.type})`);
-
-            // --- a. Gather Buffers for Bind Group ---
             const bindGroupEntries = [];
-            // TODO: This mapping logic is complex and CRITICAL
-            // We need to map kernel.bindingConfig entries (by name/index) 
-            // to the correct GPUBuffer instances from sessionInputBuffers, sessionOutputBuffers,
-            // potentially uniform buffers, or persistent weight buffers.
-            // Example (HIGHLY SIMPLIFIED - needs actual logic based on node inputs/outputs):
-            for (let i = 0; i < kernel.bindingConfig.length; i++) {
-                const bindingConfig = kernel.bindingConfig[i];
-                let bufferToBind = null;
-
-                // VERY Placeholder Logic - Needs proper mapping!
-                if (bindingConfig.isOutput) {
-                    // Find the corresponding output buffer created in Step 2
-                    const outputKey = `${node.name}:${bindingConfig.name}`; // Assuming output name matches binding name
-                    bufferToBind = sessionOutputBuffers.get(outputKey);
-                     console.log(`      Binding output: ${bindingConfig.name} -> ${outputKey}`);
+            for (const inputBinding of kernel.inputBindings) {
+                const inputKey = `${node.name}:${inputBinding.name}`;
+                let inputTensor;
+                if (!session.resourcePlan.inputOutputMappings.has(inputKey)) {
+                    // Check inputs
+                    if (this.gpuInputs.has(inputKey)) {
+                        // Use that
+                        inputTensor = this.gpuInputs.get(inputKey);
+                    } else if (this.cpuInputs.has(inputKey)) {
+                        // Do move
+                        console.debug("Moving CPU input to GPU:", inputKey);
+                        inputTensor = await this._cpuToGPU(this.cpuInputs.get(inputKey));
+                        this.gpuInputs.set(inputKey, inputTensor);
+                    } else {
+                        // Error
+                        throw new Error(`Missing input for binding ${inputBinding.name} on node ${node.name}`);
+                    }
                 } else {
-                    // Find the corresponding input buffer prepared in Step 1
-                    // How do we know *which* input edge corresponds to this binding?
-                    // We might need to look at originalGraph.edges or node.computedInputShapes keys?
-                    // Let's assume node.computedInputShapes map keys match binding names for now (risky assumption)
-                    const inputKey = null; // <<< NEED TO DETERMINE THE CORRECT inputKey (e.g., "previousNode:previousOutput")
-                    // bufferToBind = sessionInputBuffers.get(inputKey); 
-                    console.warn(`      Binding input: ${bindingConfig.name} -> Cannot determine source buffer yet.`);
+                    // Use output
+                    const outputKey = session.resourcePlan.inputOutputMappings.get(inputKey);
+                    if (this.gpuOutputs.has(outputKey)) {
+                        // Use that
+                        inputTensor = this.gpuOutputs.get(outputKey);
+                    } else if (this.cpuOutputs.has(outputKey)) {
+                        // Do move
+                        console.debug("Moving CPU output to GPU:", outputKey);
+                        inputTensor = await this._cpuToGPU(this.cpuOutputs.get(outputKey));
+                        this.gpuOutputs.set(outputKey, inputTensor);
+                    } else {
+                        // Error
+                        throw new Error(`Missing output for binding ${inputBinding.name} on node ${node.name}`);
+                    }
                 }
 
-                if (!bufferToBind) {
-                     console.error(`      Failed to find buffer for binding ${i} (${bindingConfig.name}) on node ${node.name}`);
-                     // Should probably throw an error here
-                    continue; // Skip binding if buffer not found (for now)
-                }
-
-                bindGroupEntries.push({ 
-                    binding: i, 
-                    resource: { buffer: bufferToBind }
+                bindGroupEntries.push({
+                    binding: inputBinding.index,
+                    resource: { buffer: inputTensor.getBuffer() }
                 });
             }
+
+            for (const outputBinding of kernel.outputBindings) {
+                const outputKey = `${node.name}:${outputBinding.name}`;
+                if (this.gpuOutputs.has(outputKey) || this.cpuOutputs.has(outputKey)) {
+                    throw new Error(`Output ${outputKey} is registered. This should not happen.`);
+                }
+
+                // Create a new buffer for the output tensor
+                const outputShape = node.computedOutputShapes.get(outputBinding.name);
+                if (!outputShape) {
+                    throw new Error(`Missing output shape for ${outputKey}`);
+                }
+
+                // Calculate buffer size based on shape and data type
+                const elementSize = 4; // Assuming float32 (4 bytes)
+                const numElements = outputShape.reduce((a, b) => a * b, 1);
+                const bufferSize = numElements * elementSize;
+
+                // Create the GPU buffer
+                const buffer = this.device.createBuffer({
+                    label: `${node.name}.${outputBinding.name}`,
+                    size: bufferSize,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+                });
+
+                // Create a GPUTensor with the buffer
+                const outputTensor = new GPUTensor({
+                    buffer: buffer,
+                    shape: outputShape,
+                    dtype: 'float32' // TODO: Real dtype
+                });
+                this.gpuOutputs.set(outputKey, outputTensor);
+
+                console.log(`Created output buffer ${outputKey} with shape [${outputShape}]`);
+
+                bindGroupEntries.push({
+                    binding: outputBinding.index,
+                    resource: { buffer: outputTensor.getBuffer() }
+                });
+            }
+
+            if (kernel.dimensionBuffer) {
+                // Create uniform buffer for dimensions
+                const dimensionData = kernel.dimensionBuffer.func(node.computedInputShapes, node.computedOutputShapes);
+                console.debug("Dimension data:", dimensionData);
+                const dimensionBuffer = this.device.createBuffer({
+                    label: `${node.name}.dimensions`,
+                    size: dimensionData.byteLength,
+                    usage: GPUBufferUsage.UNIFORM,
+                    mappedAtCreation: true,
+                });
+
+                const mappedRange = dimensionBuffer.getMappedRange();
+                const typedArray = new Float32Array(mappedRange);
+                typedArray.set(dimensionData);
+                dimensionBuffer.unmap();
+
+                bindGroupEntries.push({
+                    binding: kernel.dimensionBuffer.index,
+                    resource: { buffer: dimensionBuffer }
+                });
+            }
+
+            console.debug(`Bind group entries:`, bindGroupEntries);
 
             // --- b. Create Bind Group ---
             // Requires kernel.bindGroupLayout to be prepared by compiler
@@ -352,54 +413,144 @@ export class SessionExecutor {
             });
 
             // --- c. Set Pipeline & Bind Group ---
-             if (!kernel.pipeline) {
+            if (!kernel.pipeline) {
                 throw new Error(`Kernel ${kernel.name} is missing its pipeline.`);
             }
             computePass.setPipeline(kernel.pipeline);
             computePass.setBindGroup(0, bindGroup); // Assuming bind group index 0
 
             // --- d. Dispatch Kernel ---
-            // TODO: Calculate dispatch size based on output shape and kernel workgroup size
-            const dispatchX = 1; // Placeholder
-            const dispatchY = 1; // Placeholder
-            const dispatchZ = 1; // Placeholder
-             console.log(`    Dispatching kernel ${kernel.name} for node ${node.name} with workgroups (${dispatchX}, ${dispatchY}, ${dispatchZ})`);
+            const dispatch = kernel.workgroupFunction(node.computedInputShapes, node.computedOutputShapes);
+            const dispatchX = dispatch.x;
+            const dispatchY = dispatch.y;
+            const dispatchZ = dispatch.z;
+            console.log(`Dispatching kernel ${kernel.name} for node ${node.name} with workgroups (${dispatchX}, ${dispatchY}, ${dispatchZ})`);
             computePass.dispatchWorkgroups(dispatchX, dispatchY, dispatchZ);
-
+            console.groupEnd();
         }
-
         computePass.end();
+
+        console.group("Preparing Readbacks");
+        const readbackOperations = [];
+        for (const outputKey of session.resourcePlan.readback) {
+            console.log(`Preparing readback for ${outputKey}`);
+            const gpuTensor = this.gpuOutputs.get(outputKey);
+            if (!gpuTensor) {
+                console.warn(`Readback requested for ${outputKey}, but GPUTensor not found in gpuOutputs. Skipping readback for this key.`);
+                continue;
+            }
+
+            const gpuBuffer = gpuTensor.getBuffer();
+            if (!gpuBuffer) {
+                console.warn(`GPUTensor for ${outputKey} does not have a valid buffer. Skipping readback.`);
+                continue;
+            }
+
+            const stagingBuffer = this.device.createBuffer({
+                label: `staging_readback_${outputKey}`,
+                size: gpuBuffer.size,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            });
+
+            commandEncoder.copyBufferToBuffer(
+                gpuBuffer,             // source
+                0,                     // sourceOffset
+                stagingBuffer,         // destination
+                0,                     // destinationOffset
+                gpuBuffer.size         // size
+            );
+
+            readbackOperations.push({
+                outputKey,
+                stagingBuffer,
+                shape: gpuTensor.getShape(),
+                dtype: gpuTensor.getType(),
+            });
+            console.log(`Readback copy command recorded for ${outputKey} to staging buffer.`);
+        }
+        console.groupEnd();
+
+        const prepEnd = performance.now();
         this.device.queue.submit([commandEncoder.finish()]);
-        console.log(`   GPU commands for session ${this.sessionGraph.sessions.indexOf(session)} submitted.`);
+        console.log(`GPU commands (kernels + readback copies) submitted.`);
+        
+        // Wait for all submitted GPU work to complete
+        await this.device.queue.onSubmittedWorkDone();
+        const workEnd = performance.now();
+        console.log(`GPU work completed.`);
 
-        // --- 4. Handle Output Transfers / Cleanup ---
-        // TODO: If outputs need to be read back (e.g., for CPU sessions or final results):
-        //  - commandEncoder.copyBufferToBuffer(...) to a staging buffer
-        //  - device.queue.submit(...)
-        //  - stagingBuffer.mapAsync(GPUMapMode.READ)
-        //  - Process mapped data and store in this.buffers
-        // TODO: Destroy temporary buffers?
+        // Process actual readbacks now that GPU is done
+        console.group("Processing Readbacks");
+        for (const op of readbackOperations) {
+            console.log(`Processing mapped readback for ${op.outputKey}`);
+            try {
+                await op.stagingBuffer.mapAsync(GPUMapMode.READ);
+                const arrayBufferContent = op.stagingBuffer.getMappedRange();
+                
+                // Data must be copied out of the mapped range before unmap is called.
+                const dataCopy = arrayBufferContent.slice(0);
 
-        console.log(`  GPUSession ${this.sessionGraph.sessions.indexOf(session)} execution steps need further implementation.`);
-        // Placeholder delay
-        await new Promise(r => setTimeout(r, 50)); 
+                op.stagingBuffer.unmap();
+                op.stagingBuffer.destroy(); // Clean up the staging buffer
+
+                let typedData;
+                switch (op.dtype) {
+                    case 'float32':
+                        typedData = new Float32Array(dataCopy);
+                        break;
+                    case 'int32':
+                        typedData = new Int32Array(dataCopy);
+                        break;
+                    // TODO: Add other data types as supported by CPUTensor and your kernels
+                    default:
+                        console.error(`Unsupported dtype for CPUTensor readback: ${op.dtype} for key ${op.outputKey}`);
+                        // Skip creating CPUTensor for unsupported type
+                        continue; 
+                }
+
+                const cpuTensor = new CPUTensor({
+                    data: typedData,
+                    shape: op.shape,
+                    dtype: op.dtype,
+                });
+
+                this.cpuOutputs.set(op.outputKey, cpuTensor);
+                console.log(`Readback complete for ${op.outputKey}. CPUTensor stored.`);
+
+            } catch (error) {
+                console.error(`Error during readback for ${op.outputKey}:`, error);
+                // Ensure buffer is destroyed even if an error occurs during mapping/reading
+                if (op.stagingBuffer) {
+                    // If mapAsync failed, it might not be mapped, unmap might throw.
+                    // Destroy should be safe.
+                    try { op.stagingBuffer.unmap(); } catch (e) { /* ignore */ }
+                    op.stagingBuffer.destroy();
+                }
+            }
+        }
+        console.groupEnd(); // End of console.group for readbacks
+
+        const end = performance.now();
+        console.log(`Prep done in ${prepEnd - start}ms, work done in ${workEnd - prepEnd}ms, cleanup in ${end - workEnd}ms, total in ${end - start}ms.`);
+        console.groupEnd(); // End of console.group for GPUSession execution
+        
     }
     /** 
      * @param {CPUSession} session 
      * @private 
      * @returns {Promise<void>} 
      */
-    async _executeCPUSession(session) { 
-        console.warn("_executeCPUSession not implemented"); 
+    async _executeCPUSession(session) {
+        console.warn("_executeCPUSession not implemented");
         // Annotate session.resourcePlan usage here later
-        await new Promise(r => setTimeout(r, 10)); 
+        await new Promise(r => setTimeout(r, 10));
     }
     /** 
      * @private
      * @returns {Map<NodeName, Tensor>} 
      */
-    _gatherFinalOutputs() { 
-        console.warn("_gatherFinalOutputs not implemented"); 
-        return new Map(); 
+    _gatherFinalOutputs() {
+        console.warn("_gatherFinalOutputs not implemented");
+        return new Map();
     }
 } 

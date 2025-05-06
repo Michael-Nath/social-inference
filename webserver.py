@@ -7,22 +7,32 @@ import torch
 from inference import (
     ModelCache, Registration, ComputePipeline, WorkerManager, 
     PartitionWork, PartitionWorkResult, PartitionName, 
-    PipelineInput, PipelineOutput, Tensor
+    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder
 )
 from models import simple_matmul
 
 model_cache = ModelCache()
 
-graph = simple_matmul()
-pipeline = ComputePipeline(graph)
+def simple_two_node():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    y = g.input("y")
+    with g.partition("p0"):
+        matmul = g.matmul("matmul", x, y)
+        add = g.add("add", matmul, x)
+    z = g.output("output", add)
+    return g.build()
+
+g = simple_two_node()
+pipeline = ComputePipeline(g)
 pipeline.enqueue_input(PipelineInput(
     correlation_id="1",
     inputs={
-        "x": Tensor.from_torch(torch.randn(32,32)),
-        "y": Tensor.from_torch(torch.randn(32,32)),
+        "x": Tensor.from_torch(torch.randn(16,16)),
+        "y": Tensor.from_torch(torch.randn(16,16)),
     },
 ))
-worker_manager = WorkerManager(graph)
+worker_manager = WorkerManager(g)
 
 app = FastAPI()
 
