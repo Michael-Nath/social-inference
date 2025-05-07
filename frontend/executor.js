@@ -2,6 +2,7 @@
 import { SessionGraph, GPUSession, CPUSession, ComputeSession, KernelCompiler } from './compiler.js';
 import { PartitionWork } from './worker.js';
 import { GPUTensor, CPUTensor } from './kernel.js';
+import { ALL_SCOPES, popErrorScopes, pushErrorScopes } from './common.js';
 
 /** @typedef {import('./kernel.js').Tensor} Tensor */
 /** @typedef {import('./kernel.js').GPUKernel} GPUKernel */
@@ -59,10 +60,12 @@ export class SessionExecutor {
 
     /**
      * @param {CPUTensor} cpuTensor
+     * @param {string} [label] - Optional label for the GPU buffer.
      * @returns {Promise<GPUTensor>}
      */
-    async _cpuToGPU(cpuTensor) {
+    async _cpuToGPU(cpuTensor, label) {
         const gpuBuffer = await this.device.createBuffer({
+            label: label,
             size: cpuTensor.getSize(),
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             mappedAtCreation: true,
@@ -132,7 +135,7 @@ export class SessionExecutor {
 
         await Promise.all(promises);
 
-        return;
+        return this._gatherFinalOutputs();
 
         const processQueue = async () => {
             while (this.readyQueue.length > 0 && runningTasks < maxConcurrency) {
@@ -231,10 +234,13 @@ export class SessionExecutor {
             // Check if input is needed by CPUSession
             if (this.sessionGraph._nodeToSession.get(assignment.node) instanceof CPUSession) {
                 this.cpuInputs.set(dataKey, assignment.tensor);
+                console.log(`Stored initial input for ${dataKey}:`, assignment.tensor);
             } else {
-                this.gpuInputs.set(dataKey, await this._cpuToGPU(assignment.tensor));
+                const gpuAssignment = await this._cpuToGPU(assignment.tensor, `input_${dataKey}`);
+                this.gpuInputs.set(dataKey, gpuAssignment);
+                console.log(`Stored initial input for ${dataKey}:`, gpuAssignment);
             }
-            console.log(`Stored initial input for ${dataKey}`);
+            
         }
         console.groupEnd();
         console.groupEnd();
@@ -278,10 +284,16 @@ export class SessionExecutor {
             throw new Error(`GPUSession ${sessionIndex} is missing its resourcePlan.`);
         }
 
+        pushErrorScopes(this.device, ALL_SCOPES)
+
         const commandEncoder = this.device.createCommandEncoder({ label: `CommandEncoder_Session_${sessionIndex}` });
+        console.debug("Command encoder created:", commandEncoder);
         
         console.log("Executing kernels...");
-        const computePass = commandEncoder.beginComputePass({ label: `ComputePass_Session_${sessionIndex}` });
+
+        const computePassParams = { label: `ComputePass_Session_${sessionIndex}` }
+        const computePass = commandEncoder.beginComputePass(computePassParams);
+        console.debug("Compute pass begin:", computePass);
 
         // We assume session.nodes are already topologically sorted *within* the session
         for (const node of session.nodes) {
@@ -309,7 +321,7 @@ export class SessionExecutor {
                     } else if (this.cpuInputs.has(inputKey)) {
                         // Do move
                         console.debug("Moving CPU input to GPU:", inputKey);
-                        inputTensor = await this._cpuToGPU(this.cpuInputs.get(inputKey));
+                        inputTensor = await this._cpuToGPU(this.cpuInputs.get(inputKey), `input_${inputKey}`);
                         this.gpuInputs.set(inputKey, inputTensor);
                     } else {
                         // Error
@@ -324,7 +336,7 @@ export class SessionExecutor {
                     } else if (this.cpuOutputs.has(outputKey)) {
                         // Do move
                         console.debug("Moving CPU output to GPU:", outputKey);
-                        inputTensor = await this._cpuToGPU(this.cpuOutputs.get(outputKey));
+                        inputTensor = await this._cpuToGPU(this.cpuOutputs.get(outputKey), `input_from_output_${outputKey}`);
                         this.gpuOutputs.set(outputKey, inputTensor);
                     } else {
                         // Error
@@ -401,6 +413,9 @@ export class SessionExecutor {
             }
 
             console.debug(`Bind group entries:`, bindGroupEntries);
+            for(const binding of bindGroupEntries) {
+                console.debug(`Binding ${binding.binding}: `, binding.resource.buffer);
+            }
 
             // --- b. Create Bind Group ---
             // Requires kernel.bindGroupLayout to be prepared by compiler
@@ -417,15 +432,19 @@ export class SessionExecutor {
                 throw new Error(`Kernel ${kernel.name} is missing its pipeline.`);
             }
             computePass.setPipeline(kernel.pipeline);
+            console.debug("Pipeline set:", kernel.pipeline);
             computePass.setBindGroup(0, bindGroup); // Assuming bind group index 0
+            console.debug("Bindgroup set:", bindGroup)
+
 
             // --- d. Dispatch Kernel ---
             const dispatch = kernel.workgroupFunction(node.computedInputShapes, node.computedOutputShapes);
             const dispatchX = dispatch.x;
             const dispatchY = dispatch.y;
             const dispatchZ = dispatch.z;
-            console.log(`Dispatching kernel ${kernel.name} for node ${node.name} with workgroups (${dispatchX}, ${dispatchY}, ${dispatchZ})`);
+            console.log(`Workgroups: (${dispatchX}, ${dispatchY}, ${dispatchZ})`);
             computePass.dispatchWorkgroups(dispatchX, dispatchY, dispatchZ);
+            console.debug("Command submitted: dispatchWorkgroups(x,y,z)", dispatchX, dispatchY, dispatchZ);
             console.groupEnd();
         }
         computePass.end();
@@ -458,6 +477,7 @@ export class SessionExecutor {
                 0,                     // destinationOffset
                 gpuBuffer.size         // size
             );
+            console.debug("Command submitted: copyBufferToBuffer(source, sourceOffset, destination, destinationOffset, size)", gpuBuffer, 0, stagingBuffer, 0, gpuBuffer.size);
 
             readbackOperations.push({
                 outputKey,
@@ -465,11 +485,17 @@ export class SessionExecutor {
                 shape: gpuTensor.getShape(),
                 dtype: gpuTensor.getType(),
             });
-            console.log(`Readback copy command recorded for ${outputKey} to staging buffer.`);
+            console.log(`Readback requested for ${outputKey}. Staging buffer:`, stagingBuffer);
         }
         console.groupEnd();
 
+        const commandBuffer = commandEncoder.finish();
+        console.debug("Command buffer:", commandBuffer);
+
+        popErrorScopes(this.device, ALL_SCOPES);
+
         const prepEnd = performance.now();
+        this.device.queue.submit([commandBuffer]);
         console.log(`GPU commands (kernels + readback copies) submitted.`);
         
         // Wait for all submitted GPU work to complete
@@ -506,7 +532,7 @@ export class SessionExecutor {
                         continue; 
                 }
 
-                const cpuTensor = new CPUTensor({
+                const cpuTensor = CPUTensor.fromArray({
                     data: typedData,
                     shape: op.shape,
                     dtype: op.dtype,
@@ -514,8 +540,7 @@ export class SessionExecutor {
 
                 this.cpuOutputs.set(op.outputKey, cpuTensor);
                 console.log(`Readback complete for ${op.outputKey}. CPUTensor stored.`);
-                console.log(cpuTensor);
-
+                console.debug("Readback tensor: ", cpuTensor);
             } catch (error) {
                 console.error(`Error during readback for ${op.outputKey}:`, error);
                 // Ensure buffer is destroyed even if an error occurs during mapping/reading
@@ -540,16 +565,71 @@ export class SessionExecutor {
      * @returns {Promise<void>} 
      */
     async _executeCPUSession(session) {
-        console.warn("_executeCPUSession not implemented");
+        // Assume in topo order
+        for(const node of session.nodes) {
+            const kernel = node.getKernel();
+            console.log("Executing CPU kernel:", kernel);
+
+            const inputs = {};
+            for(const input of kernel.inputs) {
+                const inputKey = `${node.name}:${input}`;
+
+                let inputTensor;
+                if(!session.resourcePlan.inputOutputMappings.has(inputKey)) {
+                    // Check inputs
+                    if(this.cpuInputs.has(inputKey)) {
+                        inputTensor = this.cpuInputs.get(inputKey);
+                    } else {
+                        throw new Error(`Missing input ${inputKey}`);
+                    }
+                } else {
+                    const outputKey = session.resourcePlan.inputOutputMappings.get(inputKey);
+                    // Use output
+                    if(this.cpuOutputs.has(outputKey)) {
+                        // Use that
+                        inputTensor = this.cpuOutputs.get(outputKey);
+                    } else {
+                        throw new Error(`Missing output ${outputKey} that backs input ${inputKey}`);
+                    }
+                }
+                inputs[input] = inputTensor;
+            }
+
+            console.log("Invoking kernel with:", inputs);
+            const outputs = await kernel.execute(inputs);
+            console.log("Kernel produced:", outputs);
+
+            for(const output of kernel.outputs) {
+                const outputKey = `${node.name}:${output}`
+
+                let outputTensor;
+                if(typeof outputs === Map) {
+                    outputTensor = outputs.get(output);
+                } else {
+                    outputTensor = outputs[output];
+                }
+                this.cpuOutputs.set(outputKey, outputTensor);
+            }
+        }
         // Annotate session.resourcePlan usage here later
         await new Promise(r => setTimeout(r, 10));
     }
     /** 
      * @private
-     * @returns {Map<NodeName, Tensor>} 
+     * @returns {Map<NodeName, Map<string, CPUTensor>>} 
      */
     _gatherFinalOutputs() {
-        console.warn("_gatherFinalOutputs not implemented");
-        return new Map();
+        const finalOutputs = this.sessionGraph._finalOutputs;
+
+        const m = new Map();
+        for(const [outputNode, outputs] of finalOutputs.entries()) {
+            m.set(outputNode, new Map());
+            for(const output of outputs) {
+                const outputKey = `${outputNode}:${output}`;
+                m.get(outputNode).set(output, this.cpuOutputs.get(outputKey));
+            }
+        }
+
+        return m;
     }
 } 

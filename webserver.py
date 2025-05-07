@@ -10,15 +10,17 @@ from inference import (
     PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder
 )
 
-model_cache = ModelCache()
+# model_cache = ModelCache()
+model_cache = None
 
 def simple_two_node():
     g = ComputeGraphBuilder()
     x = g.input("x")
     y = g.input("y")
     with g.partition("p0"):
-        matmul = g.matmul("matmul", x, y)
-        add = g.add("add", matmul, x)
+        # matmul = g.matmul("matmul", x, y)
+        matmul = g.add("add0", x, y)
+        add = g.add("add1", matmul, x)
     z = g.output("output", add)
     return g.build()
 
@@ -83,7 +85,7 @@ async def get_work(partition_name: PartitionName):
     """
     return pipeline.get_partition_work(partition_name)
 
-@app.post("/work", response_model=PartitionWorkResult)
+@app.post("/work")
 async def submit_work(work: PartitionWorkResult):
     """
     Called by clients to submit inference results

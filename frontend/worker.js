@@ -2,7 +2,7 @@
  * Library to handle interfacing with coordination server
  */
 
-import { CPUTensor, GPUKernel } from "./kernel.js";
+import { CPUKernel, CPUTensor, GPUKernel } from "./kernel.js";
 
 /*
  * Kernels
@@ -103,7 +103,7 @@ class APITensor {
      */
     static fromCPU(tensor) {
 	return new APITensor({
-	    elements: Array.from(tensor.elements),
+	    elements: Array.from(tensor.data),
 	    shape: tensor.shape,
 	    dtype: tensor.dtype
 	});
@@ -113,7 +113,7 @@ class APITensor {
      * @returns {CPUTensor}
      */
     toCPU() {
-	return new CPUTensor({
+	return CPUTensor.fromArray({
 	    elements: this.elements,
 	    shape: this.shape,
 	    dtype: this.dtype
@@ -583,6 +583,34 @@ class AddNode extends Node {
         } 
     }
 
+    getKernel() {
+        return new CPUKernel({
+            name: "add_cpu",
+            inputs: [AddNode.A, AddNode.B],
+            outputs: [DEFAULT_NODE_OUTPUT],
+            func: (inputs) => {
+                // assume lhs and rhs are both CPU tensors
+                const a = inputs[AddNode.A];
+                const b = inputs[AddNode.B];
+                const n = a.data.length;
+
+                const c = new Float32Array(n);
+
+                for(let i = 0; i < n; i++) {
+                    c[i] = a.data[i] + b.data[i];
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: new CPUTensor({
+                        data: c,
+                        dtype: a.dtype,
+                        shape: a.shape
+                    })
+                };
+            }
+        })
+    }
+
     /**
      * Calculates the output shape for an element-wise addition.
      * Assumes input shapes are identical (no broadcasting yet).
@@ -819,7 +847,7 @@ class InputAssignment {
         this.node = api_response.node;
         this.input = api_response.input;
         // Directly create CPUTensor from the raw tensor data in the API response
-        this.tensor = new CPUTensor(api_response.tensor);
+        this.tensor = CPUTensor.fromArray(api_response.tensor);
         console.log("constructed", this)
     }
 }
@@ -828,7 +856,7 @@ class InputAssignment {
  * @class OutputAssignment
  * @classdesc Represents an output assignment for a graph node.
  */
-class OutputAssignment {
+export class OutputAssignment {
     /** @type {string} */
     node;
     /** @type {string} */
@@ -845,7 +873,15 @@ class OutputAssignment {
     constructor(options) {
         this.node = options.node;
         this.output = options.output;
-        this.tensor = APITensor.fromCPU(options.tensor);
+        this.tensor = options.tensor;
+    }
+
+    toAPI() {
+        return {
+            node: this.node,
+            output: this.output,
+            tensor: APITensor.fromCPU(this.tensor),
+        };
     }
 }
 
@@ -882,7 +918,7 @@ export class PartitionWork {
  * @class PartitionWorkResult
  * @classdesc Represents the result of executing partition work.
  */
-class PartitionWorkResult {
+export class PartitionWorkResult {
     /** @type {string} */
     correlation_id;
     /** @type {string} */
@@ -891,15 +927,23 @@ class PartitionWorkResult {
     outputs;
 
     /**
-     * @param {Object} api_response - Partition work result response from server
-     * @param {string} api_response.correlation_id - Correlation ID of the work
-     * @param {string} api_response.partition - Partition to submit work for
-     * @param {Array<Object>} api_response.outputs - Outputs from the graph, as API responses.
+     * @param {Object} options - Partition work result response from server
+     * @param {string} options.correlation_id - Correlation ID of the work
+     * @param {string} options.partition - Partition to submit work for
+     * @param {Array<OutputAssignment>} options.outputs - Outputs from the graph.
      */
-    constructor(api_response) {
-        this.correlation_id = api_response.correlation_id;
-        this.partition = api_response.partition;
-        this.outputs = api_response.outputs.map(oa => new OutputAssignment(oa));
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.partition = options.partition;
+        this.outputs = options.outputs;
+    }
+
+    toAPI() {
+        return {
+            correlation_id: this.correlation_id,
+            partition: this.partition,
+            outputs: this.outputs.map((m) => m.toAPI()),
+        };
     }
 }
 
@@ -929,7 +973,7 @@ export class Coordinator {
         return new Registration(await response.json());
     }
 
-    /*
+    /**
      * Gets the next partition work from the coordination server
      * @param {string} partition_name - Partition to get work for
      * @returns {PartitionWork | null} - Partition work from server, or null if no work is available
@@ -939,16 +983,18 @@ export class Coordinator {
         return new PartitionWork(await response.json());
     }
 
-    /*
+    /**
      * Submits the partition work to the coordination server
-     * @param {string} partition_name - Partition to submit to
-     * @param {PartitionWorkResult | Object} work - Partition work to submit.
+     * @param {PartitionWorkResult} work - Partition work to submit.
      * @returns {Promise<void>}
      */
-    async submit_work(partition_name, work) {
+    async submit_work(work) {
 	await fetch(`${this.url}/work`, {
 	    method: "POST",
-	    body: JSON.stringify(work)
+	    body: JSON.stringify(work.toAPI()),
+        headers: {
+            ["Content-Type"]: 'application/json'
+        }
 	});
     }
 }

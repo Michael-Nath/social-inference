@@ -1,4 +1,4 @@
-import { Coordinator, PartitionWork } from "./worker.js";
+import { Coordinator, PartitionWork, PartitionWorkResult, OutputAssignment } from "./worker.js";
 import { KernelCompiler } from "./compiler.js";
 import { initializeWebGPU } from "./common.js"; // Import the initializer
 import { SessionExecutor } from "./executor.js"; // Import the executor
@@ -45,8 +45,23 @@ async function main() {
     console.log("--- Execution Complete ---");
     console.log("Final Outputs:", finalOutputs); // Log the final results
 
-    // TODO: Submit finalOutputs back to coordinator? 
-    // e.g., coordinator.submit_work(...) 
+    // Collect outputs
+    let o = []
+    for(const [outputNode, outputs] of finalOutputs.entries()) {
+      for(const [output, tensor] of outputs.entries()) {
+        o.push(new OutputAssignment({
+          node: outputNode,
+          output: output,
+          tensor: tensor
+        }));
+      }
+    }
+
+    await coordinator.submit_work(new PartitionWorkResult({
+      partition: work.partition,
+      correlation_id: work.correlation_id,
+      outputs: o 
+    }))
 
   } catch (error) {
     console.error("An error occurred during main execution:", error);

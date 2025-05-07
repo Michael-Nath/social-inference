@@ -30,7 +30,7 @@ export class Tensor {
 export class CPUTensor extends Tensor {
   /**
    * @param {Object} options - CPUTensor options
-   * @param {Array<number>} options.elements - Flattened array of tensor elements
+   * @param {Float32Array} options.data - Flattened array of tensor elements
    * @param {Array<number>} options.shape - Shape of the tensor
    * @param {string} options.dtype - Data type of the tensor
    */
@@ -38,9 +38,19 @@ export class CPUTensor extends Tensor {
     super({ on: "cpu" });
     this.shape = options.shape;
     this.dtype = options.dtype;
+    this.data = options.data;
+  }
 
+  /**
+   * @param {Object} options - CPUTensor options
+   * @param {Array<number>} options.elements - Flattened array of tensor elements
+   * @param {Array<number>} options.shape - Shape of the tensor
+   * @param {string} options.dtype - Data type of the tensor
+   * @returns {CPUTensor}
+   */
+  static fromArray(options) {
     let TypedArrayConstructor;
-    switch (this.dtype) {
+    switch (options.dtype) {
       case 'float32':
         TypedArrayConstructor = Float32Array;
         break;
@@ -54,7 +64,11 @@ export class CPUTensor extends Tensor {
         console.warn(`CPUTensor: Unsupported dtype '${this.dtype}', defaulting to Float32Array.`);
         TypedArrayConstructor = Float32Array;
     }
-    this.data = new TypedArrayConstructor(options.elements);
+    return new CPUTensor({
+      data: new TypedArrayConstructor(options.elements),
+      dtype: options.dtype,
+      shape: options.shape
+    })
   }
 
   /**
@@ -134,10 +148,18 @@ export class CPUKernel {
    * @param {Object} options - CPUKernel options
    * @param {string} options.name - Name of the kernel
    * @param {Function} options.func - Function to execute
+   * @param {string[]} options.inputs - Kernel input names
+   * @param {string[]} options.outputs - Kernel output names
    */
   constructor(options) {
     this.name = options.name;
     this.func = options.func;
+    this.inputs = options.inputs;
+    this.outputs = options.outputs;
+  }
+
+  async execute(inputs) {
+    return await this.func(inputs);
   }
 }
 

@@ -202,7 +202,7 @@ export class GPUSession extends ComputeSession {
 export class SessionGraph {
     /** @type {ComputeSession[]} */
     sessions;
-    /** @type {Map<Node, ComputeSession>} - Maps Node instance to its containing session */
+    /** @type {Map<string, ComputeSession>} - Maps Node name (string) to its containing session */
     _nodeToSession;
     /** @type {Map<Node, Set<ComputeSession>>} - Maps producer Node instance to set of consumer sessions */
     _outputDependencies;
@@ -210,6 +210,8 @@ export class SessionGraph {
     _sessionEdges;
     /** @type {Map<ComputeSession, Set<ComputeSession>>} - Maps session to set of sessions it depends on (predecessors) */
     _sessionPredecessorEdges;
+    /** @type {Map<string, Set<string>>} - Maps final output nodes to final outputs. node => output is only present if node:output is a final output */
+    _finalOutputs;
 
     /**
      * @param {ComputeSession[]} sessions - List of compute sessions
@@ -220,6 +222,7 @@ export class SessionGraph {
         this._outputDependencies = new Map();
         this._sessionEdges = new Map();
         this._sessionPredecessorEdges = new Map();
+        this._finalOutputs = new Map();
         // Initialize edge maps for all provided sessions
         sessions.forEach(session => this._initializeSessionEdges(session));
     }
@@ -331,7 +334,7 @@ export class SessionGraph {
                 for (const edge of graph.edges) {
                     if (edge.dst === node.name) {
                         const srcNode = graph.nodes[edge.src];
-                        if (nodeToSessionAssignment.has(srcNode) && nodeToSessionAssignment.get(srcNode) !== currentSession) {
+                        if (nodeToSessionAssignment.has(srcNode.name) && nodeToSessionAssignment.get(srcNode.name) !== currentSession) {
                             shouldStartNewSession = true;
                             break;
                         }
@@ -348,7 +351,7 @@ export class SessionGraph {
             }
 
             currentSession.add(node); // Add node to the session
-            nodeToSessionAssignment.set(node, currentSession); // Map node to its assigned session
+            nodeToSessionAssignment.set(node.name, currentSession); // Map node name to its assigned session
         }
 
         // Now that sessions are created and nodes assigned, instantiate the SessionGraph
@@ -362,8 +365,8 @@ export class SessionGraph {
             const srcNode = graph.nodes[edge.src];
             const dstNode = graph.nodes[edge.dst];
 
-            const srcSession = nodeToSessionAssignment.get(srcNode);
-            const dstSession = nodeToSessionAssignment.get(dstNode);
+            const srcSession = nodeToSessionAssignment.get(srcNode.name);
+            const dstSession = nodeToSessionAssignment.get(dstNode.name);
 
             if (srcSession && dstSession && srcSession !== dstSession) {
                 sessionGraphInstance._addSessionEdge(srcSession, dstSession);
@@ -378,9 +381,9 @@ export class SessionGraph {
             const srcNode = graph.nodes[edge.src];
             const dstNode = graph.nodes[edge.dst];
 
-            if (nodeToSessionAssignment.has(srcNode) && nodeToSessionAssignment.has(dstNode)) {
-                const srcSession = nodeToSessionAssignment.get(srcNode);
-                const dstSession = nodeToSessionAssignment.get(dstNode);
+            if (nodeToSessionAssignment.has(srcNode.name) && nodeToSessionAssignment.has(dstNode.name)) {
+                const srcSession = nodeToSessionAssignment.get(srcNode.name);
+                const dstSession = nodeToSessionAssignment.get(dstNode.name);
                 if (srcSession !== dstSession) {
                     sessionGraphInstance._addOutputDependency(srcNode, dstSession);
                 }
@@ -588,33 +591,50 @@ export class KernelCompiler {
                 readback: [] // List[OutputKey]
             };
 
-            // Add I/O mappings for all nodes in the session
+            // Add I/O mappings for all nodes in the session & identify final outputs
             for (const node of session.nodes) {
                 if (backwardEdges.has(node.name)) {
                     for (const [inputName, outputKey] of backwardEdges.get(node.name).entries()) {
                         resourcePlan.inputOutputMappings.set(`${node.name}:${inputName}`, outputKey);
                     }
                 }
+
+                for (const [outputName, shape] of node.computedOutputShapes.entries()) {
+                    if (!forwardEdges.has(`${node.name}:${outputName}`)) {
+                        if(!sessionGraph._finalOutputs.has(node.name)){
+                            sessionGraph._finalOutputs.set(node.name, new Set());
+                        }
+                        sessionGraph._finalOutputs.get(node.name).add(outputName);
+                    }
+                }
             }
             // Issue readbacks if this node is in a GPU session
             if (session instanceof GPUSession) {
+                // Check every output of every node...
                 for (const node of session.nodes) {
-                    if (usedNodes.has(node)) {
-                        // If this node is in a GPU session and an output is used by a CPU session, add it to the readback list.
-                        for (const [outputName, shape] of node.computedOutputShapes.entries()) {
-                            const outputKey = `${node.name}:${outputName}`;
-                            const inputKeys = forwardEdges.get(outputKey);
-                            for (const inputKey of inputKeys) {
-                                const inputNode = inputKey.split(':')[0];
-                                if (sessionGraph._nodeToSession.get(inputNode) instanceof CPUSession) {
-                                    resourcePlan.readback.push(outputKey);
-                                }
+                    for (const [outputName, shape] of node.computedOutputShapes.entries()) {
+                        const outputKey = `${node.name}:${outputName}`;
+                        let readback = false;
+                       
+                        // Readback if this output is used by a CPU node
+                        const inputKeys = forwardEdges.get(outputKey);
+                        for (const inputKey of inputKeys) {
+                            const inputNode = inputKey.split(':')[0];
+                            if (sessionGraph._nodeToSession.get(inputNode) instanceof CPUSession) {
+                                readback = true;
+                                break;
                             }
                         }
-                    } else {
-                        // If this node is in a GPU session, issue a readback for all its outputs.
-                        for (const [outputName, shape] of node.computedOutputShapes.entries()) {
-                            const outputKey = `${node.name}:${outputName}`;
+
+                        // Readback if this output is a final output
+                        if(
+                            sessionGraph._finalOutputs.has(node.name) &&
+                            sessionGraph._finalOutputs.get(node.name).has(outputName)
+                        ) {
+                            readback = true;
+                        }
+
+                        if(readback) {
                             resourcePlan.readback.push(outputKey);
                         }
                     }
@@ -655,6 +675,7 @@ export class KernelCompiler {
                     // Dimension buffer
                     if (kernel.dimensionBuffer) {
                         entries.push({
+                            label: `${kernel.name}.${kernel.key()}.binding.${kernel.dimensionBuffer.index}`,
                             binding: kernel.dimensionBuffer.index,
                             visibility: GPUShaderStage.COMPUTE,
                             buffer: { type: 'uniform' }
@@ -663,6 +684,7 @@ export class KernelCompiler {
                     // Normal bindings
                     for (const binding of kernel.inputBindings.concat(kernel.outputBindings)) {
                         entries.push({
+                            label: `${kernel.name}.${kernel.key()}.binding.${binding.index}`,
                             binding: binding.index,
                             visibility: GPUShaderStage.COMPUTE,
                             buffer: {
@@ -670,7 +692,10 @@ export class KernelCompiler {
                             }
                         })
                     }
-                    kernel.bindGroupLayout = this.device.createBindGroupLayout({ entries: entries });
+                    kernel.bindGroupLayout = this.device.createBindGroupLayout({
+                        label: `${kernel.name}.${kernel.key()}.bindgrouplayout`,
+                        entries: entries
+                    });
                 } catch (error) {
                     console.error(`Failed to create bind group layout for kernel ${kernel.name} (${kernel.key()}):`, error);
                     throw error;
@@ -682,10 +707,14 @@ export class KernelCompiler {
                 try {
                     console.debug(`Compiling shader for kernel: ${kernel.name} (${kernel.key()})`);
 
-                    const shaderModule = this.device.createShaderModule({ code: kernel.shader });
+                    const shaderModule = this.device.createShaderModule({
+                        label: `${kernel.name}.${kernel.key()}.shadermodule`,
+                        code: kernel.shader
+                    });
                     console.debug(`Creating pipeline for kernel: ${kernel.name} (${kernel.key()})`);
 
                     kernel.pipeline = await this.device.createComputePipelineAsync({
+                        label: `${kernel.name}.${kernel.key()}.pipeline`,
                         layout: this.device.createPipelineLayout({
                             bindGroupLayouts: [kernel.bindGroupLayout]
                         }),

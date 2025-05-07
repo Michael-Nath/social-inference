@@ -73,3 +73,5 @@ if (error) {
   }
   return errors;
 }
+
+export const ALL_SCOPES = ['validation', 'out-of-memory', 'internal'];
