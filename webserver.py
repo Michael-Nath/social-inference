@@ -7,8 +7,11 @@ import torch
 from inference import (
     ModelCache, Registration, ComputePipeline, WorkerManager, 
     PartitionWork, PartitionWorkResult, PartitionName, 
-    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder
+    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder,
+    simulator
 )
+
+CHECK_WORK = True
 
 # model_cache = ModelCache()
 model_cache = None
@@ -45,6 +48,8 @@ app = FastAPI()
 #     allow_methods=["*"],  # Allows all methods
 #     allow_headers=["*"],  # Allows all headers
 # )
+
+inflight_work = {}
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
 
@@ -83,14 +88,23 @@ async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs
     """
-    return pipeline.get_partition_work(partition_name)
+    w = pipeline.get_partition_work(partition_name)
+    if CHECK_WORK:
+        inflight_work[(partition_name, w.correlation_id)] = w
+    return w
 
 @app.post("/work")
 async def submit_work(work: PartitionWorkResult):
     """
     Called by clients to submit inference results
     """
+    # Check work
+    if CHECK_WORK:
+        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache)
+        gt.close_to(work)
     return pipeline.submit_partition_work(work)
+
+
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
