@@ -433,7 +433,6 @@ export class SessionExecutor {
         console.group("Preparing Readbacks");
         const readbackOperations = [];
         for (const outputKey of session.resourcePlan.readback) {
-            console.log(`Preparing readback for ${outputKey}`);
             const gpuTensor = this.gpuOutputs.get(outputKey);
             if (!gpuTensor) {
                 console.warn(`Readback requested for ${outputKey}, but GPUTensor not found in gpuOutputs. Skipping readback for this key.`);
@@ -471,7 +470,6 @@ export class SessionExecutor {
         console.groupEnd();
 
         const prepEnd = performance.now();
-        this.device.queue.submit([commandEncoder.finish()]);
         console.log(`GPU commands (kernels + readback copies) submitted.`);
         
         // Wait for all submitted GPU work to complete
@@ -516,6 +514,7 @@ export class SessionExecutor {
 
                 this.cpuOutputs.set(op.outputKey, cpuTensor);
                 console.log(`Readback complete for ${op.outputKey}. CPUTensor stored.`);
+                console.log(cpuTensor);
 
             } catch (error) {
                 console.error(`Error during readback for ${op.outputKey}:`, error);

@@ -9,7 +9,6 @@ from inference import (
     PartitionWork, PartitionWorkResult, PartitionName, 
     PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder
 )
-from models import simple_matmul
 
 model_cache = ModelCache()
 
