@@ -21,8 +21,8 @@ def simple_two_node():
     x = g.input("x")
     y = g.input("y")
     with g.partition("p0"):
-        # matmul = g.matmul("matmul", x, y)
-        matmul = g.add("add0", x, y)
+        matmul = g.matmul("matmul", x, y)
+        #matmul = g.add("add0", x, y)
         add = g.add("add1", matmul, x)
     z = g.output("output", add)
     return g.build()

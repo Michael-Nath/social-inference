@@ -423,6 +423,7 @@ export class SessionExecutor {
                 throw new Error(`Kernel ${kernel.name} is missing its bindGroupLayout.`);
             }
             const bindGroup = this.device.createBindGroup({
+                label: `${node.name}.bindgroup`,
                 layout: kernel.bindGroupLayout,
                 entries: bindGroupEntries,
             });
