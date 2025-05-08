@@ -402,7 +402,7 @@ export class SessionExecutor {
                 });
 
                 const mappedRange = dimensionBuffer.getMappedRange();
-                const typedArray = new Float32Array(mappedRange);
+                const typedArray = new Uint32Array(mappedRange);
                 typedArray.set(dimensionData);
                 dimensionBuffer.unmap();
 
@@ -532,8 +532,11 @@ export class SessionExecutor {
                         // Skip creating CPUTensor for unsupported type
                         continue; 
                 }
+                
+                op.stagingBuffer.unmap();
+                op.stagingBuffer.destroy(); // Clean up the staging buffer
 
-                const cpuTensor = CPUTensor.fromArray({
+                const cpuTensor = new CPUTensor({
                     data: typedData,
                     shape: op.shape,
                     dtype: op.dtype,

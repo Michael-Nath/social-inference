@@ -259,7 +259,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             `,
             dimensionBuffer: {
                 func: (inputShapes, outputShapes) => {
-                    return new Float32Array([
+                    return new Uint32Array([
                         inputShapes.get(MatmulNode.LHS)[0],
                         inputShapes.get(MatmulNode.LHS)[1],
                         inputShapes.get(MatmulNode.RHS)[1],
