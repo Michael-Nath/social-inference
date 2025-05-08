@@ -38,6 +38,88 @@ async function main() {
     const sessionGraph = await compiler.compile(work);
     console.log("--- Compilation Complete ---");
 
+    // --- Update HTML with dynamic info ---
+    document.getElementById('current-partition').textContent = registration.partition;
+
+    const sessionsContainer = document.getElementById('sessions-container');
+    sessionsContainer.innerHTML = ''; // Clear previous content
+
+    let sessionsToDisplay = [];
+    let graphTitleForConsole = "Detected sessionGraph structure";
+
+    if (sessionGraph) {
+        if (sessionGraph.sessions && Array.isArray(sessionGraph.sessions)) {
+            sessionsToDisplay = sessionGraph.sessions;
+            graphTitleForConsole = "sessionGraph.sessions (Array)";
+        } else if (Array.isArray(sessionGraph) && sessionGraph.every(s => s && typeof s === 'object' && s.nodes)) {
+            sessionsToDisplay = sessionGraph;
+            graphTitleForConsole = "sessionGraph (Array of sessions)";
+        } else if (typeof sessionGraph === 'object' && !Array.isArray(sessionGraph) && Object.values(sessionGraph).every(s => s && typeof s === 'object' && s.nodes && typeof s.id !== 'undefined')) {
+            sessionsToDisplay = Object.values(sessionGraph);
+            graphTitleForConsole = "sessionGraph (Object Map of sessions)";
+        } else if (sessionGraph.nodes && Array.isArray(sessionGraph.nodes)) {
+            sessionsToDisplay = [sessionGraph]; // Treat as a single session
+            if (!sessionGraph.id) sessionsToDisplay[0].id = "default_session"; // Assign a default ID if missing
+            graphTitleForConsole = "sessionGraph (Single session object with .nodes)";
+        }
+    }
+
+    console.log(graphTitleForConsole + " used for display:", sessionsToDisplay);
+
+    if (sessionsToDisplay.length > 0) {
+        sessionsToDisplay.forEach(session => {
+            const sessionDiv = document.createElement('div');
+            sessionDiv.className = 'session';
+            sessionDiv.style.border = '1px solid #ccc';
+            sessionDiv.style.marginBottom = '10px';
+            sessionDiv.style.padding = '10px';
+
+            const sessionTitle = document.createElement('h3');
+            sessionTitle.textContent = `Session ID: ${session.id || 'Unknown Session'}`;
+            sessionTitle.style.marginTop = '0';
+            sessionDiv.appendChild(sessionTitle);
+
+            if (session.nodes && Array.isArray(session.nodes) && session.nodes.length > 0) {
+                const nodesList = document.createElement('ul');
+                nodesList.style.paddingLeft = '20px';
+                session.nodes.forEach(node => {
+                    const nodeItem = document.createElement('li');
+                    nodeItem.textContent = `Node: ${node.name || node.id || 'Unknown Node'}`;
+
+                    if (node.dependencies && Array.isArray(node.dependencies) && node.dependencies.length > 0) {
+                        const dependenciesList = document.createElement('ul');
+                        dependenciesList.style.listStyleType = 'circle';
+                        dependenciesList.style.marginLeft = '20px';
+                        node.dependencies.forEach(dep => {
+                            const dependencyItem = document.createElement('li');
+                            let depText = 'Unknown Dependency';
+                            if (typeof dep === 'string') {
+                                depText = dep;
+                            } else if (dep && typeof dep === 'object') {
+                                depText = dep.node_id || dep.id || JSON.stringify(dep);
+                            }
+                            dependencyItem.textContent = `Depends on: ${depText}`;
+                            dependenciesList.appendChild(dependencyItem);
+                        });
+                        nodeItem.appendChild(dependenciesList);
+                    }
+                    nodesList.appendChild(nodeItem);
+                });
+                sessionDiv.appendChild(nodesList);
+            } else {
+                const noNodesPara = document.createElement('p');
+                noNodesPara.textContent = 'No nodes in this session.';
+                sessionDiv.appendChild(noNodesPara);
+            }
+            sessionsContainer.appendChild(sessionDiv);
+        });
+    } else {
+        const noSessionsPara = document.createElement('p');
+        noSessionsPara.textContent = 'No sessions or compatible graph structure found to display.';
+        sessionsContainer.appendChild(noSessionsPara);
+    }
+    // ------------------------------------
+
     // 2. Execute
     console.log("--- Starting Execution ---");
     const executor = new SessionExecutor(device, sessionGraph);

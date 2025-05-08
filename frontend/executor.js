@@ -73,7 +73,10 @@ export class SessionExecutor {
 
         const mappedRange = gpuBuffer.getMappedRange();
         const typedArray = new Float32Array(mappedRange);
-        typedArray.set(cpuTensor.getData()); // Copies here
+        console.log(mappedRange);
+        console.log(typedArray);
+        console.log(cpuTensor.getTypedArray());
+        typedArray.set(cpuTensor.getTypedArray()); // Copies here
         gpuBuffer.unmap(); // Boundary here
 
         const gpuTensor = new GPUTensor({

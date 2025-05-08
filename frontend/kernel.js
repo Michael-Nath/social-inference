@@ -30,7 +30,7 @@ export class Tensor {
 export class CPUTensor extends Tensor {
   /**
    * @param {Object} options - CPUTensor options
-   * @param {Float32Array} options.data - Flattened array of tensor elements
+   * @param {ArrayBuffer} options.data - Raw data buffer
    * @param {Array<number>} options.shape - Shape of the tensor
    * @param {string} options.dtype - Data type of the tensor
    */
@@ -42,37 +42,17 @@ export class CPUTensor extends Tensor {
   }
 
   /**
-   * @param {Object} options - CPUTensor options
-   * @param {Array<number>} options.elements - Flattened array of tensor elements
-   * @param {Array<number>} options.shape - Shape of the tensor
-   * @param {string} options.dtype - Data type of the tensor
-   * @returns {CPUTensor}
+   * Performs a shallow copy of the internal data buffer to a typed array.
+   * 
+   * @returns {TypedArray} - Typed array of the tensor data
    */
-  static fromArray(options) {
-    let TypedArrayConstructor;
-    switch (options.dtype) {
-      case 'float32':
-        TypedArrayConstructor = Float32Array;
-        break;
-      case 'int32':
-        TypedArrayConstructor = Int32Array;
-        break;
-      // Add other supported dtypes here as needed
-      // case 'int16': TypedArrayConstructor = Int16Array; break;
-      // case 'uint8': TypedArrayConstructor = Uint8Array; break;
-      default:
-        console.warn(`CPUTensor: Unsupported dtype '${this.dtype}', defaulting to Float32Array.`);
-        TypedArrayConstructor = Float32Array;
-    }
-    return new CPUTensor({
-      data: new TypedArrayConstructor(options.elements),
-      dtype: options.dtype,
-      shape: options.shape
-    })
+  getTypedArray() {
+    // TODO: Correctly handle other data types.
+    return new Float32Array(this.data);
   }
 
   /**
-   * @returns {Float32Array} - Flattened array of tensor elements
+   * @returns {ArrayBuffer} - Raw data buffer
    */
   getData() {
     return this.data;
@@ -96,7 +76,34 @@ export class CPUTensor extends Tensor {
    * @returns {number} - Size of the tensor in bytes
    */
   getSize() {
-    return this.data.length * this.data.BYTES_PER_ELEMENT;
+    // Computes based on shape and dtype
+    let element_size;
+    
+    // Determine element size based on data type
+    switch (this.dtype) {
+      case 'float32':
+        element_size = 4; // 32 bits = 4 bytes
+        break;
+      case 'float16':
+        element_size = 2; // 16 bits = 2 bytes
+        break;
+      case 'int32':
+        element_size = 4; // 32 bits = 4 bytes
+        break;
+      case 'int16':
+        element_size = 2; // 16 bits = 2 bytes
+        break;
+      case 'int8':
+        element_size = 1; // 8 bits = 1 byte
+        break;
+      case 'uint8':
+        element_size = 1; // 8 bits = 1 byte
+        break;
+      default:
+        element_size = 4; // Default to float32 (4 bytes)
+    }
+
+    return this.shape.reduce((acc, dim) => acc * dim, 1) * element_size;
   }
 }
 

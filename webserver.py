@@ -22,20 +22,26 @@ def simple_two_node():
     y = g.input("y")
     with g.partition("p0"):
         matmul = g.matmul("matmul", x, y)
-        #matmul = g.add("add0", x, y)
         add = g.add("add1", matmul, x)
+    with g.partition("p1"):
+        matmul = g.matmul("matmul2", add, y)
+        add = g.add("add2", matmul, y)
+    # with g.partition("p2"):
+    #     matmul = g.matmul("matmul3", add, y)
+    #     add = g.add("add3", matmul, y)
     z = g.output("output", add)
     return g.build()
 
 g = simple_two_node()
 pipeline = ComputePipeline(g)
-pipeline.enqueue_input(PipelineInput(
-    correlation_id="1",
-    inputs={
-        "x": Tensor.from_torch(torch.randn(16,16)),
-        "y": Tensor.from_torch(torch.randn(16,16)),
-    },
-))
+for i in range(20):
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id=f"{i}",
+        inputs={
+            "x": Tensor.from_torch(torch.randn(32, 32)),
+            "y": Tensor.from_torch(torch.randn(32, 32)),
+        },
+    ))
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

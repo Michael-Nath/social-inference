@@ -84,12 +84,12 @@ class Registration {
 class APITensor {
     /**
      * @param {Object} api_response - Tensor response from server
-     * @param {Array<number>} api_response.elements - Flattened array of tensor elements
+     * @param {string} api_response.elements - Base64 encoded string of tensor elements
      * @param {Array<number>} api_response.shape - Shape of the tensor
      * @param {string} api_response.dtype - Data type of the tensor
      */
     constructor(api_response) {
-        /** @type {Array<number>} */
+        /** @type {string} */
         this.elements = api_response.elements;
         /** @type {Array<number>} */
         this.shape = api_response.shape;
@@ -102,22 +102,36 @@ class APITensor {
      * @returns {APITensor}
      */
     static fromCPU(tensor) {
-	return new APITensor({
-	    elements: Array.from(tensor.data),
-	    shape: tensor.shape,
-	    dtype: tensor.dtype
-	});
+        // Convert the tensor.buffer ArrayBuffer to a base64 string
+        let binary = '';
+        let bytes = new Uint8Array(tensor.data);
+        let len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        let base64 = btoa(binary);
+        return new APITensor({
+            elements: base64,
+            shape: tensor.shape,
+            dtype: tensor.dtype
+        });
     }
 
     /**
      * @returns {CPUTensor}
      */
     toCPU() {
-	return CPUTensor.fromArray({
-	    elements: this.elements,
-	    shape: this.shape,
-	    dtype: this.dtype
-	});
+        const str = atob(this.elements);
+        const bytes = new Uint8Array(str.length);
+        for (let i = 0; i < str.length; i++) {
+            bytes[i] = str.charCodeAt(i);
+        }
+        console.log("toCPU bytes", bytes);
+        return new CPUTensor({
+            data: bytes.buffer,
+            shape: this.shape,
+            dtype: this.dtype
+        });
     }
 }
 
@@ -592,17 +606,17 @@ class AddNode extends Node {
                 // assume lhs and rhs are both CPU tensors
                 const a = inputs[AddNode.A];
                 const b = inputs[AddNode.B];
-                const n = a.data.length;
+                const n = a.getTypedArray().length;
 
                 const c = new Float32Array(n);
 
                 for(let i = 0; i < n; i++) {
-                    c[i] = a.data[i] + b.data[i];
+                    c[i] = a.getTypedArray()[i] + b.getTypedArray()[i];
                 }
 
                 return {
                     [DEFAULT_NODE_OUTPUT]: new CPUTensor({
-                        data: c,
+                        data: c.buffer,
                         dtype: a.dtype,
                         shape: a.shape
                     })
@@ -847,7 +861,7 @@ class InputAssignment {
         this.node = api_response.node;
         this.input = api_response.input;
         // Directly create CPUTensor from the raw tensor data in the API response
-        this.tensor = CPUTensor.fromArray(api_response.tensor);
+        this.tensor = (new APITensor(api_response.tensor)).toCPU();
         console.log("constructed", this)
     }
 }
