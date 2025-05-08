@@ -5,7 +5,10 @@ export async function initializeWebGPU() {
     requiredLimits: {
       maxBufferSize: adapter.limits.maxBufferSize,
       maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-    }
+    },
+    requiredFeatures: [
+      'timestamp-query'
+    ],
   });
 
   // Add a device lost handler to catch severe errors
