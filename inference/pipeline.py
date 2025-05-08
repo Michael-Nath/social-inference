@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from queue import Queue, Empty
 import threading
 from typing import Annotated, Literal, Union
@@ -7,6 +9,8 @@ from collections import defaultdict, deque
 from .graph import ComputeGraph, ComputeGraphEdge, GraphEncoding, NodeName, PartitionName, PARTITION_INPUT, PARTITION_OUTPUT
 from .tensor import Tensor
 from .queue import CorrelatedQueue, CorrelatedTensor
+
+import torch
 
 class PipelineInput(BaseModel):
     """
@@ -50,7 +54,21 @@ class PartitionWorkResult(BaseModel):
     partition: PartitionName
     outputs: list[OutputAssignment]
 
-
+    def close_to(self, other: PartitionWorkResult):
+        if other.correlation_id != self.correlation_id:
+            raise ValueError(f"Correlation {self.correlation_id} != {other.correlation_id}")
+        if other.partition != self.partition:
+            raise ValueError(f"Partition {self.partition} != {other.partition}")
+        if len(self.outputs) != len(other.outputs):
+            raise ValueError(f"Outputs {self.outputs} != {other.outputs}")
+        our_outputs = {}
+        for o in self.outputs:
+            our_outputs[(o.node, o.output)] = o
+        for o in other.outputs:
+            if (o.node, o.output) not in our_outputs:
+                raise ValueError(f"Extraneous output {o}")
+            if not torch.allclose(o.tensor.to_torch(), our_outputs[(o.node, o.output)].tensor.to_torch()):
+                raise ValueError(f"Output {o} does not match our output {our_outputs[(o.node, o.output)]}")
 class ComputePipeline:
     """
     A compute pipeline stores the execution state of a compute graph.
@@ -130,6 +148,8 @@ class ComputePipeline:
         """
         Gets the next partition work for a partition, or None if no work is available.
         """
+        # TODO: gotta remove the peek when not debugging lmfao
+        # elements = self.partition_queues[partition].peek()
         elements = self.partition_queues[partition].pop(blocking=False)
         if elements is None:
             return None

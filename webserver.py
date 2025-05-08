@@ -7,22 +7,42 @@ import torch
 from inference import (
     ModelCache, Registration, ComputePipeline, WorkerManager, 
     PartitionWork, PartitionWorkResult, PartitionName, 
-    PipelineInput, PipelineOutput, Tensor
+    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder,
+    simulator
 )
-from models import simple_matmul
 
-model_cache = ModelCache()
+CHECK_WORK = True
 
-graph = simple_matmul()
-pipeline = ComputePipeline(graph)
-pipeline.enqueue_input(PipelineInput(
-    correlation_id="1",
-    inputs={
-        "x": Tensor.from_torch(torch.randn(32,32)),
-        "y": Tensor.from_torch(torch.randn(32,32)),
-    },
-))
-worker_manager = WorkerManager(graph)
+# model_cache = ModelCache()
+model_cache = None
+
+def simple_two_node():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    y = g.input("y")
+    with g.partition("p0"):
+        matmul = g.matmul("matmul", x, y)
+        add = g.add("add1", matmul, x)
+    with g.partition("p1"):
+        matmul = g.matmul("matmul2", add, y)
+        add = g.add("add2", matmul, y)
+    # with g.partition("p2"):
+    #     matmul = g.matmul("matmul3", add, y)
+    #     add = g.add("add3", matmul, y)
+    z = g.output("output", add)
+    return g.build()
+
+g = simple_two_node()
+pipeline = ComputePipeline(g)
+for i in range(20):
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id=f"{i}",
+        inputs={
+            "x": Tensor.from_torch(torch.randn(32, 32)),
+            "y": Tensor.from_torch(torch.randn(32, 32)),
+        },
+    ))
+worker_manager = WorkerManager(g)
 
 app = FastAPI()
 
@@ -34,6 +54,8 @@ app = FastAPI()
 #     allow_methods=["*"],  # Allows all methods
 #     allow_headers=["*"],  # Allows all headers
 # )
+
+inflight_work = {}
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
 
@@ -72,14 +94,23 @@ async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs
     """
-    return pipeline.get_partition_work(partition_name)
+    w = pipeline.get_partition_work(partition_name)
+    if CHECK_WORK:
+        inflight_work[(partition_name, w.correlation_id)] = w
+    return w
 
-@app.post("/work", response_model=PartitionWorkResult)
+@app.post("/work")
 async def submit_work(work: PartitionWorkResult):
     """
     Called by clients to submit inference results
     """
+    # Check work
+    if CHECK_WORK:
+        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache)
+        gt.close_to(work)
     return pipeline.submit_partition_work(work)
+
+
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

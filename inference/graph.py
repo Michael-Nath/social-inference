@@ -59,6 +59,14 @@ class ComputeGraphNode(ABC):
 
 type Node = ComputeGraphNode
 
+class DebugNodeEncoding(BaseModel):
+    """
+    API-encoded debug node.
+    """
+
+    type: Literal["debug"]
+    name: NodeName
+
 class ConstantNodeEncoding(BaseModel):
     """
     API-encoded constant node.
@@ -156,6 +164,17 @@ class TransposeNodeEncoding(BaseModel):
     dim0: int
     dim1: int
 
+class DebugNode(ComputeGraphNode):
+    INPUT : NodeInput = "input"
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return { DebugNode.INPUT }
+    
+    def get_output_names(self) -> set[str]:
+        return { DEFAULT_NODE_OUTPUT }
+
 class AddNode(ComputeGraphNode):
     """
     Add two tensors together.
@@ -235,6 +254,7 @@ type NodeEncoding = Annotated[
         DivNodeEncoding,
         FloorNodeEncoding,
         CeilNodeEncoding,
+        DebugNodeEncoding
     ],
     Field(discriminator="type")
 ]
@@ -602,6 +622,14 @@ class ComputeGraphBuilder:
             raise ValueError(f"Node {name} already exists")
         if check_partition and self._active_partition is None:
             raise ValueError(f"Node {name} must be created within a partition")
+    
+    def debug(self, name: NodeName, tensor: ComputeGraphNode) -> DebugNode:
+        name = NameScope.name(name)
+        self._check_node(name, check_partition=False)
+
+        self._nodes[name] = DebugNode(name=name, partition=self._active_partition)
+        self._make_edge(tensor.name, DEFAULT_NODE_OUTPUT, name, DebugNode.INPUT)
+        return self._nodes[name]
 
     def input(self, name: NodeName) -> InputNode:
         name = NameScope.name(name)
@@ -1033,6 +1061,8 @@ class ComputeGraph:
                 nodes[node_name] = FloorNodeEncoding(type="floor", name=node_name)
             elif isinstance(node, CeilNode):
                 nodes[node_name] = CeilNodeEncoding(type="ceil", name=node_name)
+            elif isinstance(node, DebugNode):
+                nodes[node_name] = DebugNodeEncoding(type="debug", name=node_name)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
