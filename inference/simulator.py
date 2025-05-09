@@ -6,7 +6,8 @@ from .graph import (
     EdgeEncoding, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
     HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
-    FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode
+    FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode, SquaredNode, ReduceMeanNode, RsqrtNode,
+    SiluNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -74,6 +75,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             
             for i, (actual, expected) in enumerate(zip(tensor.shape, shape)):
                 if expected != -1 and actual != expected:
+                    breakpoint()
                     raise ValueError(f"Tensor shape {tensor.shape} does not match expected shape {shape} (mismatch at dimension {i})")
             return tensor
         
@@ -106,7 +108,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
                 # check_shapes_match(lhs, rhs)
-                assert lhs.shape[-1] == rhs.shape[-2], f"matmul shape mismatch in {lhs.shape} @ {rhs.shape}"
+                assert lhs.shape[-1] == rhs.shape[-2], breakpoint()
                 output = lhs @ rhs
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -136,8 +138,9 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 # Resolve n dynamically
                 n_tensor = resolve_input(node, BroadcastNode.N)
                 n = check_shape(n_tensor, [1]).item() # n is the new dimension size
+                assert int(n) == n, "bruh"
 
-                output = input_tensor.expand(*[n if i == dim else -1 for i in range(input_tensor.dim())])
+                output = input_tensor.expand(*[int(n) if i == dim else -1 for i in range(input_tensor.dim())])
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "cat":
@@ -159,7 +162,10 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 a = resolve_input(node, HadamardNode.A)
                 b = resolve_input(node, HadamardNode.B)
                 # check_shapes_match(a,b)
-                output = a * b
+                try:
+                    output = a * b
+                except:
+                    breakpoint()
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "debug":
@@ -167,6 +173,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 print(f"DEBUG<{node}>:")
                 print("=================================")
                 print(tensor)
+                print(tensor.shape)
                 print("=================================")
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
                 return tensor 
@@ -216,7 +223,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                     if i < len(input_tensor_shape) and idx >= input_tensor_shape[i]:
                         raise ValueError(f"Index {idx} at position {i} is out of bounds for dimension size {input_tensor_shape[i]}")
 
-                # To preserve shape: wrap each index as a slice if it’s the last one
+                # To preserve shape: wrap each index as a slice if it's the last one
                 indexing = []
                 for dim, idx in enumerate(index_list):
                     if dim == len(index_list) - 1:
@@ -246,6 +253,25 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 output = torch.transpose(input_tensor, dim0, dim1)
                 output_table[(((node, DEFAULT_NODE_OUTPUT)))] = output
                 return output
+            elif encoded_node.type == "squared":
+                input_tensor = resolve_input(node, SquaredNode.INPUT)
+                output = input_tensor ** 2
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "reduce_mean":
+                input_tensor = resolve_input(node, ReduceMeanNode.INPUT)
+                dim_tensor = resolve_input(node, ReduceMeanNode.DIM)
+                resolved_dim = check_shape(dim_tensor, [1]).item()
+                
+                # torch.mean defaults to keepdim=False if not specified
+                output = torch.mean(input_tensor, dim=resolved_dim)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "rsqrt":
+                input_tensor = resolve_input(node, RsqrtNode.INPUT)
+                output = torch.rsqrt(input_tensor)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
             elif encoded_node.type == "floor":
                 input_tensor = resolve_input(node, FloorNode.INPUT)
                 output = torch.floor(input_tensor).to(torch.long)
@@ -256,18 +282,24 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 output = torch.ceil(input_tensor).to(torch.long)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
+            elif encoded_node.type == "silu":
+                input_tensor = resolve_input(node, SiluNode.INPUT)
+                output = torch.nn.functional.silu(input_tensor)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
             else:
                 raise ValueError(f"Unknown node type: {encoded_node.type}")
         except Exception as e:
             print(f"Error evaluating {node} {output}: {e}")
             # Print output table for debugging
             print(f"\nError occurred in node: {node}")
-            print(f"Output table contents:")
+            print("Output table contents:")
             for (n, out), tensor in output_table.items():
                 print(f"  {n}.{out}: {tensor.shape}")
             raise e
 
-    # Evaluate all output nodes
+
+    print(output_nodes)
     for node in output_nodes:
         evaluate_output(node, DEFAULT_NODE_OUTPUT)
 

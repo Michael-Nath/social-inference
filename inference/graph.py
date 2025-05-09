@@ -235,6 +235,34 @@ class CeilNodeEncoding(BaseModel):
     type: Literal["ceil"]
     name: NodeName
 
+class SquaredNodeEncoding(BaseModel):
+    """
+    API-encoded squared node.
+    """
+    type: Literal["squared"]
+    name: NodeName
+
+class ReduceMeanNodeEncoding(BaseModel):
+    """
+    API-encoded reduce_mean node.
+    """
+    type: Literal["reduce_mean"]
+    name: NodeName
+
+class RsqrtNodeEncoding(BaseModel):
+    """
+    API-encoded rsqrt node.
+    """
+    type: Literal["rsqrt"]
+    name: NodeName
+
+class SiluNodeEncoding(BaseModel):
+    """
+    API-encoded SiLU node.
+    """
+    type: Literal["silu"]
+    name: NodeName
+
 type NodeEncoding = Annotated[
     Union[
         MatmulNodeEncoding,
@@ -254,7 +282,11 @@ type NodeEncoding = Annotated[
         DivNodeEncoding,
         FloorNodeEncoding,
         CeilNodeEncoding,
-        DebugNodeEncoding
+        SquaredNodeEncoding,
+        ReduceMeanNodeEncoding,
+        RsqrtNodeEncoding,
+        DebugNodeEncoding,
+        SiluNodeEncoding
     ],
     Field(discriminator="type")
 ]
@@ -533,6 +565,52 @@ class CeilNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
+class SquaredNode(ComputeGraphNode):
+    """
+    Element-wise square of a tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class ReduceMeanNode(ComputeGraphNode):
+    """
+    Reduces a tensor by taking the mean along a given dimension.
+    """
+    INPUT: NodeInput = "input"
+    DIM: NodeInput = "dim" # Tensor representing the dimension(s)
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT, self.DIM}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class RsqrtNode(ComputeGraphNode):
+    """
+    Element-wise reciprocal square root of a tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 class TransposeNode(ComputeGraphNode):
     """
     Transpose two dimensions of a tensor.
@@ -553,6 +631,20 @@ class TransposeNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
+class SiluNode(ComputeGraphNode):
+    """
+    Apply SiLU activation function.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
 
 @dataclass(eq=True, frozen=True)
 class ComputeGraphEdge:
@@ -793,6 +885,39 @@ class ComputeGraphBuilder:
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, CeilNode.INPUT)
         return self._nodes[name]
 
+    def square(self, name: NodeName, input: ComputeGraphNode) -> SquaredNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = SquaredNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, SquaredNode.INPUT)
+        return node
+
+    def reduce_mean(self, name: NodeName, input_node: ComputeGraphNode, dim_node: ComputeGraphNode) -> ReduceMeanNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = ReduceMeanNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, ReduceMeanNode.INPUT)
+        self._make_edge(dim_node.name, DEFAULT_NODE_OUTPUT, name, ReduceMeanNode.DIM)
+        return node
+
+    def rsqrt(self, name: NodeName, input_node: ComputeGraphNode) -> RsqrtNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = RsqrtNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, RsqrtNode.INPUT)
+        return node
+
+    def silu(self, name: NodeName, input_node: ComputeGraphNode) -> SiluNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = SiluNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, SiluNode.INPUT)
+        return node
+
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -868,7 +993,7 @@ class ComputeGraph:
         same partition.
         """
         try:
-            _check_partition_name(name)
+            # _check_partition_name(name)
             self._active_partition = name
             yield
         finally:
@@ -1061,8 +1186,16 @@ class ComputeGraph:
                 nodes[node_name] = FloorNodeEncoding(type="floor", name=node_name)
             elif isinstance(node, CeilNode):
                 nodes[node_name] = CeilNodeEncoding(type="ceil", name=node_name)
+            elif isinstance(node, SquaredNode):
+                nodes[node_name] = SquaredNodeEncoding(type="squared", name=node_name)
+            elif isinstance(node, ReduceMeanNode):
+                nodes[node_name] = ReduceMeanNodeEncoding(type="reduce_mean", name=node_name)
+            elif isinstance(node, RsqrtNode):
+                nodes[node_name] = RsqrtNodeEncoding(type="rsqrt", name=node_name)
             elif isinstance(node, DebugNode):
                 nodes[node_name] = DebugNodeEncoding(type="debug", name=node_name)
+            elif isinstance(node, SiluNode):
+                nodes[node_name] = SiluNodeEncoding(type="silu", name=node_name)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
