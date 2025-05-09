@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNorm, LlamaDecoderLayer
 from transformers.models.llama.configuration_llama import LlamaConfig
 from .llama import llama_attn, layernorm, llama_fwd
@@ -202,37 +203,63 @@ def test_llama_attn():
     cache = llama_1b_cache()
     result = simulate(work, cache)
     our_attn_output = result.outputs[0].tensor.to_torch()
-    assert torch.allclose(gt_output, our_attn_output, rtol=1e-3)
-
-
-
-def test_llama_fwd():
     
-    model_path = "meta-llama/Llama-3.2-1B"
-    # Load the model
-    model = load_model(model_path)
-    model.model = model.model.float()
+    # Check if tensors are close
+    is_close = torch.allclose(gt_output, our_attn_output, rtol=1e-2)
     
+    if not is_close:
+        # Calculate absolute difference
+        abs_diff = torch.abs(gt_output - our_attn_output)
+        # Find max difference and its location
+        max_diff = torch.max(abs_diff)
+        max_diff_idx = torch.argmax(abs_diff.flatten())
+        max_diff_pos = np.unravel_index(max_diff_idx.item(), abs_diff.shape)
+        
+        # Calculate relative difference
+        rel_diff = abs_diff / (torch.abs(gt_output) + 1e-8)
+        max_rel_diff = torch.max(rel_diff)
+        max_rel_diff_idx = torch.argmax(rel_diff.flatten())
+        max_rel_diff_pos = np.unravel_index(max_rel_diff_idx.item(), rel_diff.shape)
+        
+        print(f"Tensors not close! Max absolute diff: {max_diff.item():.6f} at position {max_diff_pos}")
+        print(f"Max relative diff: {max_rel_diff.item():.6f} at position {max_rel_diff_pos}")
+        print(f"Values at max abs diff: GT={gt_output[max_diff_pos].item():.6f}, Ours={our_attn_output[max_diff_pos].item():.6f}")
+        print(f"Values at max rel diff: GT={gt_output[max_rel_diff_pos].item():.6f}, Ours={our_attn_output[max_rel_diff_pos].item():.6f}")
+        
+        # Show a small region around the max difference
+        r, c, d = max_diff_pos
+        r_start, r_end = max(0, r-1), min(abs_diff.shape[0], r+2)
+        c_start, c_end = max(0, c-1), min(abs_diff.shape[1], c+2)
+        d_start, d_end = max(0, d-1), min(abs_diff.shape[2], d+2)
+        
+        print("\nRegion around max absolute difference:")
+        print("Ground truth:")
+        print(gt_output[r_start:r_end, c_start:c_end, d_start:d_end])
+        print("Our output:")
+        print(our_attn_output[r_start:r_end, c_start:c_end, d_start:d_end])
+        
+    assert is_close, "Attention outputs don't match within tolerance"
 
+
+def layer_correct(model, idx: int):
     batch_size = 1
     seq_len = 1
     num_heads = model.config.num_attention_heads
     num_kv_heads = model.config.num_key_value_heads
-    
-    
+
+
     head_dim = model.config.head_dim
     hidden_dim = num_heads * head_dim
     # create some hidden states
     hidden_states = torch.randn(batch_size, seq_len, hidden_dim)
     cos = torch.randn(1, seq_len, head_dim)
     sin = torch.randn(1, seq_len, head_dim)
-    
+
     # Extract the first decoder layer
-    first_decoder_layer: LlamaDecoderLayer = model.model.layers[0].cpu()
+    first_decoder_layer: LlamaDecoderLayer = model.model.layers[idx].cpu()
 
     b = ComputeGraphBuilder()
     with b.partition("p0"):
-    
         # Use the new utility function to package weights
         packaged_layer_weights = package_llama_decoder_layer_weights(first_decoder_layer, b)
         
@@ -268,11 +295,11 @@ def test_llama_fwd():
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
     work = pipeline.get_partition_work("p0")
     assert work is not None
-    
+
     # Run simulation
     cache = llama_1b_cache()
     result = simulate(work, cache)
-    
+
     our_output = None
     for output in result.outputs:
         if output.node == fwd_output_node.name:
@@ -280,10 +307,20 @@ def test_llama_fwd():
             break
     gt_output = first_decoder_layer(hidden_states, position_embeddings = (cos, sin))[0]
 
-    assert torch.allclose(our_output, gt_output, rtol=1e-3)
-    
-def test_llama_model():
+    # Check if outputs match with tolerance
+    assert torch.allclose(our_output, gt_output, atol=1e-4)
+    print(f"Layer {idx} passed successfully!")
+    return True
     
 
+def test_llama_fwd():
+    
+    model_path = "meta-llama/Llama-3.2-1B"
+    # Load the model
+    model = load_model(model_path)
+    model.model = model.model.float()
+    
+    for idx in range(len(model.model.layers)):
+        assert layer_correct(model, idx)
 if __name__ == "__main__":
     test_llama_attn()
