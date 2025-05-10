@@ -235,6 +235,55 @@ class CeilNodeEncoding(BaseModel):
     type: Literal["ceil"]
     name: NodeName
 
+class SquaredNodeEncoding(BaseModel):
+    """
+    API-encoded squared node.
+    """
+    type: Literal["squared"]
+    name: NodeName
+
+class ReduceMeanNodeEncoding(BaseModel):
+    """
+    API-encoded reduce_mean node.
+    """
+    type: Literal["reduce_mean"]
+    name: NodeName
+
+class RsqrtNodeEncoding(BaseModel):
+    """
+    API-encoded rsqrt node.
+    """
+    type: Literal["rsqrt"]
+    name: NodeName
+
+class SiluNodeEncoding(BaseModel):
+    """
+    API-encoded SiLU node.
+    """
+    type: Literal["silu"]
+    name: NodeName
+
+class CosNodeEncoding(BaseModel):
+    """
+    API-encoded Cosine node.
+    """
+    type: Literal["cos"]
+    name: NodeName
+
+class SinNodeEncoding(BaseModel):
+    """
+    API-encoded Sine node.
+    """
+    type: Literal["sin"]
+    name: NodeName
+
+class IndexSelectNodeEncoding(BaseModel):
+    """
+    API-encoded IndexSelect node.
+    """
+    type: Literal["index_select"]
+    name: NodeName
+
 type NodeEncoding = Annotated[
     Union[
         MatmulNodeEncoding,
@@ -254,7 +303,14 @@ type NodeEncoding = Annotated[
         DivNodeEncoding,
         FloorNodeEncoding,
         CeilNodeEncoding,
-        DebugNodeEncoding
+        SquaredNodeEncoding,
+        ReduceMeanNodeEncoding,
+        RsqrtNodeEncoding,
+        DebugNodeEncoding,
+        SiluNodeEncoding,
+        CosNodeEncoding,
+        SinNodeEncoding,
+        IndexSelectNodeEncoding
     ],
     Field(discriminator="type")
 ]
@@ -533,6 +589,52 @@ class CeilNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
+class SquaredNode(ComputeGraphNode):
+    """
+    Element-wise square of a tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class ReduceMeanNode(ComputeGraphNode):
+    """
+    Reduces a tensor by taking the mean along a given dimension.
+    """
+    INPUT: NodeInput = "input"
+    DIM: NodeInput = "dim" # Tensor representing the dimension(s)
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT, self.DIM}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class RsqrtNode(ComputeGraphNode):
+    """
+    Element-wise reciprocal square root of a tensor.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 class TransposeNode(ComputeGraphNode):
     """
     Transpose two dimensions of a tensor.
@@ -553,6 +655,68 @@ class TransposeNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
+class SiluNode(ComputeGraphNode):
+    """
+    Apply SiLU activation function.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class CosNode(ComputeGraphNode):
+    """
+    Apply cosine element-wise.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class SinNode(ComputeGraphNode):
+    """
+    Apply sine element-wise.
+    """
+    INPUT: NodeInput = "input"
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class IndexSelectNode(ComputeGraphNode):
+    """
+    Selects slices from an input tensor along a given dimension at specified indices.
+    Similar to torch.index_select.
+    """
+    INPUT: NodeInput = "input"  # The source tensor (e.g., embedding matrix)
+    DIM: NodeInput = "dim"      # The dimension along which to index
+    INDEX: NodeInput = "index"  # The 1-D tensor containing indices to select
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT, self.DIM, self.INDEX}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
 
 @dataclass(eq=True, frozen=True)
 class ComputeGraphEdge:
@@ -606,6 +770,7 @@ class ComputeGraphBuilder:
     def _make_edge(self, src: NodeName, src_output: NodeOutput, dst: NodeName, dst_input: NodeInput):
         # Error check
         if src not in self._nodes:
+            breakpoint()
             raise ValueError(f"Node {src} does not exist")
         if dst not in self._nodes:
             raise ValueError(f"Node {dst} does not exist")
@@ -793,6 +958,65 @@ class ComputeGraphBuilder:
         self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, CeilNode.INPUT)
         return self._nodes[name]
 
+    def square(self, name: NodeName, input: ComputeGraphNode) -> SquaredNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = SquaredNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, SquaredNode.INPUT)
+        return node
+
+    def reduce_mean(self, name: NodeName, input_node: ComputeGraphNode, dim_node: ComputeGraphNode) -> ReduceMeanNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = ReduceMeanNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, ReduceMeanNode.INPUT)
+        self._make_edge(dim_node.name, DEFAULT_NODE_OUTPUT, name, ReduceMeanNode.DIM)
+        return node
+
+    def rsqrt(self, name: NodeName, input_node: ComputeGraphNode) -> RsqrtNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = RsqrtNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, RsqrtNode.INPUT)
+        return node
+
+    def silu(self, name: NodeName, input_node: ComputeGraphNode) -> SiluNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = SiluNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, SiluNode.INPUT)
+        return node
+
+    def cos(self, name: NodeName, input_node: ComputeGraphNode) -> CosNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = CosNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, CosNode.INPUT)
+        return node
+
+    def sin(self, name: NodeName, input_node: ComputeGraphNode) -> SinNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = SinNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, SinNode.INPUT)
+        return node
+
+    def index_select(self, name: NodeName, input_node: ComputeGraphNode, dim_node: ComputeGraphNode, index_node: ComputeGraphNode) -> IndexSelectNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = IndexSelectNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.INPUT)
+        self._make_edge(dim_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.DIM)
+        self._make_edge(index_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.INDEX)
+        return node
+
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -868,7 +1092,7 @@ class ComputeGraph:
         same partition.
         """
         try:
-            _check_partition_name(name)
+            # _check_partition_name(name)
             self._active_partition = name
             yield
         finally:
@@ -1061,8 +1285,22 @@ class ComputeGraph:
                 nodes[node_name] = FloorNodeEncoding(type="floor", name=node_name)
             elif isinstance(node, CeilNode):
                 nodes[node_name] = CeilNodeEncoding(type="ceil", name=node_name)
+            elif isinstance(node, SquaredNode):
+                nodes[node_name] = SquaredNodeEncoding(type="squared", name=node_name)
+            elif isinstance(node, ReduceMeanNode):
+                nodes[node_name] = ReduceMeanNodeEncoding(type="reduce_mean", name=node_name)
+            elif isinstance(node, RsqrtNode):
+                nodes[node_name] = RsqrtNodeEncoding(type="rsqrt", name=node_name)
             elif isinstance(node, DebugNode):
                 nodes[node_name] = DebugNodeEncoding(type="debug", name=node_name)
+            elif isinstance(node, SiluNode):
+                nodes[node_name] = SiluNodeEncoding(type="silu", name=node_name)
+            elif isinstance(node, CosNode):
+                nodes[node_name] = CosNodeEncoding(type="cos", name=node_name)
+            elif isinstance(node, SinNode):
+                nodes[node_name] = SinNodeEncoding(type="sin", name=node_name)
+            elif isinstance(node, IndexSelectNode):
+                nodes[node_name] = IndexSelectNodeEncoding(type="index_select", name=node_name)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
