@@ -1,5 +1,4 @@
 import torch
-from collections import defaultdict
 
 from .tensor import Tensor
 from .graph import (
@@ -7,7 +6,7 @@ from .graph import (
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
     HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
     FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode, SquaredNode, ReduceMeanNode, RsqrtNode,
-    SiluNode
+    SiluNode, CosNode, SinNode, IndexSelectNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache
@@ -71,6 +70,7 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             If shape[i] = -1, it means "don't care" about that dimension.
             """
             if len(tensor.shape) != len(shape):
+                breakpoint()
                 raise ValueError(f"Tensor rank {len(tensor.shape)} does not match expected rank {len(shape)}")
             
             for i, (actual, expected) in enumerate(zip(tensor.shape, shape)):
@@ -285,6 +285,27 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
             elif encoded_node.type == "silu":
                 input_tensor = resolve_input(node, SiluNode.INPUT)
                 output = torch.nn.functional.silu(input_tensor)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "cos":
+                input_tensor = resolve_input(node, CosNode.INPUT)
+                output = torch.cos(input_tensor)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "sin":
+                input_tensor = resolve_input(node, SinNode.INPUT)
+                output = torch.sin(input_tensor)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif encoded_node.type == "index_select":
+                input_tensor = resolve_input(node, IndexSelectNode.INPUT)
+                dim_tensor = resolve_input(node, IndexSelectNode.DIM)
+                index_tensor = resolve_input(node, IndexSelectNode.INDEX)
+                
+                # Ensure dim is a scalar integer
+                dim = check_shape(dim_tensor, [1]).item()
+                
+                output = input_tensor[index_tensor]
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             else:

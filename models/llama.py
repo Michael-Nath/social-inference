@@ -13,6 +13,53 @@ from typing import Tuple
 def just(b: ComputeGraphBuilder, x: int):
     return b.fixed(f"just_{x}", torch.Tensor([x]).int())
 
+def rotary_embed(b: ComputeGraphBuilder, position_ids_node: ComputeGraphNode, inv_freq_node: ComputeGraphNode, attention_scaling_node: ComputeGraphNode) -> tuple[ComputeGraphNode, ComputeGraphNode]:
+    """
+    Implements the LlamaRotaryEmbedding forward pass using ComputeGraphBuilder.
+    Mirrors LlamaRotaryEmbedding.forward(self, x, position_ids) but x is only used for dtype/device context in HF,
+    and batch_size for inv_freq expansion is taken from position_ids.shape[0].
+
+    Args:
+        b: ComputeGraphBuilder instance.
+        position_ids_node: Node representing position_ids [batch_size, seq_len].
+        inv_freq_node: Node representing inv_freq [head_dim // 2].
+        attention_scaling_node: Node representing attention_scaling (scalar).
+
+    Returns:
+        A tuple of (cos_node, sin_node).
+    """
+    # Define common dimension nodes for conciseness
+    dim0_node = b.fixed("rotary_embed/dim0", torch.tensor([0], dtype=torch.long))
+    dim1_node = b.fixed("rotary_embed/dim1", torch.tensor([1], dtype=torch.long))
+    dim2_node = b.fixed("rotary_embed/dim2", torch.tensor([2], dtype=torch.long))
+    cat_axis_node = b.fixed("rotary_embed/cat_axis", torch.tensor([-1], dtype=torch.long))
+
+    pos_ids_shape_node = b.shape("rotary_embed/pos_ids_shape", position_ids_node)
+    batch_size_scalar_node = b.index("rotary_embed/batch_size_scalar", pos_ids_shape_node, dim0_node)
+
+    inv_freq_expanded = b.broadcast(
+        "rotary_embed/inv_freq_expanded",
+        b.unsqueeze("rotary_embed/inv_freq_u0_u2", 
+                    b.unsqueeze("rotary_embed/inv_freq_u0", inv_freq_node, dim0_node), 
+                    dim2_node), 
+        dim0_node, 
+        batch_size_scalar_node
+    )
+
+    position_ids_expanded = b.unsqueeze("rotary_embed/pos_ids_expanded", position_ids_node, dim1_node)
+
+    freqs_matmul = b.matmul("rotary_embed/freqs_matmul", inv_freq_expanded, position_ids_expanded)
+    freqs = b.transpose("rotary_embed/freqs_transposed", freqs_matmul, 1, 2)
+
+    emb = b.cat("rotary_embed/emb_cat", freqs, freqs, cat_axis_node)
+
+    cos_val = b.cos("rotary_embed/emb_cos", emb)
+    cos_scaled = b.hadamard("rotary_embed/cos_scaled", cos_val, attention_scaling_node)
+
+    sin_val = b.sin("rotary_embed/emb_sin", emb)
+    sin_scaled = b.hadamard("rotary_embed/sin_scaled", sin_val, attention_scaling_node)
+    return cos_scaled, sin_scaled
+
 def apply_llama_rope(b: ComputeGraphBuilder, q: ComputeGraphNode, k: ComputeGraphNode, cos: ComputeGraphNode, sin: ComputeGraphNode):
     # Expected shapes:
     # q, k: [batch_size, heads, seq_len, head_dim]
@@ -198,10 +245,6 @@ def layernorm(
     fixed_two = just(b, 2)
     fixed_neg_one = just(b, -1)
 
-    
-    b.debug("DEBUG LAYERNORM WEIGHT", weight)
-    b.debug("DEBUG LAYERNORM EPS", eps)
-
     # Get shape information for broadcasting
     hidden_states_shape = b.shape("hidden_states_shape_for_ln", hidden_states)
     batch_size_node = b.index("ln_batch_size", hidden_states_shape, fixed_zero)
@@ -267,7 +310,7 @@ def llama_fwd(
     with NameScope.push_scope("layernorm"):
         layernormed = layernorm(b, hidden_states, **weight_dict["input_layernorm"])
     with NameScope.push_scope('attention'):
-        attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["attn"])
+        attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["self_attn"])
     
     res_added = b.add("res_added", hidden_states, attention)
     post_layernorm = layernorm(b, res_added, **weight_dict["post_layernorm"])
@@ -275,3 +318,33 @@ def llama_fwd(
     
     res_added_2 = b.add('res_added2', res_added, mlp_result) 
     return res_added_2
+
+
+def llama_model(
+    b: ComputeGraphBuilder, 
+    tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
+    position_ids: ComputeGraphNode,
+    weights: list[dict[str, ComputeGraphNode]] # dict per layer
+):
+    # weights[0] houses all statics
+    # compute the embeddings of the input tokens
+
+    dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.long))    
+    embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
+    cos_node, sin_node = rotary_embed(
+        b, position_ids, weights[0]["inv_freq"], weights[0]["attn_scaling"]
+    )
+
+    layer_out = embed_tokens
+    layer_out = b.debug("debug_hidden_0", layer_out)
+    for layer_idx in range(1, len(weights)):
+        with NameScope.push_scope(f"layer{layer_idx}"):
+            layer_out = llama_fwd(
+                b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
+                weights[layer_idx], (cos_node, sin_node)
+            )
+            layer_out = b.debug(f"debug_hidden_{layer_idx}", layer_out)
+    
+    layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight"], weights[0]["final_norm_eps"])
+    layer_out = b.debug("final_out", layer_out)
+    return layer_out

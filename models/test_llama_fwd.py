@@ -1,73 +1,14 @@
 import torch
 import numpy as np
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNorm, LlamaDecoderLayer
+from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNorm, LlamaDecoderLayer, LlamaRotaryEmbedding
 from transformers.models.llama.configuration_llama import LlamaConfig
 from .llama import llama_attn, layernorm, llama_fwd
-from .utils import load_model
+from .utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights
 from inference.tensor import Tensor
 from inference.test_util import llama_1b_cache
 from inference.simulator import simulate
 from inference.graph import ComputeGraphBuilder
 from inference.pipeline import ComputePipeline, PipelineInput
-
-
-def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder) -> dict:
-    """
-    Extracts weights from a PyTorch LlamaDecoderLayer and packages them as graph nodes.
-    """
-    packaged_weights = {
-        "input_layernorm": {},
-        "self_attn": {},
-        "mlp": {},
-        "post_attention_layernorm": {}
-    }
-    all_param_nodes = {} # Temporary dict to hold nodes by their original HF names
-
-    # Create graph nodes for all learnable parameters
-    for name, param in layer.named_parameters():
-        graph_node_name = f"weights/{name.replace('.', '/')}"
-        data = param.data.clone()
-        if len(data.shape) == 2:
-            data = data.T
-        node = b.fixed(graph_node_name, data.detach())
-        all_param_nodes[name] = node
-
-    # Handle input layernorm
-    if "input_layernorm.weight" in all_param_nodes:
-        packaged_weights["input_layernorm"]["weight"] = all_param_nodes["input_layernorm.weight"]
-    ln_eps_tensor = torch.tensor(layer.input_layernorm.variance_epsilon, dtype=torch.float32)
-    packaged_weights["input_layernorm"]["eps"] = b.fixed("params/input_layernorm.eps", ln_eps_tensor.unsqueeze(0))
-
-
-    # Handle self-attention weights
-    # Mapping from graph function expected keys to Hugging Face parameter names
-    attn_key_map = {
-        "q_weight": "self_attn.q_proj.weight",
-        "k_weight": "self_attn.k_proj.weight",
-        "v_weight": "self_attn.v_proj.weight",
-        "o_weight": "self_attn.o_proj.weight",
-    }
-    for graph_key, hf_key in attn_key_map.items():
-        if hf_key in all_param_nodes:
-            packaged_weights["self_attn"][graph_key] = all_param_nodes[hf_key]
-
-    # Handle MLP weights
-    mlp_key_map = {
-        "gate_proj": "mlp.gate_proj.weight",
-        "up_proj": "mlp.up_proj.weight",
-        "down_proj": "mlp.down_proj.weight",
-    }
-    for graph_key, hf_key in mlp_key_map.items():
-        if hf_key in all_param_nodes:
-            packaged_weights["mlp"][graph_key] = all_param_nodes[hf_key]
-
-    # Handle post-attention layernorm
-    if "post_attention_layernorm.weight" in all_param_nodes:
-        packaged_weights["post_attention_layernorm"]["weight"] = all_param_nodes["post_attention_layernorm.weight"]
-    post_ln_eps_tensor = torch.tensor(layer.post_attention_layernorm.variance_epsilon, dtype=torch.float32)
-    packaged_weights["post_attention_layernorm"]["eps"] = b.fixed("params/post_attention_layernorm.eps", post_ln_eps_tensor.unsqueeze(0))
-
-    return packaged_weights
 
 
 def test_llama_layernorm():
@@ -257,7 +198,6 @@ def layer_correct(model, idx: int):
 
     # Extract the first decoder layer
     first_decoder_layer: LlamaDecoderLayer = model.model.layers[idx].cpu()
-
     b = ComputeGraphBuilder()
     with b.partition("p0"):
         # Use the new utility function to package weights
@@ -319,8 +259,29 @@ def test_llama_fwd():
     # Load the model
     model = load_model(model_path)
     model.model = model.model.float()
-    
+
+    # Prepare static parameters and nodes using the utility function
+    builder_for_statics = ComputeGraphBuilder()
+    with builder_for_statics.partition("statics"):
+        all_static_params = prepare_llama_model_statics(model, builder_for_statics)
+
+    # Separate scalar and node statics for clarity if needed, though all_static_params holds both
+    scalar_static_params = {
+        k: v for k, v in all_static_params.items() 
+        if not hasattr(v, 'name') # Assuming nodes have a .name attribute, scalars don't
+    }
+    global_static_nodes = {
+        k: v for k, v in all_static_params.items() 
+        if hasattr(v, 'name')
+    }
+
+    print(f"Fetched scalar statics: {scalar_static_params}")
+    print(f"Packaged global static nodes: { {k: v.name for k, v in global_static_nodes.items()} }")
+
     for idx in range(len(model.model.layers)):
+        # layer_correct currently tests llama_fwd per layer and handles its own weight packaging.
+        # If testing the full llama_model, scalar_static_params and global_static_nodes would be used here.
         assert layer_correct(model, idx)
+
 if __name__ == "__main__":
     test_llama_attn()
