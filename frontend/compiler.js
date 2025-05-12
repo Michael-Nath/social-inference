@@ -618,11 +618,13 @@ export class KernelCompiler {
                        
                         // Readback if this output is used by a CPU node
                         const inputKeys = forwardEdges.get(outputKey);
-                        for (const inputKey of inputKeys) {
-                            const inputNode = inputKey.split(':')[0];
-                            if (sessionGraph._nodeToSession.get(inputNode) instanceof CPUSession) {
-                                readback = true;
-                                break;
+                        if(inputKeys) {
+                            for (const inputKey of inputKeys) {
+                                const inputNode = inputKey.split(':')[0];
+                                if (sessionGraph._nodeToSession.get(inputNode) instanceof CPUSession) {
+                                    readback = true;
+                                    break;
+                                }
                             }
                         }
 

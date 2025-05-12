@@ -23,12 +23,6 @@ def simple_two_node():
     with g.partition("p0"):
         matmul = g.matmul("matmul", x, y)
         add = g.add("add1", matmul, x)
-    with g.partition("p1"):
-        matmul = g.matmul("matmul2", add, y)
-        add = g.add("add2", matmul, y)
-    # with g.partition("p2"):
-    #     matmul = g.matmul("matmul3", add, y)
-    #     add = g.add("add3", matmul, y)
     z = g.output("output", add)
     return g.build()
 

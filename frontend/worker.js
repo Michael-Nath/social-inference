@@ -105,7 +105,7 @@ class APITensor {
         // Convert the tensor.buffer ArrayBuffer to a base64 string
         let binary = '';
         let bytes = new Uint8Array(tensor.data);
-        let len = bytes.byteLength;
+        let len = bytes.byteLength; // is 1024, should be 4096
         for (let i = 0; i < len; i++) {
             binary += String.fromCharCode(bytes[i]);
         }
@@ -126,7 +126,6 @@ class APITensor {
         for (let i = 0; i < str.length; i++) {
             bytes[i] = str.charCodeAt(i);
         }
-        console.log("toCPU bytes", bytes);
         return new CPUTensor({
             data: bytes.buffer,
             shape: this.shape,
@@ -217,60 +216,7 @@ class MatmulNode extends Node {
         // much caching as possible. See GPUKernel for details.
         return new GPUKernel({
             name: 'matmul',
-            shader: `
-struct Dimensions {
-  M: u32,
-  K: u32,
-  N: u32
-}
-
-@group(0) @binding(0) var<uniform> dimensions: Dimensions;
-@group(0) @binding(1) var<storage, read> a: array<f32>;
-@group(0) @binding(2) var<storage, read> b: array<f32>;
-@group(0) @binding(3) var<storage, read_write> result: array<f32>;
-
-const BLOCKSIZE: u32 = 16;
-const TILE_M: u32 = 4;  // Tile size in M dimensiopn
-const TILE_N: u32 = 4;  // Tile size in N dimension
-
-@compute @workgroup_size(BLOCKSIZE, BLOCKSIZE)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let row = global_id.y * TILE_M;
-    let col = global_id.x * TILE_N;
-    let bruh = dimensions.K;
-    // initialize the array with all 0s
-    var sums: array<array<f32, TILE_N>, TILE_M>;
-    for (var i = 0u; i < TILE_M; i++) {
-        for (var j = 0u; j < TILE_N; j++) {
-            sums[i][j] = 0.0;
-        }
-    }
-
-    // Compute the 2D tile
-    for (var k = 0u; k < dimensions.K; k++) {
-        // for each row
-        for (var i = 0u; i < TILE_M; i++) {
-            let a_element = a[(row + i) * dimensions.K + k];
-            // calculate the dot product
-            for (var j = 0u; j < TILE_N; j++) {
-                let b_element = b[k * dimensions.N + (col + j)];
-                sums[i][j] += a_element * b_element;
-            }
-        }
-    }
-
-    // Write results
-    for (var i = 0u; i < TILE_M; i++) {
-        for (var j = 0u; j < TILE_N; j++) {
-            let output_row = row + i;
-            let output_col = col + j;
-            if (output_row < dimensions.M && output_col < dimensions.N) {
-                result[output_row * dimensions.N + output_col] = sums[i][j];
-            }
-        }
-    }
-}
-            `,
+            shader: await fetch('kernels/matmul.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (inputShapes, outputShapes) => {
                     return new Uint32Array([
@@ -289,7 +235,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 };
             },
             entryPoint: "main",
-            workgroupSize: { x: 16, y: 16, z: 1 },
             inputBindings: [
                 { name: MatmulNode.LHS, type: "read-only-storage", index: 1 },
                 { name: MatmulNode.RHS, type: "read-only-storage", index: 2 },
@@ -593,37 +538,48 @@ class AddNode extends Node {
         // Add nodes typically run on CPU by default unless specified otherwise
         // Or they could be fused into GPU kernels. Let's assume CPU for now.
         if (!this.device) {
-             this.device = new CPUDevice();
+             this.device = new GPUDevice();
         } 
     }
 
-    getKernel() {
-        return new CPUKernel({
-            name: "add_cpu",
-            inputs: [AddNode.A, AddNode.B],
-            outputs: [DEFAULT_NODE_OUTPUT],
-            func: (inputs) => {
-                // assume lhs and rhs are both CPU tensors
-                const a = inputs[AddNode.A];
-                const b = inputs[AddNode.B];
-                const n = a.getTypedArray().length;
-
-                const c = new Float32Array(n);
-
-                for(let i = 0; i < n; i++) {
-                    c[i] = a.getTypedArray()[i] + b.getTypedArray()[i];
-                }
-
+    /**
+     * @param {Map<string, number[]>} inputShapes - Shapes of the input tensors.
+     * @param {Map<string, number[]>} outputShapes - Shapes of the output tensors.
+     * @returns {Promise<GPUKernel>}
+     */
+    async getKernel(inputShapes, outputShapes) {
+        // From the horse's mouth: https://toji.dev/webgpu-best-practices/dynamic-shader-construction.html
+        // This is a nice way to dynamically specialize kernels. The Kernel class has a key() method that allows as
+        // much caching as possible. See GPUKernel for details.
+        return new GPUKernel({
+            name: 'add',
+            shader: await fetch('kernels/add.wgsl').then(r => r.text()),
+            dimensionBuffer: {
+                func: (inputShapes, outputShapes) => {
+                    let size = inputShapes.get(AddNode.A).reduce((a, b) => a * b, 1);
+                    return new Uint32Array([size]);
+                },
+                index: 3,
+            },
+            workgroupFunction: (inputShapes, outputShapes) => {
+                let size = inputShapes.get(AddNode.A).reduce((a, b) => a * b, 1);
                 return {
-                    [DEFAULT_NODE_OUTPUT]: new CPUTensor({
-                        data: c.buffer,
-                        dtype: a.dtype,
-                        shape: a.shape
-                    })
+                    x: Math.ceil(size / 256),
+                    y: 1,
+                    z: 1,
                 };
-            }
-        })
+            },
+            entryPoint: "main",
+            inputBindings: [
+                { name: AddNode.A, type: "read-only-storage", index: 0 },
+                { name: AddNode.B, type: "read-only-storage", index: 1 },
+            ],
+            outputBindings: [
+                { name: DEFAULT_NODE_OUTPUT, type: "storage", index: 2 },
+            ],
+        });
     }
+
 
     /**
      * Calculates the output shape for an element-wise addition.

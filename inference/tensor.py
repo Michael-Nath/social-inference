@@ -31,7 +31,7 @@ class Tensor(BaseModel):
         )
 
     def to_torch(self):
-        return torch.from_numpy(np.frombuffer(base64.b64decode(self.elements), dtype=self.dtype).copy().reshape(self.shape))
+        return torch.from_numpy(self.to_numpy())
     
 class CorrelatedTensor(BaseModel):
     correlation_id: str

@@ -194,10 +194,6 @@ export class GPUKernel {
    * @param {string} options.name - Name of the kernel
    * @param {string} options.shader - WGSL shader code
    * @param {string} options.entryPoint - Entry point function in the shader
-   * @param {Object} options.workgroupSize - Workgroup size configuration
-   * @param {number} options.workgroupSize.x - X dimension of workgroup
-   * @param {number} options.workgroupSize.y - Y dimension of workgroup
-   * @param {number} options.workgroupSize.z - Z dimension of workgroup (optional)
    * @param {Object} options.dimensionBuffer - Dimension buffer configuration (optional)
    * @param {function} options.dimensionBuffer.func - Function to compute the dimension buffer
    * @param {number} options.dimensionBuffer.index - Index of the dimension buffer in the shader
@@ -216,7 +212,6 @@ export class GPUKernel {
     this.name = options.name;
     this.shader = options.shader;
     this.entryPoint = options.entryPoint || "main";
-    this.workgroupSize = options.workgroupSize || { x: 16, y: 16, z: 1 };
     this.inputBindings = options.inputBindings || [];
     this.outputBindings = options.outputBindings || [];
     this.dimensionBuffer = options.dimensionBuffer || null;
@@ -239,18 +234,5 @@ export class GPUKernel {
       JSON.stringify(this.outputBindings) +
       this.name
     );
-  }
-
-  /**
-   * Calculates the number of workgroups based on input dimensions and workgroup size
-   * @param {Object} dimensions - Input dimensions
-   * @returns {Object} - Workgroup counts for each dimension
-   */
-  calculateWorkgroups(dimensions) {
-    return {
-      x: Math.ceil(dimensions.width / this.workgroupSize.x),
-      y: Math.ceil(dimensions.height / this.workgroupSize.y),
-      z: Math.ceil(dimensions.depth || 1 / this.workgroupSize.z || 1)
-    };
   }
 }

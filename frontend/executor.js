@@ -73,9 +73,6 @@ export class SessionExecutor {
 
         const mappedRange = gpuBuffer.getMappedRange();
         const typedArray = new Float32Array(mappedRange);
-        console.log(mappedRange);
-        console.log(typedArray);
-        console.log(cpuTensor.getTypedArray());
         typedArray.set(cpuTensor.getTypedArray()); // Copies here
         gpuBuffer.unmap(); // Boundary here
 
@@ -521,26 +518,8 @@ export class SessionExecutor {
                 op.stagingBuffer.unmap();
                 op.stagingBuffer.destroy(); // Clean up the staging buffer
 
-                let typedData;
-                switch (op.dtype) {
-                    case 'float32':
-                        typedData = new Float32Array(dataCopy);
-                        break;
-                    case 'int32':
-                        typedData = new Int32Array(dataCopy);
-                        break;
-                    // TODO: Add other data types as supported by CPUTensor and your kernels
-                    default:
-                        console.error(`Unsupported dtype for CPUTensor readback: ${op.dtype} for key ${op.outputKey}`);
-                        // Skip creating CPUTensor for unsupported type
-                        continue; 
-                }
-                
-                op.stagingBuffer.unmap();
-                op.stagingBuffer.destroy(); // Clean up the staging buffer
-
                 const cpuTensor = new CPUTensor({
-                    data: typedData,
+                    data: dataCopy,
                     shape: op.shape,
                     dtype: op.dtype,
                 });
