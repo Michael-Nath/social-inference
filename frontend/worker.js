@@ -449,15 +449,43 @@ class SoftmaxNode extends Node {
      */
     async getGPUKernel() {
         return new GPUKernel({
-            name: 'softmax',
+            name: 'softmax_v2',
             shader: await fetch('kernels/softmax.wgsl').then(r => r.text()),
-            dimensionBuffer: { // Corresponds to 'params: Params' in WGSL
-                func: (inputGPUTensors, inputCPUTensors) => {
-                    const currentInputShape = inputGPUTensors.get(SoftmaxNode.INPUT);
-                    const currentNdims = currentInputShape.length;
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const inputGPUTensor = executionContext.gpu(SoftmaxNode.INPUT);
+                    const dimCPUTensor = executionContext.cpu(SoftmaxNode.DIM);
 
-                    const paddedShape = new Array(MAX_DIMS_SOFTMAX).fill(1); // Pad with 1s for shape
-                    const paddedStrides = new Array(MAX_DIMS_SOFTMAX).fill(0); // Pad with 0s for strides
+                    if (!inputGPUTensor) {
+                        throw new Error(`SoftmaxNode (${this.name}): Missing input GPU tensor for dimensionBuffer.`);
+                    }
+                    if (!dimCPUTensor) {
+                        throw new Error(`SoftmaxNode (${this.name}): Missing dim CPU tensor for dimensionBuffer.`);
+                    }
+
+                    const currentInputShape = inputGPUTensor.shape;
+                    let currentNdims = currentInputShape.length;
+                    if (currentNdims === 0 && currentInputShape.length === 1 && currentInputShape[0] === 0) { // Handling of [] shape to mean 0D scalar
+                        currentNdims = 0;
+                    }
+
+                    let smDim = dimCPUTensor.getTypedArray()[0];
+                    if (currentNdims > 0) { // Normalize dim only if there are dimensions
+                        if (smDim < 0) {
+                            smDim = currentNdims + smDim;
+                        }
+                        if (smDim < 0 || smDim >= currentNdims) {
+                            throw new Error(`SoftmaxNode (${this.name}): Dimension out of range. Got dim ${dimCPUTensor.getTypedArray()[0]} for input ndims ${currentNdims}`);
+                        }
+                    } else { // For 0D tensor, dim must be 0 or -1
+                        if (smDim !== 0 && smDim !== -1) {
+                             throw new Error(`SoftmaxNode (${this.name}): Dimension out of range for 0D tensor. Got dim ${dimCPUTensor.getTypedArray()[0]}`);
+                        }
+                        smDim = 0; // Normalize to 0 for 0D case
+                    }
+
+                    const paddedShape = new Array(MAX_DIMS_SOFTMAX).fill(1); 
+                    const paddedStrides = new Array(MAX_DIMS_SOFTMAX).fill(0);
 
                     if (currentNdims > 0) {
                         if (currentNdims > MAX_DIMS_SOFTMAX) {
@@ -468,55 +496,88 @@ class SoftmaxNode extends Node {
                             paddedShape[i] = currentInputShape[i];
                             paddedStrides[i] = strides[i];
                         }
+                    } else { // 0D scalar tensor
+                        // Padded shape is [1,1,1,1,1,1,1,1]
+                        // Padded strides are [0,0,0,0,0,0,0,0]
+                        // ndims is 0, smDim is 0
                     }
-                    // For 0D tensor (currentNdims = 0), shape/strides are effectively empty for padding.
 
-                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 1);
+                    // Uniform buffer layout: shape_vecs, strides_vecs, ndims, sm_dim_resolved, padding
+                    // Each vec4 takes 4 u32s. MAX_DIMS_SOFTMAX = 8.
+                    // shape_vecs: MAX_DIMS_SOFTMAX u32s (equivalent to MAX_DIMS_SOFTMAX/4 vec4s)
+                    // strides_vecs: MAX_DIMS_SOFTMAX u32s
+                    // ndims: 1 u32
+                    // sm_dim_resolved: 1 u32
+                    // Total u32s before padding: 8 + 8 + 1 + 1 = 18 u32s.
+                    // Total bytes = 18 * 4 = 72 bytes.
+                    // Next multiple of 16 bytes is 80 bytes. Padding needed = 80 - 72 = 8 bytes (2 u32s).
+                    // So, uniformData needs 18 + 2 = 20 u32 elements.
+                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 4); // 8 (shape) + 8 (strides) + 1 (ndims) + 1 (smDim) + 2 (padding) = 20
                     uniformData.set(paddedShape, 0);
                     uniformData.set(paddedStrides, MAX_DIMS_SOFTMAX);
                     uniformData.set([currentNdims], MAX_DIMS_SOFTMAX * 2);
+                    uniformData.set([smDim], MAX_DIMS_SOFTMAX * 2 + 1);
+                    // The remaining 2 u32s are padding, initialized to 0 by Uint32Array constructor.
                     return uniformData;
                 },
                 index: 2, // Matches @group(0) @binding(2) var<uniform> params: Params;
             },
-            workgroupFunction: (inputGPUTensors, inputCPUTensors) => {
-                const currentInputShape = inputGPUTensors.get(SoftmaxNode.INPUT);
-                const currentNdims = currentInputShape.length;
-                const workgroupSizeX = 256; // Must match the shader's const workgroup_size_x
+            workgroupFunction: (executionContext) => {
+                const inputGPUTensor = executionContext.gpu(SoftmaxNode.INPUT);
+                const dimCPUTensor = executionContext.cpu(SoftmaxNode.DIM);
 
-                // Get the dimension to apply softmax along from CPU tensor
-                const dimTensor = inputCPUTensors.get(SoftmaxNode.DIM);
-                const dim = dimTensor ? dimTensor.data[0] : 0; // Default to 0 if not provided
-                
-                // Calculate total elements and elements per slice
-                let totalElements = 1;
-                let elementsPerSlice = 1;
-                
-                if (currentNdims > 0) {
-                    totalElements = currentInputShape.reduce((acc, val) => acc * val, 1);
-                    
-                    // Calculate the size of each softmax slice
-                    const normalizedDim = dim < 0 ? dim + currentNdims : dim;
-                    if (normalizedDim >= 0 && normalizedDim < currentNdims) {
-                        elementsPerSlice = currentInputShape[normalizedDim];
-                    }
-                } else {
-                    // For a 0D tensor (scalar), totalElements is 1.
-                    totalElements = 1;
-                    elementsPerSlice = 1;
+                if (!inputGPUTensor) {
+                    throw new Error(`SoftmaxNode (${this.name}): Missing input GPU tensor for workgroupFunction.`);
+                }
+                 if (!dimCPUTensor) {
+                    throw new Error(`SoftmaxNode (${this.name}): Missing dim CPU tensor for workgroupFunction.`);
                 }
 
+                const currentInputShape = inputGPUTensor.shape;
+                let currentNdims = currentInputShape.length;
+                if (currentNdims === 0 && currentInputShape.length === 1 && currentInputShape[0] === 0) { 
+                    currentNdims = 0;
+                }
+
+                let smDim = dimCPUTensor.getTypedArray()[0];
+                if (currentNdims > 0) { 
+                    if (smDim < 0) {
+                        smDim = currentNdims + smDim;
+                    }
+                     // Validation already in dimensionBuffer, but good for sanity
+                    if (smDim < 0 || smDim >= currentNdims) {
+                        throw new Error(`SoftmaxNode (${this.name}): Softmax dimension ${smDim} is out of bounds for input ndims ${currentNdims}.`);
+                    }
+                } else {
+                    smDim = 0; // Normalized for 0D case
+                }
+
+                const workgroupSizeX = 256; // Must match the shader's const workgroup_size_x
+
+                let elements_along_sm_dim = 1;
+                let num_total_slices = 1;
+
+                if (currentNdims > 0) {
+                    elements_along_sm_dim = currentInputShape[smDim];
+                    for (let d = 0; d < currentNdims; d++) {
+                        if (d !== smDim) {
+                            num_total_slices *= currentInputShape[d];
+                        }
+                    }
+                } 
+                // For 0D tensor: elements_along_sm_dim = 1, num_total_slices = 1.
+                // If elements_along_sm_dim is 0 for a >0D tensor, x will be 0, which is fine (no dispatches).
+
                 return {
-                    // Dispatch enough workgroups to cover all elements in each slice
-                    x: Math.ceil(elementsPerSlice / workgroupSizeX),
-                    y: 1,
+                    x: Math.ceil(elements_along_sm_dim / workgroupSizeX),
+                    y: num_total_slices, 
                     z: 1,
                 };
             },
             entryPoint: "main",
             inputs: [
                 { name: SoftmaxNode.INPUT, cpu: false, binding: {type: "read-only-storage", index: 0 } },
-                { name: SoftmaxNode.DIM, cpu: true, binding: {type: "read-only-storage", index: 3 } }
+                { name: SoftmaxNode.DIM, cpu: true }
             ],
             outputs: [
                 { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 1 } },

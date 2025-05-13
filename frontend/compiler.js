@@ -650,7 +650,7 @@ export class KernelCompiler {
                                         throw new Error(`User node ${inputNode} not found in session ${userSession.name}`);
                                     }
                                     // Check if input has CPU flag set
-                                    for (const input of userNode.getKernel().inputs) {
+                                    for (const input of userNode.getGPUKernel().inputs) {
                                         if (input.name === inputName && input.cpu) {
                                             console.debug(`Readback flagged for ${outputKey} because input ${inputName} of node ${inputNode} is CPU-bound.`)
                                             readback = true;
@@ -693,7 +693,7 @@ export class KernelCompiler {
         for (const session of sessionGraph.sessions) {
             if (session instanceof GPUSession) {
                 for (const node of session.nodes) {
-                    let unpreparedKernel = await node.getKernel();
+                    let unpreparedKernel = await node.getGPUKernel();
                     if (!KernelCompiler.kernelCache.has(unpreparedKernel.key())) {
                         requiredKernels.add(unpreparedKernel);
                     }
@@ -716,16 +716,29 @@ export class KernelCompiler {
                             buffer: { type: 'uniform' }
                         })
                     }
-                    // Normal bindings
-                    for (const input_output of kernel.inputs.concat(kernel.outputs)) {
+                    // Inputs with bindings
+                    for (const input_def of kernel.inputs) {
+                        if (input_def.binding) { // Only create layout entry if binding is defined
+                            entries.push({
+                                label: `${kernel.name}.${kernel.key()}.binding.${input_def.binding.index}`,
+                                binding: input_def.binding.index,
+                                visibility: GPUShaderStage.COMPUTE,
+                                buffer: {
+                                    type: input_def.binding.type
+                                }
+                            });
+                        }
+                    }
+                    // Outputs (always have bindings)
+                    for (const output_def of kernel.outputs) {
                         entries.push({
-                            label: `${kernel.name}.${kernel.key()}.binding.${input_output.binding.index}`,
-                            binding: input_output.binding.index,
+                            label: `${kernel.name}.${kernel.key()}.binding.${output_def.binding.index}`,
+                            binding: output_def.binding.index,
                             visibility: GPUShaderStage.COMPUTE,
                             buffer: {
-                                type: input_output.binding.type
+                                type: output_def.binding.type
                             }
-                        })
+                        });
                     }
                     kernel.bindGroupLayout = this.device.createBindGroupLayout({
                         label: `${kernel.name}.${kernel.key()}.bindgrouplayout`,

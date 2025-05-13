@@ -30,7 +30,7 @@ def test_softmax():
     g = ComputeGraphBuilder()
     x = g.input("x")
     with g.partition("p0"):
-        two = g.fixed("two", torch.tensor([2]))
+        two = g.fixed("two", torch.tensor([2], dtype=torch.int32))
         softmax = g.softmax("softmax", x, two)
     y = g.output("output", softmax)
     g = g.build()
@@ -49,7 +49,7 @@ def test_unsqueeze():
     g = ComputeGraphBuilder()
     x = g.input("x")
     with g.partition("p0"):
-        zero = g.fixed("zero", torch.tensor([0]))
+        zero = g.fixed("zero", torch.tensor([0], dtype=torch.int32))
         unsqueeze = g.unsqueeze("unsqueeze", x, zero)
     y = g.output("output", unsqueeze)
     g = g.build()
@@ -109,7 +109,7 @@ def test_cat():
         ))
     return pipeline, graph
 
-pipeline, g = test_cat()
+pipeline, g = test_softmax()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

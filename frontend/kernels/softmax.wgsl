@@ -6,10 +6,12 @@ struct Params {
   shape_vecs: array<vec4<u32>, MAX_DIMS_VEC4>,
   strides_vecs: array<vec4<u32>, MAX_DIMS_VEC4>,
   ndims: u32,
-  // Padding to ensure the struct size is a multiple of 16 (max alignment of vec4)
-  // Total size = 16*2 (shape) + 16*2 (strides) + 4 (ndims) + 12 (padding) = 80 bytes
-  _padding: vec3<u32>,
-  // Output tensor will have the same metadata as input.
+  sm_dim_resolved: u32,
+  // Padding: shape_vecs (8*4=32) + strides_vecs (8*4=32) + ndims (4) + sm_dim_resolved (4) = 72 bytes.
+  // Total size needs to be multiple of 16 (max align of vec4). Next is 80.
+  // Padding needed = 80 - 72 = 8 bytes (2 u32s).
+  _padding0: u32,
+  _padding1: u32,
 };
 
 // Must be a power of two.
@@ -22,62 +24,68 @@ var<workgroup> s_reduce_buffer: array<f32, workgroup_size_x>;
 @group(0) @binding(0) var<storage, read> input_tensor: array<f32>;
 @group(0) @binding(1) var<storage, read_write> output_tensor: array<f32>;
 @group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var<storage, read> softmax_dim_tensor: array<u32, 1>;
-
 
 @compute @workgroup_size(workgroup_size_x, 1, 1)
 fn main(
   @builtin(global_invocation_id) global_id: vec3<u32>,
   @builtin(local_invocation_id) local_id: vec3<u32>,
+  @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
-  let sm_dim_raw = softmax_dim_tensor[0];
+  let sm_dim = params.sm_dim_resolved;
   let ndims = params.ndims;
-
-  // It's expected that sm_dim_raw is already validated on the CPU (0 <= sm_dim_raw < ndims).
-  // Adding a basic guard here for safety in case of issues.
-  if (sm_dim_raw >= ndims || ndims == 0u || ndims > MAX_DIMS) {
-    return; // Invalid configuration
-  }
-  let sm_dim = sm_dim_raw;
-
-  // slice_id identifies which "1D vector" (along sm_dim) this workgroup is processing.
-  let slice_id = global_id.x;
+  let slice_id = workgroup_id.y; 
   let tid = local_id.x;
 
-  // Calculate num_total_slices to guard against over-dispatch.
-  // num_total_slices = product of shape[d] for d != sm_dim.
-  var num_total_slices = 1u;
-  if (params.shape_vecs[sm_dim / 4u][sm_dim % 4u] == 0u && ndims > 0u) { // Avoid division by zero if sm_dim size is 0
-      num_total_slices = 0u; // No slices to process if softmax dimension is empty
-  } else if ndims > 0u { // Calculate total elements and divide by size of softmax dimension
-    var total_elements = 1u;
-    for (var d_idx = 0u; d_idx < ndims; d_idx = d_idx + 1u) {
-        total_elements = total_elements * params.shape_vecs[d_idx / 4u][d_idx % 4u];
-    }
-    if (params.shape_vecs[sm_dim / 4u][sm_dim % 4u] > 0u) {
-        num_total_slices = total_elements / params.shape_vecs[sm_dim / 4u][sm_dim % 4u];
-    } else { // if shape_vecs[sm_dim / 4u][sm_dim % 4u] is 0 but total_elements is also 0 (e.g. shape [0])
-        num_total_slices = 1u; // Special case for 0-element tensor leading to 1 "empty" slice
-        if (total_elements > 0u) { num_total_slices = 0u;} // Should not happen if shape_vecs[sm_dim / 4u][sm_dim % 4u] == 0
-    }
-  } else { // ndims == 0
-    num_total_slices = 1u; // A 0D tensor can be thought of as one slice with one element
+  // --- Calculate necessary parameters uniformly for the workgroup decision ---
+  var num_expected_total_slices = 1u;
+  if (ndims > 0u) {
+      var product_other_dims = 1u;
+      for (var d_idx = 0u; d_idx < ndims; d_idx = d_idx + 1u) {
+          if (d_idx != sm_dim) {
+              // Ensure dimension is not zero before multiplying to avoid issues with product becoming zero prematurely
+              let dim_val = params.shape_vecs[d_idx / 4u][d_idx % 4u];
+              if (dim_val == 0u) { product_other_dims = 0u; break; } // If any non-sm_dim is 0, product is 0
+              product_other_dims = product_other_dims * dim_val;
+          }
+      }
+      num_expected_total_slices = product_other_dims;
+      // If ndims > 0 and all non-sm_dims were size 0, product_other_dims could be 1 (empty product), handle this.
+      // A more robust way for num_expected_total_slices if ndims > 0:
+      // If any shape[d] where d != sm_dim is 0, then num_expected_total_slices is 0.
+      // Otherwise, it's the product. If ndims=1 and sm_dim=0, it's 1.
+      if (ndims == 1u && ndims -1u == sm_dim) { // Only one dim, and it is the softmax_dim
+        num_expected_total_slices = 1u;
+      } else if (product_other_dims == 0u) { // Handles cases like [2,0,3] where sm_dim is 0 or 2.
+        num_expected_total_slices = 0u;
+      }
+
+  } else { // ndims == 0 (scalar)
+    num_expected_total_slices = 1u; 
   }
 
+  var elements_along_sm_dim = 1u;
+  if (ndims > 0u) {
+    elements_along_sm_dim = params.shape_vecs[sm_dim / 4u][sm_dim % 4u];
+  } // For 0D (scalar), elements_along_sm_dim remains 1.
 
-  if (slice_id >= num_total_slices) {
-    return;
+  // --- Uniform workgroup check: if this workgroup should process at all ---
+  var perform_work_for_this_workgroup = true;
+  if (slice_id >= num_expected_total_slices) {
+    perform_work_for_this_workgroup = false;
+  }
+  if (elements_along_sm_dim == 0u) { 
+    // If the dimension to softmax over is 0, no work to do.
+    // JS dispatch logic for x should be 0, so this workgroup might not even be dispatched.
+    // If it is (e.g. x=1 as minimum), then it should not proceed.
+    perform_work_for_this_workgroup = false;
   }
 
-  let elements_along_sm_dim = params.shape_vecs[sm_dim / 4u][sm_dim % 4u];
-  if (elements_along_sm_dim == 0u) {
-      // If the dimension being softmaxed over is empty, there's nothing to compute for this slice.
-      // Depending on desired behavior for empty slices (e.g. fill with NaN, 0, or 1/N),
-      // one might write specific values or simply return.
-      // For now, just return, output will remain uninitialized or as per buffer default.
-      return;
+  if (!perform_work_for_this_workgroup) {
+    return; // All invocations in this workgroup return together, this is uniform control flow.
   }
 
+  // --- All invocations reaching here are part of an active workgroup ---
+  // --- and are processing a non-empty softmax dimension.         ---
 
   // Calculate the N-D coordinate for the start of this slice
   // current_coord will have current_coord[sm_dim] = 0.

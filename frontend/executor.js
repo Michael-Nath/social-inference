@@ -381,18 +381,15 @@ export class SessionExecutor {
                 if (inputGPUTensor) { inputGPUTensors.set(input.name, inputGPUTensor); }
                 if (inputCPUTensor) { inputCPUTensors.set(input.name, inputCPUTensor); }
 
-                // Add GPU tensor buffer to bind group entries if it exists
-                if (inputGPUTensor) {
+                // Add GPU tensor buffer to bind group entries if it exists AND binding is defined
+                if (input.binding && inputGPUTensor) {
                     bindGroupEntries.push({
                         binding: input.binding.index,
                         resource: { buffer: inputGPUTensor.getBuffer() }
                     });
-                } else {
-                    // This case should theoretically not happen if !input.cpu, because we threw earlier.
-                    // If input.cpu is true, we might not have a GPU tensor, which is fine.
-                    if (!input.cpu) {
-                         console.warn(`Input ${inputKey} has no GPU tensor for binding, but cpu flag is false. This might be an error.`);
-                    }
+                } else if (input.binding && !inputGPUTensor) {
+                    // This case should ideally be caught by earlier checks if a binding exists but no GPU tensor could be resolved.
+                    throw new Error(`Input ${inputKey} has a binding defined but no GPUTensor was resolved for it.`);
                 }
             }
 
@@ -418,7 +415,7 @@ export class SessionExecutor {
 
                 // Create the GPU buffer
                 const buffer = this.device.createBuffer({
-                    label: `${node.name}.${outputBinding.name}`,
+                    label: `${node.name}.${output.name}`,
                     size: bufferSize,
                     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
                 });
@@ -434,7 +431,7 @@ export class SessionExecutor {
                 console.log(`Created output buffer ${outputKey} with shape [${outputShape}]`);
 
                 bindGroupEntries.push({
-                    binding: outputBinding.index,
+                    binding: output.binding.index,
                     resource: { buffer: outputTensor.getBuffer() }
                 });
             }
