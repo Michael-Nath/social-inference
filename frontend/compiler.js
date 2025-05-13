@@ -599,7 +599,7 @@ export class KernelCompiler {
                     }
                 }
 
-                for (const [outputName, shape] of node.computedOutputShapes.entries()) {
+                for (const outputName of node.get_outputs()) {
                     if (!forwardEdges.has(`${node.name}:${outputName}`)) {
                         if(!sessionGraph._finalOutputs.has(node.name)){
                             sessionGraph._finalOutputs.set(node.name, new Set());
@@ -612,7 +612,7 @@ export class KernelCompiler {
             if (session instanceof GPUSession) {
                 // Check every output of every node...
                 for (const node of session.nodes) {
-                    for (const [outputName, shape] of node.computedOutputShapes.entries()) {
+                    for (const outputName of node.get_outputs()) {
                         const outputKey = `${node.name}:${outputName}`;
                         let readback = false;
                        
@@ -621,9 +621,25 @@ export class KernelCompiler {
                         if(inputKeys) {
                             for (const inputKey of inputKeys) {
                                 const inputNode = inputKey.split(':')[0];
-                                if (sessionGraph._nodeToSession.get(inputNode) instanceof CPUSession) {
+                                const inputName = inputKey.split(':')[1];
+                                const userSession = sessionGraph._nodeToSession.get(inputNode);
+                                if (userSession instanceof CPUSession) {
+                                    console.debug(`Readback flagged for ${outputKey} CPU session ${userSession.index} uses it`)
                                     readback = true;
                                     break;
+                                } else {
+                                    const userNode = userSession.nodes.find(n => n.name === inputNode);
+                                    if(!userNode) {
+                                        throw new Error(`User node ${inputNode} not found in session ${userSession.name}`);
+                                    }
+                                    // Check if input has CPU flag set
+                                    for (const input of userNode.getKernel().inputs) {
+                                        if (input.name === inputName && input.cpu) {
+                                            console.debug(`Readback flagged for ${outputKey} because input ${inputName} of node ${inputNode} is CPU-bound.`)
+                                            readback = true;
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -660,7 +676,7 @@ export class KernelCompiler {
         for (const session of sessionGraph.sessions) {
             if (session instanceof GPUSession) {
                 for (const node of session.nodes) {
-                    let unpreparedKernel = await node.getKernel(node.computedInputShapes, node.computedOutputShapes);
+                    let unpreparedKernel = await node.getKernel();
                     if (!KernelCompiler.kernelCache.has(unpreparedKernel.key())) {
                         requiredKernels.add(unpreparedKernel);
                     }
@@ -684,13 +700,13 @@ export class KernelCompiler {
                         })
                     }
                     // Normal bindings
-                    for (const binding of kernel.inputBindings.concat(kernel.outputBindings)) {
+                    for (const input_output of kernel.inputs.concat(kernel.outputs)) {
                         entries.push({
-                            label: `${kernel.name}.${kernel.key()}.binding.${binding.index}`,
-                            binding: binding.index,
+                            label: `${kernel.name}.${kernel.key()}.binding.${input_output.binding.index}`,
+                            binding: input_output.binding.index,
                             visibility: GPUShaderStage.COMPUTE,
                             buffer: {
-                                type: binding.type
+                                type: input_output.binding.type
                             }
                         })
                     }
@@ -748,17 +764,26 @@ export class KernelCompiler {
         console.log("Compile Step: Received Original Graph:", graph);
 
         // 1. Shape Inference Pass (Static)
-        try {
-            KernelCompiler._computeAndAnnotateShapes(graph, partition.inputs);
-            console.log("Compile Step: Shape inference complete.");
-        } catch (error) {
-            console.error("Compile Step: Shape inference failed:", error);
-            throw error;
-        }
+        // try {
+        //     KernelCompiler._computeAndAnnotateShapes(graph, partition.inputs);
+        //     console.log("Compile Step: Shape inference complete.");
+        // } catch (error) {
+        //     console.error("Compile Step: Shape inference failed:", error);
+        //     throw error;
+        // }
 
         // 2. Create Session DAG (Static)
         const sessionGraph = KernelCompiler.createSessionsFrom(graph);
         console.log("Compile Step: Session Graph created:", sessionGraph);
+
+        // 4. Prepare GPU Resources (Instance Method using this.device)
+        try {
+            await this._prepareGPUResources(sessionGraph);
+            console.log("Compile Step: GPU resources prepared (layouts/pipelines).");
+        } catch (error) {
+            console.error("Compile Step: GPU resource preparation failed:", error);
+            throw error;
+        }
 
         // 3. Resource Planning Pass (Static)
         try {
@@ -769,14 +794,7 @@ export class KernelCompiler {
             throw error;
         }
 
-        // 4. Prepare GPU Resources (Instance Method using this.device)
-        try {
-            await this._prepareGPUResources(sessionGraph);
-            console.log("Compile Step: GPU resources prepared (layouts/pipelines).");
-        } catch (error) {
-            console.error("Compile Step: GPU resource preparation failed:", error);
-            throw error;
-        }
+        
 
         // SessionGraph sessions now have resourcePlan property 
         // and referenced Kernels have layouts/pipelines prepared.

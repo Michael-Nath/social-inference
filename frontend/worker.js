@@ -2,7 +2,7 @@
  * Library to handle interfacing with coordination server
  */
 
-import { CPUKernel, CPUTensor, GPUKernel } from "./kernel.js";
+import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
 
 /*
  * Kernels
@@ -184,6 +184,43 @@ export class Node {
             }
         }
     }
+
+    /**
+     * @returns {Array<string>}
+     */
+    get_inputs() { return []; }
+
+    /**
+     * @returns {Array<string>}
+     */
+    get_outputs() { return []; }
+}
+
+export class ExecutionContext {
+    /**
+     * @param {Map<string, CPUTensor>} cpuInputs
+     * @param {Map<string, GPUTensor>} gpuInputs
+     */
+    constructor(cpuInputs, gpuInputs) {
+        this.cpuInputs = cpuInputs || new Map();
+        this.gpuInputs = gpuInputs || new Map();
+    }
+
+    /**
+     * @param {string} name
+     * @returns {CPUTensor | null}
+     */ 
+    cpu(name) {
+        return this.cpuInputs.get(name) || null;
+    }
+
+    /**
+     * @param {string} name
+     * @returns {GPUTensor | null}
+     */ 
+    gpu(name) {
+        return this.gpuInputs.get(name) || null;
+    }
 }
 
 /**
@@ -205,12 +242,14 @@ class MatmulNode extends Node {
         this.device = new GPUDevice();
     }
 
+    get_inputs() { return [MatmulNode.LHS, MatmulNode.RHS]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
     /**
-     * @param {Map<string, number[]>} inputShapes - Shapes of the input tensors.
-     * @param {Map<string, number[]>} outputShapes - Shapes of the output tensors.
      * @returns {Promise<GPUKernel>}
      */
-    async getKernel(inputShapes, outputShapes) {
+    async getKernel() {
         // From the horse's mouth: https://toji.dev/webgpu-best-practices/dynamic-shader-construction.html
         // This is a nice way to dynamically specialize kernels. The Kernel class has a key() method that allows as
         // much caching as possible. See GPUKernel for details.
@@ -218,29 +257,38 @@ class MatmulNode extends Node {
             name: 'matmul',
             shader: await fetch('kernels/matmul.wgsl').then(r => r.text()),
             dimensionBuffer: {
-                func: (inputShapes, outputShapes) => {
+                func: (executionContext) => {
+                    const lhsTensor = executionContext.gpu(MatmulNode.LHS);
+                    const rhsTensor = executionContext.gpu(MatmulNode.RHS);
+                    if (!lhsTensor || !rhsTensor) {
+                        throw new Error(`MatmulNode (${this.name}): Missing GPU tensors for dimensionBuffer calculation.`);
+                    }
                     return new Uint32Array([
-                        inputShapes.get(MatmulNode.LHS)[0],
-                        inputShapes.get(MatmulNode.LHS)[1],
-                        inputShapes.get(MatmulNode.RHS)[1],
+                        lhsTensor.shape[0],
+                        lhsTensor.shape[1],
+                        rhsTensor.shape[1],
                     ]);
                 },
                 index: 0,
             },
-            workgroupFunction: (inputShapes, outputShapes) => {
+            workgroupFunction: (executionContext) => {
+                const lhsTensor = executionContext.gpu(MatmulNode.LHS);
+                if (!lhsTensor) {
+                    throw new Error(`MatmulNode (${this.name}): Missing LHS GPU tensor for workgroupFunction.`);
+                }
                 return {
-                    x: Math.ceil(inputShapes.get(MatmulNode.LHS)[0] / 16),
-                    y: Math.ceil(inputShapes.get(MatmulNode.LHS)[1] / 16),
+                    x: Math.ceil(lhsTensor.shape[0] / 16),
+                    y: Math.ceil(lhsTensor.shape[1] / 16),
                     z: 1,
                 };
             },
             entryPoint: "main",
-            inputBindings: [
-                { name: MatmulNode.LHS, type: "read-only-storage", index: 1 },
-                { name: MatmulNode.RHS, type: "read-only-storage", index: 2 },
+            inputs: [
+                { name: MatmulNode.LHS, cpu: false, binding: {type: "read-only-storage", index: 1 } },
+                { name: MatmulNode.RHS, cpu: false, binding: {type: "read-only-storage", index: 2 } },
             ],
-            outputBindings: [
-                { name: DEFAULT_NODE_OUTPUT, type: "storage", index: 3 },
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 3 } },
             ],
         });
     }
@@ -248,14 +296,13 @@ class MatmulNode extends Node {
 
     /**
      * Calculates the output shape for a matrix multiplication.
-     * @param {Map<string, number[]>} inputShapes - A map containing shapes for 'input' and 'weight'.
-     *                                            Example: Map { 'input' => [M, K], 'weight' => [K, N] }
+     * @param {ExecutionContext} executionContext
      * @returns {number[]} The output shape [M, N].
      * @throws {Error} If input shapes are missing, invalid, or incompatible.
      */
-    getOutputShape(inputShapes) {
-        const shapeA = inputShapes.get(MatmulNode.LHS);
-        const shapeB = inputShapes.get(MatmulNode.RHS);
+    getOutputShape(executionContext) {
+        const shapeA = executionContext.gpu(MatmulNode.LHS)?.shape;
+        const shapeB = executionContext.gpu(MatmulNode.RHS)?.shape;
 
         if (!shapeA || !shapeB) {
             throw new Error(`MatmulNode (${this.name}): Missing required input shapes ('input' or 'weight').`);
@@ -294,6 +341,10 @@ class ConstantNode extends Node {
         /** @type {string} */
         this.tensor_name = api_response.tensor_name;
     }
+
+    get_inputs() { return []; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -332,39 +383,30 @@ class SoftmaxNode extends Node {
     /**
      * Calculates the output shape for a softmax operation.
      * The output shape is identical to the input shape.
-     * @param {Map<string, number[]>} inputShapes - A map containing the shape for \'input\'.
-     *                                            Example: Map { \'input\' => [Batch, Features] }
+     * @param {ExecutionContext} executionContext
      * @returns {number[]} The output shape, same as the input shape.
      * @throws {Error} If the input shape is missing.
      */
-    getOutputShape(inputShapes) {
-        const inputShape = inputShapes.get(SoftmaxNode.INPUT);
+    getOutputShape(executionContext) {
+        const inputGPUTensor = executionContext.gpu(SoftmaxNode.INPUT);
 
-        if (!inputShape) {
-            throw new Error(`SoftmaxNode (${this.name}): Missing required input shape (\'input\').`);
+        if (!inputGPUTensor || !inputGPUTensor.shape) {
+            throw new Error(`SoftmaxNode (${this.name}): Missing required input GPU tensor or shape for \'input\'.`);
         }
-
         // Softmax output shape is the same as the input shape
-        return [...inputShape]; // Return a copy
+        return [...inputGPUTensor.shape]; // Return a copy
     }
 
     /**
-     * @param {Map<string, number[]>} inputShapes - Shapes of the input tensors.
-     * @param {Map<string, number[]>} outputShapes - Shapes of the output tensors.
      * @returns {Promise<GPUKernel>}
      */
-    async getKernel(inputShapes, outputShapes) {
-        const inputShape = inputShapes.get(SoftmaxNode.INPUT);
-        if (!inputShape) {
-            throw new Error(`SoftmaxNode (${this.name}): Missing input shape for kernel creation.`);
-        }
-
+    async getKernel() {
         return new GPUKernel({
             name: 'softmax',
             shader: await fetch('kernels/softmax.wgsl').then(r => r.text()),
             dimensionBuffer: { // Corresponds to 'params: Params' in WGSL
-                func: (inputShapes, outputShapes) => {
-                    const currentInputShape = inputShapes.get(SoftmaxNode.INPUT);
+                func: (inputGPUTensors, inputCPUTensors) => {
+                    const currentInputShape = inputGPUTensors.get(SoftmaxNode.INPUT);
                     const currentNdims = currentInputShape.length;
 
                     const paddedShape = new Array(MAX_DIMS_SOFTMAX).fill(1); // Pad with 1s for shape
@@ -382,7 +424,7 @@ class SoftmaxNode extends Node {
                     }
                     // For 0D tensor (currentNdims = 0), shape/strides are effectively empty for padding.
 
-                    const uniformData = new Uint32Array(20);
+                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 1);
                     uniformData.set(paddedShape, 0);
                     uniformData.set(paddedStrides, MAX_DIMS_SOFTMAX);
                     uniformData.set([currentNdims], MAX_DIMS_SOFTMAX * 2);
@@ -390,45 +432,54 @@ class SoftmaxNode extends Node {
                 },
                 index: 2, // Matches @group(0) @binding(2) var<uniform> params: Params;
             },
-            workgroupFunction: (inputShapes, outputShapes) => {
-                const currentInputShape = inputShapes.get(SoftmaxNode.INPUT);
+            workgroupFunction: (inputGPUTensors, inputCPUTensors) => {
+                const currentInputShape = inputGPUTensors.get(SoftmaxNode.INPUT);
                 const currentNdims = currentInputShape.length;
                 const workgroupSizeX = 256; // Must match the shader's const workgroup_size_x
 
-                /* TODO: This is really, really bad. We need to assume the worst
-                 * case scenario since we have no access to DIM here. What's
-                 * really the issue is that the CPU needs to know what DIM is to
-                 * dispatch enough workgroups, but DIM is in a GPU tensor. The
-                 * best solution is to somehow tag certain inputs as needing both
-                 * CPU and GPU tensors, then pass the input map to this function
-                 * as well.
-                 */
+                // Get the dimension to apply softmax along from CPU tensor
+                const dimTensor = inputCPUTensors.get(SoftmaxNode.DIM);
+                const dim = dimTensor ? dimTensor.data[0] : 0; // Default to 0 if not provided
+                
+                // Calculate total elements and elements per slice
                 let totalElements = 1;
+                let elementsPerSlice = 1;
+                
                 if (currentNdims > 0) {
                     totalElements = currentInputShape.reduce((acc, val) => acc * val, 1);
+                    
+                    // Calculate the size of each softmax slice
+                    const normalizedDim = dim < 0 ? dim + currentNdims : dim;
+                    if (normalizedDim >= 0 && normalizedDim < currentNdims) {
+                        elementsPerSlice = currentInputShape[normalizedDim];
+                    }
                 } else {
                     // For a 0D tensor (scalar), totalElements is 1.
                     totalElements = 1;
+                    elementsPerSlice = 1;
                 }
 
                 return {
-                    // Dispatch enough workgroups to cover every element if dim size was 1.
-                    // The kernel handles the slice_id check internally.
-                    x: Math.ceil(totalElements / workgroupSizeX),
+                    // Dispatch enough workgroups to cover all elements in each slice
+                    x: Math.ceil(elementsPerSlice / workgroupSizeX),
                     y: 1,
                     z: 1,
                 };
             },
             entryPoint: "main",
-            inputBindings: [
-                { name: SoftmaxNode.INPUT, type: "read-only-storage", index: 0 },
-                { name: SoftmaxNode.DIM, type: "read-only-storage", index: 3 }
+            inputs: [
+                { name: SoftmaxNode.INPUT, cpu: false, binding: {type: "read-only-storage", index: 0 } },
+                { name: SoftmaxNode.DIM, cpu: true, binding: {type: "read-only-storage", index: 3 } }
             ],
-            outputBindings: [
-                { name: DEFAULT_NODE_OUTPUT, type: "storage", index: 1 },
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 1 } },
             ],
         });
     }
+
+    get_inputs() { return [SoftmaxNode.INPUT, SoftmaxNode.DIM]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -453,6 +504,10 @@ class SliceNode extends Node {
         super(api_response);
         this.device = new CPUDevice();
     }
+
+    get_inputs() { return [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -473,6 +528,10 @@ class ReshapeNode extends Node {
         super(api_response);
         this.device = new CPUDevice();
     }
+
+    get_inputs() { return [ReshapeNode.INPUT, ReshapeNode.DIMS]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -492,6 +551,82 @@ class UnsqueezeNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.device = new CPUDevice();
+    }
+
+    get_inputs() { return [UnsqueezeNode.INPUT, UnsqueezeNode.DIM]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    /**
+     * Helper method to calculate the output shape for unsqueeze.
+     * @param {CPUTensor} inputTensor 
+     * @param {CPUTensor} dimTensor 
+     * @returns {number[]} The calculated output shape.
+     * @private
+     */
+    _calculateOutputShape(inputTensor, dimTensor) {
+        if (!inputTensor) {
+            throw new Error(`UnsqueezeNode (${this.name}): Missing required input tensor ('input').`);
+        }
+        if (!dimTensor) {
+            throw new Error(`UnsqueezeNode (${this.name}): Missing required dimension tensor ('dim').`);
+        }
+
+        const inputShape = inputTensor.shape;
+        if (dimTensor.shape.length !== 1 || dimTensor.shape[0] !== 1) {
+             throw new Error(`UnsqueezeNode (${this.name}): Dimension ('dim') must be a scalar tensor. Got shape ${dimTensor.shape}`);
+        }
+        let dim = dimTensor.getTypedArray()[0];
+
+        const outputRank = inputShape.length + 1;
+        if (dim < 0) {
+            dim = outputRank + dim;
+        }
+
+        if (dim < 0 || dim > outputRank - 1) {
+             throw new Error(`UnsqueezeNode (${this.name}): Dimension out of range. Got dim ${dimTensor.data[0]} for input shape ${inputShape}`);
+        }
+
+        const outputShape = [...inputShape];
+        outputShape.splice(dim, 0, 1);
+        return outputShape;
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(UnsqueezeNode.INPUT);
+        const dimTensor = executionContext.cpu(UnsqueezeNode.DIM);
+        // Delegate calculation to the helper method
+        return this._calculateOutputShape(inputTensor, dimTensor);
+    }
+
+    getKernel() {
+        return new CPUKernel({
+            name: 'unsqueeze',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(UnsqueezeNode.INPUT);
+                const dimTensor = executionContext.cpu(UnsqueezeNode.DIM);
+
+                if (!inputTensor || !dimTensor) {
+                    throw new Error(`UnsqueezeNode (${this.name}) kernel: Missing input or dim tensor.`);
+                }
+
+                // Use the helper method to calculate the output shape
+                const outputShape = this._calculateOutputShape(inputTensor, dimTensor);
+
+                // Create the output tensor reusing the input data buffer
+                const outputTensor = new CPUTensor({
+                    data: inputTensor.data, // Re-use the underlying ArrayBuffer
+                    shape: outputShape,
+                    dtype: inputTensor.dtype,
+                });
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [UnsqueezeNode.INPUT, UnsqueezeNode.DIM], // Specify input names
+            outputs: [DEFAULT_NODE_OUTPUT], // Specify output name
+        });
     }
 }
 
@@ -515,6 +650,10 @@ class BroadcastNode extends Node {
         super(api_response);
         this.device = new CPUDevice();
     }
+
+    get_inputs() { return [BroadcastNode.INPUT, BroadcastNode.DIM, BroadcastNode.N]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -536,6 +675,10 @@ class CatNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [CatNode.A, CatNode.B, CatNode.DIM]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -571,6 +714,10 @@ class FixedNode extends Node {
     getOutputShape(inputShapes) {
         return this.tensor.shape;
     }
+
+    get_inputs() { return []; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -591,6 +738,10 @@ class HadamardNode extends Node {
         super(api_response);
         this.device = new GPUDevice();
     }
+
+    get_inputs() { return [HadamardNode.A, HadamardNode.B]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -610,6 +761,10 @@ class IndexNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [IndexNode.INPUT, IndexNode.INDEX]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -627,6 +782,10 @@ class ShapeNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [ShapeNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -650,6 +809,10 @@ class TransposeNode extends Node {
         /** @type {number} */
         this.dim1 = api_response.dim1;
     }
+
+    get_inputs() { return [TransposeNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -676,11 +839,9 @@ class AddNode extends Node {
     }
 
     /**
-     * @param {Map<string, number[]>} inputShapes - Shapes of the input tensors.
-     * @param {Map<string, number[]>} outputShapes - Shapes of the output tensors.
      * @returns {Promise<GPUKernel>}
      */
-    async getKernel(inputShapes, outputShapes) {
+    async getKernel() {
         // From the horse's mouth: https://toji.dev/webgpu-best-practices/dynamic-shader-construction.html
         // This is a nice way to dynamically specialize kernels. The Kernel class has a key() method that allows as
         // much caching as possible. See GPUKernel for details.
@@ -703,12 +864,12 @@ class AddNode extends Node {
                 };
             },
             entryPoint: "main",
-            inputBindings: [
-                { name: AddNode.A, type: "read-only-storage", index: 0 },
-                { name: AddNode.B, type: "read-only-storage", index: 1 },
+            inputs: [
+                { name: AddNode.A, cpu: false, binding: {type: "read-only-storage", index: 0 } },
+                { name: AddNode.B, cpu: false, binding: {type: "read-only-storage", index: 1 } },
             ],
-            outputBindings: [
-                { name: DEFAULT_NODE_OUTPUT, type: "storage", index: 2 },
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 2 } },
             ],
         });
     }
@@ -739,6 +900,10 @@ class AddNode extends Node {
         // Output shape is the same as the (identical) input shapes
         return [...shapeA]; // Return a copy
     }
+
+    get_inputs() { return [AddNode.A, AddNode.B]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -758,6 +923,10 @@ class DivNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [DivNode.A, DivNode.B]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -775,6 +944,10 @@ class FloorNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [FloorNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -792,6 +965,10 @@ class CeilNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [CeilNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 }
 
 /**
@@ -809,6 +986,10 @@ class DebugNode extends Node {
     constructor(api_response) {
         super(api_response);
     }
+
+    get_inputs() { return [DebugNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; } // Assume pass-through for now
 }
 
 /**

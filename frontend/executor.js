@@ -1,6 +1,6 @@
 // executor.js
 import { SessionGraph, GPUSession, CPUSession, ComputeSession, KernelCompiler } from './compiler.js';
-import { PartitionWork } from './worker.js';
+import { PartitionWork, ExecutionContext } from './worker.js';
 import { GPUTensor, CPUTensor } from './kernel.js';
 import { ALL_SCOPES, popErrorScopes, pushErrorScopes } from './common.js';
 
@@ -310,54 +310,103 @@ export class SessionExecutor {
             }
 
             const bindGroupEntries = [];
-            for (const inputBinding of kernel.inputBindings) {
-                const inputKey = `${node.name}:${inputBinding.name}`;
-                let inputTensor;
+            const inputGPUTensors = new Map();
+            const inputCPUTensors = new Map();
+            for (const input of kernel.inputs) {
+                const inputKey = `${node.name}:${input.name}`;
+                let inputGPUTensor;
+                let inputCPUTensor;
+
+                // Determine the source of the input data
+                let sourceKey; // Key to look up in cpu/gpuOutputs or cpu/gpuInputs
+                let dataSource; // Map (cpuOutputs, gpuOutputs, cpuInputs, gpuInputs)
+                let isInputSource = false; // Is the source from partitionWork inputs?
+
                 if (!session.resourcePlan.inputOutputMappings.has(inputKey)) {
-                    // Check inputs
-                    if (this.gpuInputs.has(inputKey)) {
-                        // Use that
-                        inputTensor = this.gpuInputs.get(inputKey);
-                    } else if (this.cpuInputs.has(inputKey)) {
-                        // Do move
-                        console.debug("Moving CPU input to GPU:", inputKey);
-                        inputTensor = await this._cpuToGPU(this.cpuInputs.get(inputKey), `input_${inputKey}`);
-                        this.gpuInputs.set(inputKey, inputTensor);
-                    } else {
-                        // Error
-                        throw new Error(`Missing input for binding ${inputBinding.name} on node ${node.name}`);
-                    }
+                    // Input comes directly from partitionWork.inputs
+                    sourceKey = inputKey;
+                    isInputSource = true;
                 } else {
-                    // Use output
-                    const outputKey = session.resourcePlan.inputOutputMappings.get(inputKey);
-                    if (this.gpuOutputs.has(outputKey)) {
-                        // Use that
-                        inputTensor = this.gpuOutputs.get(outputKey);
-                    } else if (this.cpuOutputs.has(outputKey)) {
-                        // Do move
-                        console.debug("Moving CPU output to GPU:", outputKey);
-                        inputTensor = await this._cpuToGPU(this.cpuOutputs.get(outputKey), `input_from_output_${outputKey}`);
-                        this.gpuOutputs.set(outputKey, inputTensor);
+                    // Input comes from the output of a previous node in the graph
+                    sourceKey = session.resourcePlan.inputOutputMappings.get(inputKey);
+                    isInputSource = false;
+                }
+
+                // Check CPU sources first if needed
+                if (input.cpu) {
+                    dataSource = isInputSource ? this.cpuInputs : this.cpuOutputs;
+                    if (dataSource.has(sourceKey)) {
+                        inputCPUTensor = dataSource.get(sourceKey);
                     } else {
-                        // Error
-                        throw new Error(`Missing output for binding ${inputBinding.name} on node ${node.name}`);
+                        // Allow GPU tensor to provide CPU input if needed and CPU isn't available
+                         console.warn(`CPU input ${inputKey} requested but not found directly. Will check GPU sources.`);
+                        // Still need to check GPU sources below
                     }
                 }
 
-                bindGroupEntries.push({
-                    binding: inputBinding.index,
-                    resource: { buffer: inputTensor.getBuffer() }
-                });
+                // Check GPU sources (always needed for binding, might be needed for CPU fallback)
+                dataSource = isInputSource ? this.gpuInputs : this.gpuOutputs;
+                if (dataSource.has(sourceKey)) {
+                    inputGPUTensor = dataSource.get(sourceKey);
+                } else {
+                    // If GPU source not found, check if a corresponding CPU source exists and can be moved
+                    const cpuDataSource = isInputSource ? this.cpuInputs : this.cpuOutputs;
+                    if (cpuDataSource.has(sourceKey)) {
+                        console.debug(`Moving ${isInputSource ? 'input' : 'output'} ${sourceKey} from CPU to GPU for input ${inputKey}`);
+                        const cpuSourceTensor = cpuDataSource.get(sourceKey);
+                        inputGPUTensor = await this._cpuToGPU(cpuSourceTensor, `moved_${sourceKey}_for_${inputKey}`);
+                        // Store the moved tensor in the appropriate GPU map
+                        if (isInputSource) {
+                            this.gpuInputs.set(sourceKey, inputGPUTensor);
+                        } else {
+                            this.gpuOutputs.set(sourceKey, inputGPUTensor);
+                        }
+                        // If CPU input was also requested but not found, use the original CPU tensor
+                        if (input.cpu && !inputCPUTensor) {
+                             console.debug(`Using original CPU tensor ${sourceKey} for CPU input ${inputKey} after GPU move.`);
+                            inputCPUTensor = cpuSourceTensor;
+                        }
+                    } else if (!input.cpu || !inputCPUTensor) {
+                         // If no GPU or CPU source found (and CPU input wasn't already satisfied)
+                        throw new Error(`Missing required input/output source '${sourceKey}' for node ${node.name}, input ${input.name}`);
+                    }
+                }
+                
+                // Final check if CPU input was requested but still missing
+                if (input.cpu && !inputCPUTensor) {
+                    throw new Error(`Could not satisfy CPU input requirement for ${inputKey}`);
+                }
+
+                // Store the resolved tensors
+                if (inputGPUTensor) { inputGPUTensors.set(input.name, inputGPUTensor); }
+                if (inputCPUTensor) { inputCPUTensors.set(input.name, inputCPUTensor); }
+
+                // Add GPU tensor buffer to bind group entries if it exists
+                if (inputGPUTensor) {
+                    bindGroupEntries.push({
+                        binding: input.binding.index,
+                        resource: { buffer: inputGPUTensor.getBuffer() }
+                    });
+                } else {
+                    // This case should theoretically not happen if !input.cpu, because we threw earlier.
+                    // If input.cpu is true, we might not have a GPU tensor, which is fine.
+                    if (!input.cpu) {
+                         console.warn(`Input ${inputKey} has no GPU tensor for binding, but cpu flag is false. This might be an error.`);
+                    }
+                }
             }
 
-            for (const outputBinding of kernel.outputBindings) {
-                const outputKey = `${node.name}:${outputBinding.name}`;
+            // Create ExecutionContext for kernel calls
+            const executionContext = new ExecutionContext(inputCPUTensors, inputGPUTensors);
+
+            for (const output of kernel.outputs) {
+                const outputKey = `${node.name}:${output.name}`;
                 if (this.gpuOutputs.has(outputKey) || this.cpuOutputs.has(outputKey)) {
                     throw new Error(`Output ${outputKey} is registered. This should not happen.`);
                 }
 
                 // Create a new buffer for the output tensor
-                const outputShape = node.computedOutputShapes.get(outputBinding.name);
+                const outputShape = node.getOutputShape(executionContext);
                 if (!outputShape) {
                     throw new Error(`Missing output shape for ${outputKey}`);
                 }
@@ -392,7 +441,7 @@ export class SessionExecutor {
 
             if (kernel.dimensionBuffer) {
                 // Create uniform buffer for dimensions
-                const dimensionData = kernel.dimensionBuffer.func(node.computedInputShapes, node.computedOutputShapes);
+                const dimensionData = kernel.dimensionBuffer.func(executionContext);
                 console.debug("Dimension data:", dimensionData);
                 const dimensionBuffer = this.device.createBuffer({
                     label: `${node.name}.dimensions`,
@@ -439,7 +488,7 @@ export class SessionExecutor {
 
 
             // --- d. Dispatch Kernel ---
-            const dispatch = kernel.workgroupFunction(node.computedInputShapes, node.computedOutputShapes);
+            const dispatch = kernel.workgroupFunction(executionContext);
             const dispatchX = dispatch.x;
             const dispatchY = dispatch.y;
             const dispatchZ = dispatch.z;
@@ -553,48 +602,79 @@ export class SessionExecutor {
     async _executeCPUSession(session) {
         // Assume in topo order
         for(const node of session.nodes) {
-            const kernel = node.getKernel();
-            console.log("Executing CPU kernel:", kernel);
+            const kernel = await node.getKernel(); // Ensure kernel is awaited if getKernel is async
+            console.log(`Executing CPU node ${node.name}, kernel:`, kernel);
 
-            const inputs = {};
-            for(const input of kernel.inputs) {
-                const inputKey = `${node.name}:${input}`;
+            const inputCPUTensors = new Map();
+            for(const inputDef of kernel.inputs) { // Assuming kernel.inputs is array of names or objects with name
+                const inputName = typeof inputDef === 'string' ? inputDef : inputDef.name;
+                const inputKey = `${node.name}:${inputName}`;
 
                 let inputTensor;
                 if(!session.resourcePlan.inputOutputMappings.has(inputKey)) {
-                    // Check inputs
+                    // Check partitionWork inputs
                     if(this.cpuInputs.has(inputKey)) {
                         inputTensor = this.cpuInputs.get(inputKey);
                     } else {
-                        throw new Error(`Missing input ${inputKey}`);
+                        // Try GPU inputs (shouldn't happen for CPUSession unless explicitly designed)
+                        if (this.gpuInputs.has(inputKey)) {
+                             console.warn(`CPUSession node ${node.name} using GPU input ${inputKey}. Ensure this is intended.`);
+                             // TODO: Need GPU->CPU transfer mechanism if this is a valid path
+                             throw new Error(`Automatic GPU->CPU transfer for CPUSession input ${inputKey} not implemented.`);
+                        }
+                        throw new Error(`Missing input ${inputKey} in both cpuInputs and gpuInputs`);
                     }
                 } else {
-                    const outputKey = session.resourcePlan.inputOutputMappings.get(inputKey);
-                    // Use output
-                    if(this.cpuOutputs.has(outputKey)) {
-                        // Use that
-                        inputTensor = this.cpuOutputs.get(outputKey);
+                    const sourceOutputKey = session.resourcePlan.inputOutputMappings.get(inputKey);
+                    // Check previous node outputs
+                    if(this.cpuOutputs.has(sourceOutputKey)) {
+                        inputTensor = this.cpuOutputs.get(sourceOutputKey);
                     } else {
-                        throw new Error(`Missing output ${outputKey} that backs input ${inputKey}`);
+                         // Try GPU outputs (needs transfer)
+                         if (this.gpuOutputs.has(sourceOutputKey)) {
+                            console.warn(`CPUSession node ${node.name} using GPU output ${sourceOutputKey} as input ${inputKey}. Ensure this is intended.`);
+                            // TODO: Need GPU->CPU transfer mechanism
+                            throw new Error(`Automatic GPU->CPU transfer for CPUSession input ${inputKey} from output ${sourceOutputKey} not implemented.`);
+                         }
+                        throw new Error(`Missing output ${sourceOutputKey} (backing input ${inputKey}) in both cpuOutputs and gpuOutputs`);
                     }
                 }
-                inputs[input] = inputTensor;
+                inputCPUTensors.set(inputName, inputTensor);
             }
 
-            console.log("Invoking kernel with:", inputs);
-            const outputs = await kernel.execute(inputs);
-            console.log("Kernel produced:", outputs);
+            // Create ExecutionContext for CPU kernel
+            const executionContext = new ExecutionContext(inputCPUTensors, new Map()); // No GPU inputs expected
 
-            for(const output of kernel.outputs) {
-                const outputKey = `${node.name}:${output}`
+            console.log(`Invoking kernel ${kernel.name} for node ${node.name} with context:`, executionContext);
+            const outputs = await kernel.execute(executionContext); // Pass ExecutionContext
+            console.log(`Kernel ${kernel.name} produced:`, outputs);
 
-                let outputTensor;
-                if(typeof outputs === Map) {
-                    outputTensor = outputs.get(output);
-                } else {
-                    outputTensor = outputs[output];
+            for(const outputDef of kernel.outputs) { // Assuming kernel.outputs is array of names or objects with name
+                const outputName = typeof outputDef === 'string' ? outputDef : outputDef.name;
+                const outputKey = `${node.name}:${outputName}`;
+
+                let outputTensor = outputs[outputName]; // Access output from the result object
+                
+                if (!outputTensor) {
+                    console.warn(`Kernel ${kernel.name} did not produce expected output '${outputName}'.`);
+                    // Or throw new Error(...)? Depends on strictness required.
+                    continue; 
                 }
-                this.cpuOutputs.set(outputKey, outputTensor);
+
+                if (this.cpuOutputs.has(outputKey) || this.gpuOutputs.has(outputKey)) {
+                     console.warn(`Overwriting existing output key ${outputKey} during CPUSession execution.`);
+                     // Potentially throw error if overwrite is not allowed
+                }
+
+                if (outputTensor instanceof CPUTensor) {
+                    this.cpuOutputs.set(outputKey, outputTensor);
+                } else if (outputTensor instanceof GPUTensor) {
+                     console.warn(`CPU Kernel ${kernel.name} produced a GPUTensor for output ${outputName}. Ensure this is intended.`);
+                     // TODO: Need CPU->GPU transfer? Or is this an error?
+                     this.gpuOutputs.set(outputKey, outputTensor);
+                } else {
+                    throw new Error(`Kernel ${kernel.name} produced invalid output type for ${outputName}: ${typeof outputTensor}`);
+                }
             }
         }
         // Annotate session.resourcePlan usage here later

@@ -26,24 +26,45 @@ def simple_two_node():
     z = g.output("output", add)
     return g.build()
 
-def simple_softmax():
+def test_softmax():
     g = ComputeGraphBuilder()
     x = g.input("x")
     with g.partition("p0"):
         two = g.fixed("two", torch.tensor([2]))
         softmax = g.softmax("softmax", x, two)
     y = g.output("output", softmax)
-    return g.build()
+    g = g.build()
 
-g = simple_softmax()
-pipeline = ComputePipeline(g)
-for i in range(20):
-    pipeline.enqueue_input(PipelineInput(
-        correlation_id=f"{i}",
-        inputs={
-            "x": Tensor.from_torch(torch.randn(4, 4, 4, 4)),
-        },
-    ))
+    pipeline = ComputePipeline(g)
+    for i in range(20):
+        pipeline.enqueue_input(PipelineInput(
+            correlation_id=f"{i}",
+            inputs={
+                "x": Tensor.from_torch(torch.randn(4, 4, 4, 4)),
+            },
+        ))
+    return pipeline, g
+
+def test_unsqueeze():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        zero = g.fixed("zero", torch.tensor([0]))
+        unsqueeze = g.unsqueeze("unsqueeze", x, zero)
+    y = g.output("output", unsqueeze)
+    g = g.build()
+
+    pipeline = ComputePipeline(g)
+    for i in range(20):
+        pipeline.enqueue_input(PipelineInput(
+            correlation_id=f"{i}",
+            inputs={
+                "x": Tensor.from_torch(torch.randn(4, 4, 4, 4)),
+            },
+        ))
+    return pipeline, g
+
+pipeline, g = test_unsqueeze()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

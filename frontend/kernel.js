@@ -188,8 +188,8 @@ export class CPUKernel {
     this.outputs = options.outputs;
   }
 
-  async execute(inputs) {
-    return await this.func(inputs);
+  async execute(executionContext) {
+    return await this.func(executionContext);
   }
 }
 
@@ -220,25 +220,29 @@ export class GPUKernel {
    * @param {Object} options.dimensionBuffer - Dimension buffer configuration (optional)
    * @param {function} options.dimensionBuffer.func - Function to compute the dimension buffer
    * @param {number} options.dimensionBuffer.index - Index of the dimension buffer in the shader
-   * @param {Array<Object>} options.inputBindings - Configuration for buffer bindings
-   * @param {string} options.inputBindings[].name - Name of the tensor
-   * @param {string} [options.inputBindings[].type] - Buffer type (e.g., "storage", "uniform")
-   * @param {number} options.inputBindings[].index - Index of the binding in the shader
-   * @param {Array<Object>} options.outputBindings - Configuration for buffer bindings
-   * @param {string} options.outputBindings[].name - Name of the tensor
-   * @param {string} [options.outputBindings[].type] - Buffer type (e.g., "storage", "uniform")
-   * @param {number} options.outputBindings[].index - Index of the binding in the shader
    * @param {function} options.workgroupFunction - Function to compute the workgroup size
+   * @param {Array<Object>} options.inputs
+   * @param {string} options.inputs[].name
+   * @param {boolean} options.inputs[].cpu - Place the input in the CPU as well - useful for control tensors
+   * @param {Array<number>} options.inputs[].shape
+   * @param {Object} options.inputs[].binding
+   * @param {string} options.inputs[].binding.type
+   * @param {number} options.inputs[].binding.index
+   * @param {Array<Object>} options.outputs
+   * @param {string} options.outputs[].name
+   * @param {Object} options.outputs[].binding
+   * @param {string} options.outputs[].binding.type
+   * @param {number} options.outputs[].binding.index
    */
 
   constructor(options) {
     this.name = options.name;
     this.shader = options.shader;
     this.entryPoint = options.entryPoint || "main";
-    this.inputBindings = options.inputBindings || [];
-    this.outputBindings = options.outputBindings || [];
     this.dimensionBuffer = options.dimensionBuffer || null;
     this.workgroupFunction = options.workgroupFunction;
+    this.inputs = options.inputs || [];
+    this.outputs = options.outputs || [];
 
     this.shaderModule = null;
     this.bindGroupLayout = null;
