@@ -47,8 +47,31 @@ export class CPUTensor extends Tensor {
    * @returns {TypedArray} - Typed array of the tensor data
    */
   getTypedArray() {
-    // TODO: Correctly handle other data types.
-    return new Float32Array(this.data);
+    // Create the appropriate TypedArray based on the dtype
+    switch (this.dtype) {
+      case 'float32':
+        return new Float32Array(this.data);
+      case 'float16':
+        // JavaScript doesn't have Float16Array, use Uint16Array for storage
+        return new Uint16Array(this.data);
+      case 'int32':
+        return new Int32Array(this.data);
+      case 'int16':
+        return new Int16Array(this.data);
+      case 'int8':
+        return new Int8Array(this.data);
+      case 'uint8':
+        return new Uint8Array(this.data);
+      case 'uint16':
+        return new Uint16Array(this.data);
+      case 'uint32':
+        return new Uint32Array(this.data);
+      case 'bool':
+        return new Uint8Array(this.data);
+      default:
+        console.warn(`Unrecognized dtype: ${this.dtype}, falling back to Float32Array`);
+        return new Float32Array(this.data);
+    }
   }
 
   /**

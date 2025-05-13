@@ -723,7 +723,6 @@ export class KernelCompiler {
                         compute: {
                             module: shaderModule,
                             entryPoint: kernel.entryPoint,
-                            // constants: {} // Optional constants
                         },
                     });
                 } catch (error) {

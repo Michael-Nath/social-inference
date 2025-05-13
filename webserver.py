@@ -26,14 +26,22 @@ def simple_two_node():
     z = g.output("output", add)
     return g.build()
 
-g = simple_two_node()
+def simple_softmax():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        two = g.fixed("two", torch.tensor([2]))
+        softmax = g.softmax("softmax", x, two)
+    y = g.output("output", softmax)
+    return g.build()
+
+g = simple_softmax()
 pipeline = ComputePipeline(g)
 for i in range(20):
     pipeline.enqueue_input(PipelineInput(
         correlation_id=f"{i}",
         inputs={
-            "x": Tensor.from_torch(torch.randn(32, 32)),
-            "y": Tensor.from_torch(torch.randn(32, 32)),
+            "x": Tensor.from_torch(torch.randn(4, 4, 4, 4)),
         },
     ))
 worker_manager = WorkerManager(g)

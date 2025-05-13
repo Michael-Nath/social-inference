@@ -301,11 +301,25 @@ class ConstantNode extends Node {
  * @classdesc Represents a softmax operation node.
  * @extends Node
  */
+
+const MAX_DIMS_SOFTMAX = 8; // Max dimensions supported by the softmax kernel
+
+function calculateStrides(shape) {
+    const ndims = shape.length;
+    if (ndims === 0) return [];
+    const strides = new Array(ndims).fill(0);
+    strides[ndims - 1] = 1;
+    for (let i = ndims - 2; i >= 0; i--) {
+        strides[i] = strides[i + 1] * shape[i + 1];
+    }
+    return strides;
+}
+
 class SoftmaxNode extends Node {
     /** @type {string} */
     static INPUT = "input";
     /** @type {string} */
-    static DIM = "dim";
+    static DIM = "dim"; // Name for the input tensor that will hold the dimension scalar
     
     /**
      * @param {Object} api_response - API response for SoftmaxNode.
@@ -313,6 +327,107 @@ class SoftmaxNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.device = new GPUDevice();
+    }
+
+    /**
+     * Calculates the output shape for a softmax operation.
+     * The output shape is identical to the input shape.
+     * @param {Map<string, number[]>} inputShapes - A map containing the shape for \'input\'.
+     *                                            Example: Map { \'input\' => [Batch, Features] }
+     * @returns {number[]} The output shape, same as the input shape.
+     * @throws {Error} If the input shape is missing.
+     */
+    getOutputShape(inputShapes) {
+        const inputShape = inputShapes.get(SoftmaxNode.INPUT);
+
+        if (!inputShape) {
+            throw new Error(`SoftmaxNode (${this.name}): Missing required input shape (\'input\').`);
+        }
+
+        // Softmax output shape is the same as the input shape
+        return [...inputShape]; // Return a copy
+    }
+
+    /**
+     * @param {Map<string, number[]>} inputShapes - Shapes of the input tensors.
+     * @param {Map<string, number[]>} outputShapes - Shapes of the output tensors.
+     * @returns {Promise<GPUKernel>}
+     */
+    async getKernel(inputShapes, outputShapes) {
+        const inputShape = inputShapes.get(SoftmaxNode.INPUT);
+        if (!inputShape) {
+            throw new Error(`SoftmaxNode (${this.name}): Missing input shape for kernel creation.`);
+        }
+
+        return new GPUKernel({
+            name: 'softmax',
+            shader: await fetch('kernels/softmax.wgsl').then(r => r.text()),
+            dimensionBuffer: { // Corresponds to 'params: Params' in WGSL
+                func: (inputShapes, outputShapes) => {
+                    const currentInputShape = inputShapes.get(SoftmaxNode.INPUT);
+                    const currentNdims = currentInputShape.length;
+
+                    const paddedShape = new Array(MAX_DIMS_SOFTMAX).fill(1); // Pad with 1s for shape
+                    const paddedStrides = new Array(MAX_DIMS_SOFTMAX).fill(0); // Pad with 0s for strides
+
+                    if (currentNdims > 0) {
+                        if (currentNdims > MAX_DIMS_SOFTMAX) {
+                            throw new Error(`SoftmaxNode (${this.name}): Input tensor dimensions (${currentNdims}) exceed MAX_DIMS_SOFTMAX (${MAX_DIMS_SOFTMAX}).`);
+                        }
+                        const strides = calculateStrides(currentInputShape);
+                        for (let i = 0; i < currentNdims; i++) {
+                            paddedShape[i] = currentInputShape[i];
+                            paddedStrides[i] = strides[i];
+                        }
+                    }
+                    // For 0D tensor (currentNdims = 0), shape/strides are effectively empty for padding.
+
+                    const uniformData = new Uint32Array(20);
+                    uniformData.set(paddedShape, 0);
+                    uniformData.set(paddedStrides, MAX_DIMS_SOFTMAX);
+                    uniformData.set([currentNdims], MAX_DIMS_SOFTMAX * 2);
+                    return uniformData;
+                },
+                index: 2, // Matches @group(0) @binding(2) var<uniform> params: Params;
+            },
+            workgroupFunction: (inputShapes, outputShapes) => {
+                const currentInputShape = inputShapes.get(SoftmaxNode.INPUT);
+                const currentNdims = currentInputShape.length;
+                const workgroupSizeX = 256; // Must match the shader's const workgroup_size_x
+
+                /* TODO: This is really, really bad. We need to assume the worst
+                 * case scenario since we have no access to DIM here. What's
+                 * really the issue is that the CPU needs to know what DIM is to
+                 * dispatch enough workgroups, but DIM is in a GPU tensor. The
+                 * best solution is to somehow tag certain inputs as needing both
+                 * CPU and GPU tensors, then pass the input map to this function
+                 * as well.
+                 */
+                let totalElements = 1;
+                if (currentNdims > 0) {
+                    totalElements = currentInputShape.reduce((acc, val) => acc * val, 1);
+                } else {
+                    // For a 0D tensor (scalar), totalElements is 1.
+                    totalElements = 1;
+                }
+
+                return {
+                    // Dispatch enough workgroups to cover every element if dim size was 1.
+                    // The kernel handles the slice_id check internally.
+                    x: Math.ceil(totalElements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputBindings: [
+                { name: SoftmaxNode.INPUT, type: "read-only-storage", index: 0 },
+                { name: SoftmaxNode.DIM, type: "read-only-storage", index: 3 }
+            ],
+            outputBindings: [
+                { name: DEFAULT_NODE_OUTPUT, type: "storage", index: 1 },
+            ],
+        });
     }
 }
 
@@ -437,6 +552,24 @@ class FixedNode extends Node {
         super(api_response);
         /** @type {CPUTensor} */
         this.tensor = (new APITensor(api_response.tensor)).toCPU();
+        this.device = new CPUDevice();
+    }
+
+    getKernel() {
+        return new CPUKernel({
+            name: 'fixed',
+            func: (inputs) => {
+                return {
+                    [DEFAULT_NODE_OUTPUT]: this.tensor,
+                };
+            },
+            inputs: [],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+
+    getOutputShape(inputShapes) {
+        return this.tensor.shape;
     }
 }
 
