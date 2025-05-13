@@ -1143,11 +1143,38 @@ class ShapeNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [ShapeNode.INPUT]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(ShapeNode.INPUT);
+        if (!inputTensor) {
+            throw new Error(`ShapeNode (${this.name}): Missing input tensor.`);
+        }
+        return [inputTensor.shape.length];
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'shape',
+            func: (executionContext) => {
+                const shape_array = executionContext.cpu(ShapeNode.INPUT).shape;
+                const outputTensor = CPUTensor.uninitialized([shape_array.length], "int32");
+                const outputView = outputTensor.getTypedArray();
+                for (let i = 0; i < shape_array.length; i++) {
+                    outputView[i] = shape_array[i];
+                }
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            },
+            inputs: [ShapeNode.INPUT],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+    
 }
 
 /**
@@ -1270,7 +1297,9 @@ class AddNode extends Node {
 
 /**
  * @class DivNode
- * @classdesc Represents an element-wise division node.
+ * @classdesc Represents an element-wise division node. Unlike other
+ * element-wise operations, this is implemented on the CPU purely because I know
+ * that it is usually used in shape math
  * @extends Node
  */
 class DivNode extends Node {
@@ -1284,11 +1313,81 @@ class DivNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [DivNode.A, DivNode.B]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _calculateOutputShape(tensorA, tensorB) {
+        if (!tensorA || !tensorB) {
+            throw new Error(`DivNode (${this.name}): Missing required input tensors ('a' or 'b').`);
+        }
+        // For now, require identical shapes. Broadcasting could be added later.
+        if (tensorA.shape.length !== tensorB.shape.length || 
+            !tensorA.shape.every((dim, i) => dim === tensorB.shape[i])) {
+            throw new Error(`DivNode (${this.name}): Input shapes must be identical for simple division. Got ${tensorA.shape} and ${tensorB.shape}.`);
+        }
+        if (tensorA.dtype !== tensorB.dtype) {
+            // Or we could cast, but for now require same dtype for simplicity
+            // throw new Error(`DivNode (${this.name}): Input dtypes must be identical. Got ${tensorA.dtype} and ${tensorB.dtype}.`);
+            // Relaxing this: output dtype will be taken from tensorA. User should ensure compatibility.
+             console.warn(`DivNode (${this.name}): Input dtypes are different (${tensorA.dtype}, ${tensorB.dtype}). Output dtype will be float32.`);
+        }
+        // Division generally implies a float result unless explicitly integer division.
+        // To handle mixed mode (like int/int resulting in float for gt check) and float/float, default to float32.
+        return [...tensorA.shape]; // Output shape is same as input shape
+    }
+
+    getOutputShape(executionContext) {
+        const tensorA = executionContext.cpu(DivNode.A);
+        const tensorB = executionContext.cpu(DivNode.B);
+        // Shape is determined by inputs, dtype is handled in kernel/fixed to float32
+        return this._calculateOutputShape(tensorA, tensorB); 
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'div',
+            func: (executionContext) => {
+                const tensorA = executionContext.cpu(DivNode.A);
+                const tensorB = executionContext.cpu(DivNode.B);
+
+                if (!tensorA || !tensorB) {
+                    throw new Error(`DivNode (${this.name}) kernel: Missing input tensors.`);
+                }
+
+                const outputShape = this._calculateOutputShape(tensorA, tensorB);
+                // Division output is set to float32 to handle mixed types and general expectations.
+                const outputTensor = CPUTensor.uninitialized(outputShape, 'float32');
+                const outputView = outputTensor.getTypedArray(); // This will be a Float32Array
+
+                const dataA = tensorA.getTypedArray();
+                const dataB = tensorB.getTypedArray();
+
+                if (dataA.length !== dataB.length) { // Should be caught by shape check already
+                    throw new Error(`DivNode (${this.name}) kernel: Input arrays have mismatched lengths.`);
+                }
+
+                for (let i = 0; i < outputView.length; i++) {
+                    if (dataB[i] === 0) {
+                        // Handle division by zero: return NaN or Infinity based on numerator, or throw error
+                        // JS default: 1/0=Infinity, 0/0=NaN, -1/0=-Infinity
+                        // Let standard JS behavior apply here. Output typed array will handle conversion.
+                        console.warn(`DivNode (${this.name}) kernel: Division by zero at index ${i}.`);
+                    }
+                    outputView[i] = dataA[i] / dataB[i];
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [DivNode.A, DivNode.B],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**
@@ -1305,11 +1404,52 @@ class FloorNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [FloorNode.INPUT]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _calculateOutputShape(tensor) {
+        if (!tensor) {
+            throw new Error(`FloorNode (${this.name}): Missing required input tensor.`);
+        }
+        return [...tensor.shape]; // Output shape is same as input shape
+    }
+
+    getOutputShape(executionContext) {
+        const tensor = executionContext.cpu(FloorNode.INPUT);
+        return this._calculateOutputShape(tensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'floor',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(FloorNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`FloorNode (${this.name}) kernel: Missing input tensor.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor);
+                // Output tensor will have int32 dtype as per PyTorch expectation for floor/ceil
+                const outputTensor = CPUTensor.uninitialized(outputShape, 'int32');
+                const outputView = outputTensor.getTypedArray(); // This will be an Int32Array
+                const inputData = inputTensor.getTypedArray();
+
+                for (let i = 0; i < outputView.length; i++) {
+                    outputView[i] = Math.floor(inputData[i]);
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [FloorNode.INPUT],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**
@@ -1326,11 +1466,52 @@ class CeilNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [CeilNode.INPUT]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _calculateOutputShape(tensor) {
+        if (!tensor) {
+            throw new Error(`CeilNode (${this.name}): Missing required input tensor.`);
+        }
+        return [...tensor.shape]; // Output shape is same as input shape
+    }
+
+    getOutputShape(executionContext) {
+        const tensor = executionContext.cpu(CeilNode.INPUT);
+        return this._calculateOutputShape(tensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'ceil',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(CeilNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`CeilNode (${this.name}) kernel: Missing input tensor.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor);
+                // Output tensor will have int32 dtype as per PyTorch expectation for floor/ceil
+                const outputTensor = CPUTensor.uninitialized(outputShape, 'int32');
+                const outputView = outputTensor.getTypedArray(); // This will be an Int32Array
+                const inputData = inputTensor.getTypedArray();
+
+                for (let i = 0; i < outputView.length; i++) {
+                    outputView[i] = Math.ceil(inputData[i]);
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [CeilNode.INPUT],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**

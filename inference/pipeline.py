@@ -67,8 +67,12 @@ class PartitionWorkResult(BaseModel):
         for o in other.outputs:
             if (o.node, o.output) not in our_outputs:
                 raise ValueError(f"Extraneous output {o}")
+            # Check if tensor dtypes match
+            our_tensor = our_outputs[(o.node, o.output)].tensor
+            if o.tensor.dtype != our_tensor.dtype:
+                raise ValueError(f"Output {o.node}.{o.output} dtype mismatch: {o.tensor.dtype} != {our_tensor.dtype}")
             if not torch.allclose(o.tensor.to_torch(), our_outputs[(o.node, o.output)].tensor.to_torch()):
-                raise ValueError(f"Output {o} does not match our output {our_outputs[(o.node, o.output)]}")
+                raise ValueError(f"Output {o}={o.tensor.to_torch()} does not match our output {our_outputs[(o.node, o.output)]}={our_outputs[(o.node, o.output)].tensor.to_torch()}")
 class ComputePipeline:
     """
     A compute pipeline stores the execution state of a compute graph.

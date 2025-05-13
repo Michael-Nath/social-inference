@@ -109,7 +109,59 @@ def test_cat():
         ))
     return pipeline, graph
 
-pipeline, g = test_softmax()
+def test_math_ops():
+    g = ComputeGraphBuilder()
+    # Integer Test Path
+    int_a_in = g.input("int_a")
+    int_b_in = g.input("int_b")
+    # Float Test Path
+    float_a_in = g.input("float_a")
+    float_b_in = g.input("float_b")
+
+    with g.partition("p0_math_ops"):
+        # Integer operations
+        int_div_node = g.div("int_div", int_a_in, int_b_in)
+        int_floor_node = g.floor("int_floor", int_div_node) # Floor of integer division
+        int_ceil_node = g.ceil("int_ceil", int_div_node)   # Ceil of integer division
+
+        # Float operations
+        float_div_node = g.div("float_div", float_a_in, float_b_in)
+        float_floor_node = g.floor("float_floor", float_div_node)
+        float_ceil_node = g.ceil("float_ceil", float_div_node)
+
+        # Mixed: floor a float, ceil a float, then div them
+        # For this, let's use float_a_in directly for floor/ceil
+        intermediate_float_floor = g.floor("intermediate_floor", float_a_in)
+        intermediate_float_ceil = g.ceil("intermediate_ceil", float_a_in)
+        mixed_div_node = g.div("mixed_div", intermediate_float_ceil, intermediate_float_floor) # e.g. ceil(7.5)/floor(7.5) = 8/7
+
+    # Outputs
+    g.output("int_floor_out", int_floor_node)
+    g.output("int_ceil_out", int_ceil_node)
+    g.output("float_floor_out", float_floor_node)
+    g.output("float_ceil_out", float_ceil_node)
+    g.output("mixed_div_out", mixed_div_node)
+    
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    # Enqueue test inputs
+    # Integers: 7 / 3 = 2.33... floor=2, ceil=3
+    # Floats: 7.5 / 2.5 = 3.0. floor=3, ceil=3
+    # Mixed div: float_a = 7.5. ceil(7.5)=8, floor(7.5)=7. 8/7 = 1.14...
+    for i in range(10):
+        pipeline.enqueue_input(PipelineInput(
+            correlation_id=f"math_ops_test_{i}",
+            inputs={
+                "int_a": Tensor.from_torch(torch.tensor([[7, 10]], dtype=torch.int32)),
+                "int_b": Tensor.from_torch(torch.tensor([[3, 4]], dtype=torch.int32)),
+                "float_a": Tensor.from_torch(torch.tensor([[7.5, 10.8]], dtype=torch.float32)),
+                "float_b": Tensor.from_torch(torch.tensor([[2.5, 2.0]], dtype=torch.float32)),
+            },
+        ))
+    return pipeline, graph
+
+pipeline, g = test_math_ops()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

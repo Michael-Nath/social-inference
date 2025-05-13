@@ -274,12 +274,12 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
                 return output
             elif encoded_node.type == "floor":
                 input_tensor = resolve_input(node, FloorNode.INPUT)
-                output = torch.floor(input_tensor).to(torch.long)
+                output = torch.floor(input_tensor).to(torch.int32)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "ceil":
                 input_tensor = resolve_input(node, CeilNode.INPUT)
-                output = torch.ceil(input_tensor).to(torch.long)
+                output = torch.ceil(input_tensor).to(torch.int32)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "silu":
