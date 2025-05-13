@@ -64,7 +64,28 @@ def test_unsqueeze():
         ))
     return pipeline, g
 
-pipeline, g = test_unsqueeze()
+def test_broadcast():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        two = g.fixed("two", torch.tensor([2], dtype=torch.int32))
+        ten = g.fixed("ten", torch.tensor([10], dtype=torch.int32))
+        unsqueezed = g.unsqueeze("unsqueeze", x, two)
+        broadcast = g.broadcast("broadcast", unsqueezed, two, ten)
+    y = g.output("output", broadcast)
+    g = g.build()
+
+    pipeline = ComputePipeline(g)
+    for i in range(20):
+        pipeline.enqueue_input(PipelineInput(
+            correlation_id=f"{i}",
+            inputs={
+                "x": Tensor.from_torch(torch.randn(4, 4, 4, 4)),
+            },
+        ))
+    return pipeline, g
+
+pipeline, g = test_broadcast()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

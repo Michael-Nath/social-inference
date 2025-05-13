@@ -99,34 +99,116 @@ export class CPUTensor extends Tensor {
    * @returns {number} - Size of the tensor in bytes
    */
   getSize() {
-    // Computes based on shape and dtype
-    let element_size;
-    
-    // Determine element size based on data type
-    switch (this.dtype) {
-      case 'float32':
-        element_size = 4; // 32 bits = 4 bytes
+    return this.shape.reduce((acc, dim) => acc * dim, 1) * CPUTensor.getElementSize(this.dtype);
+  }
+
+  /**
+   * Creates a CPUTensor from a TypedArray without copying data.
+   * The dtype is inferred from the TypedArray's constructor.
+   * @param {TypedArray} typedArray - The source TypedArray (e.g., Float32Array, Int32Array).
+   * @param {Array<number>} shape - The shape of the tensor.
+   * @returns {CPUTensor}
+   */
+  static fromTypedArray(typedArray, shape) {
+    let dtype;
+    switch (typedArray.constructor) {
+      case Float32Array:
+        dtype = 'float32';
         break;
-      case 'float16':
-        element_size = 2; // 16 bits = 2 bytes
+      case Int32Array:
+        dtype = 'int32';
         break;
-      case 'int32':
-        element_size = 4; // 32 bits = 4 bytes
+      case Uint8Array:
+        dtype = 'uint8';
         break;
-      case 'int16':
-        element_size = 2; // 16 bits = 2 bytes
+      case Uint16Array:
+        dtype = 'uint16';
         break;
-      case 'int8':
-        element_size = 1; // 8 bits = 1 byte
+      case Int16Array:
+        dtype = 'int16';
         break;
-      case 'uint8':
-        element_size = 1; // 8 bits = 1 byte
+      case Int8Array:
+        dtype = 'int8';
+        break;
+      case Uint32Array:
+        dtype = 'uint32';
         break;
       default:
-        element_size = 4; // Default to float32 (4 bytes)
+        throw new Error(`Unsupported TypedArray constructor: ${typedArray.constructor.name}`);
     }
 
-    return this.shape.reduce((acc, dim) => acc * dim, 1) * element_size;
+    const elementSize = CPUTensor.getElementSize(dtype);
+    const expectedByteLength = shape.reduce((acc, dim) => acc * dim, 1) * elementSize;
+
+    if (typedArray.byteLength !== expectedByteLength) {
+      throw new Error(`Buffer size mismatch. TypedArray byteLength (${typedArray.byteLength}) does not match expected byte length for shape ${shape} and dtype ${dtype} (${expectedByteLength}). The typedArray.buffer may be larger if it is a view, ensure the view's byteLength is correct.`);
+    }
+
+    return new CPUTensor({
+      data: typedArray.buffer,
+      shape: shape,
+      dtype: dtype,
+    });
+  }
+
+  /**
+   * @static
+   * @param {string} dtype - Data type string.
+   * @returns {number} - Size of an element of this dtype in bytes.
+   * @throws {Error} If dtype is unrecognized.
+   */
+  static getElementSize(dtype) {
+    let element_size;
+    switch (dtype) {
+      case 'float32':
+        element_size = 4;
+        break;
+      case 'float16':
+        element_size = 2;
+        break;
+      case 'int32':
+        element_size = 4;
+        break;
+      case 'int16':
+        element_size = 2;
+        break;
+      case 'int8':
+        element_size = 1;
+        break;
+      case 'uint8':
+        element_size = 1;
+        break;
+      case 'uint16':
+        element_size = 2;
+        break;
+      case 'uint32':
+        element_size = 4;
+        break;
+      case 'bool':
+        element_size = 1;
+        break;
+      default:
+        throw new Error(`Unrecognized dtype for getElementSize: ${dtype}`);
+    }
+    return element_size;
+  }
+
+  /**
+   * Creates a CPUTensor with an uninitialized ArrayBuffer of the specified shape and dtype.
+   * @param {Array<number>} shape - The shape of the tensor.
+   * @param {string} dtype - The data type of the tensor.
+   * @returns {CPUTensor}
+   */
+  static uninitialized(shape, dtype) {
+    const elementSize = CPUTensor.getElementSize(dtype);
+    const numElements = shape.reduce((acc, dim) => acc * dim, 1);
+    const byteLength = numElements * elementSize;
+    const buffer = new ArrayBuffer(byteLength);
+    return new CPUTensor({
+      data: buffer,
+      shape: shape,
+      dtype: dtype,
+    });
   }
 }
 

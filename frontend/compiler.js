@@ -324,11 +324,21 @@ export class SessionGraph {
         for (const node of sortedNodes) {
             let shouldStartNewSession = false;
 
-            if (!currentSession || node.device !== currentSession.device) {
-                if (!node.device) {
-                    console.warn(`Node ${node.name} has no device assigned. Assuming CPU.`);
-                    node.device = new CPUDevice(); // Assign a default device
-                }
+            if (!node.devicePreference) {
+                 throw new Error(`Node ${node.name} has no devicePreference assigned.`);
+            }
+
+            // Determine the effective device type for the current node
+            let nodeDeviceType = null;
+            if (node.devicePreference.supportsGPU) {
+                nodeDeviceType = GPUDevice;
+            } else if (node.devicePreference.supportsCPU) {
+                nodeDeviceType = CPUDevice;
+            } else {
+                throw new Error(`Node ${node.name}'s preference supports neither CPU nor GPU.`);
+            }
+
+            if (!currentSession || !(currentSession.device instanceof nodeDeviceType)) {
                 shouldStartNewSession = true;
             } else {
                 for (const edge of graph.edges) {
@@ -343,10 +353,17 @@ export class SessionGraph {
             }
 
             if (shouldStartNewSession) {
-                if (!node.device) {
-                    throw new Error(`Cannot create session for node ${node.name} with null device.`);
+                // Determine the actual device instance based on preference
+                let chosenDevice;
+                if (node.devicePreference.supportsGPU) {
+                    chosenDevice = new GPUDevice();
+                } else if (node.devicePreference.supportsCPU) {
+                    chosenDevice = new CPUDevice();
+                } else {
+                    // This case should have been caught earlier by the nodeDeviceType check
+                    throw new Error(`Node ${node.name}'s preference supports neither CPU nor GPU at session creation.`);
                 }
-                currentSession = SessionGraph.createSession(node.device, initialSessions.length);
+                currentSession = SessionGraph.createSession(chosenDevice, initialSessions.length);
                 initialSessions.push(currentSession);
             }
 

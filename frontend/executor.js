@@ -300,7 +300,7 @@ export class SessionExecutor {
             console.group(`Node: ${node.name} (${node.type})`);
 
             /** @type {GPUKernel} */
-            const rawKernel = await node.getKernel();
+            const rawKernel = await node.getGPUKernel();
             const kernelKey = rawKernel.key();
             const kernel = KernelCompiler.getKernel(kernelKey);
             console.log(`Kernel: ${kernel.name} (${kernelKey})`);
@@ -602,7 +602,7 @@ export class SessionExecutor {
     async _executeCPUSession(session) {
         // Assume in topo order
         for(const node of session.nodes) {
-            const kernel = await node.getKernel(); // Ensure kernel is awaited if getKernel is async
+            const kernel = await node.getCPUKernel(); // Ensure kernel is awaited if getKernel is async
             console.log(`Executing CPU node ${node.name}, kernel:`, kernel);
 
             const inputCPUTensors = new Map();

@@ -174,8 +174,8 @@ export class Node {
         this.type = api_response.type;
         /** @type {string} */
         this.name = api_response.name;
-        /** @type {Device | null} */
-        this.device = null;
+        /** @type {DevicePreference | null} */
+        this.devicePreference = null;
         
         // Copy any additional properties from the API response
         for (const [key, value] of Object.entries(api_response)) {
@@ -223,6 +223,53 @@ export class ExecutionContext {
     }
 }
 
+export class DevicePreferences {
+    /**
+     * 
+     * @param {Object} options 
+     * @param {boolean} options.supportsCPU - Whether to prefer the CPU
+     * @param {boolean} options.supportsGPU - Whether to prefer the GPU
+     * @param {boolean} options.prefersGPU - Whether to prefer WebGPU
+     * @param {boolean} options.prefersCPU - Whether to prefer CPU
+     */
+    constructor(options) {
+        this.supportsCPU = options.supportsCPU || false;
+        this.supportsGPU = options.supportsGPU || false;
+        this.prefersGPU = options.prefersGPU || false;
+        this.prefersCPU = options.prefersCPU || false;
+    }
+
+    /**
+     * @returns {boolean}
+     */
+    supportsCPU() {
+        return this.supportsCPU;
+    }
+
+    /**
+     * @returns {boolean}
+     */
+    supportsGPU() {
+        return this.supportsGPU;
+    }
+
+    /**
+     * @returns {boolean}
+     */
+    prefersGPU() {
+        return this.prefersGPU || (this.supportsGPU && !this.supportsCPU);
+    }
+
+    /**
+     * @returns {boolean}
+     */
+    prefersCPU() {
+        return this.prefersCPU || (this.supportsCPU && !this.supportsGPU);
+    }
+    
+    
+}
+
 /**
  * @class MatmulNode
  * @classdesc Represents a matrix multiplication node.
@@ -239,7 +286,7 @@ class MatmulNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new GPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsGPU: true });
     }
 
     get_inputs() { return [MatmulNode.LHS, MatmulNode.RHS]; }
@@ -249,7 +296,7 @@ class MatmulNode extends Node {
     /**
      * @returns {Promise<GPUKernel>}
      */
-    async getKernel() {
+    async getGPUKernel() {
         // From the horse's mouth: https://toji.dev/webgpu-best-practices/dynamic-shader-construction.html
         // This is a nice way to dynamically specialize kernels. The Kernel class has a key() method that allows as
         // much caching as possible. See GPUKernel for details.
@@ -377,7 +424,7 @@ class SoftmaxNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new GPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsGPU: true });
     }
 
     /**
@@ -400,7 +447,7 @@ class SoftmaxNode extends Node {
     /**
      * @returns {Promise<GPUKernel>}
      */
-    async getKernel() {
+    async getGPUKernel() {
         return new GPUKernel({
             name: 'softmax',
             shader: await fetch('kernels/softmax.wgsl').then(r => r.text()),
@@ -502,7 +549,7 @@ class SliceNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new CPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END]; }
@@ -526,7 +573,7 @@ class ReshapeNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new CPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [ReshapeNode.INPUT, ReshapeNode.DIMS]; }
@@ -550,7 +597,7 @@ class UnsqueezeNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new CPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [UnsqueezeNode.INPUT, UnsqueezeNode.DIM]; }
@@ -599,7 +646,7 @@ class UnsqueezeNode extends Node {
         return this._calculateOutputShape(inputTensor, dimTensor);
     }
 
-    getKernel() {
+    getCPUKernel() {
         return new CPUKernel({
             name: 'unsqueeze',
             func: (executionContext) => {
@@ -648,12 +695,132 @@ class BroadcastNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new CPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [BroadcastNode.INPUT, BroadcastNode.DIM, BroadcastNode.N]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    /**
+     * Helper method to calculate the output shape for broadcast.
+     * @param {CPUTensor} inputTensor
+     * @param {CPUTensor} dimTensor
+     * @param {CPUTensor} nTensor
+     * @returns {number[]} The calculated output shape.
+     * @private
+     */
+    _calculateOutputShape(inputTensor, dimTensor, nTensor) {
+        if (!inputTensor) {
+            throw new Error(`BroadcastNode (${this.name}): Missing required input tensor ('input').`);
+        }
+        if (!dimTensor) {
+            throw new Error(`BroadcastNode (${this.name}): Missing required dimension tensor ('dim').`);
+        }
+        if (!nTensor) {
+            throw new Error(`BroadcastNode (${this.name}): Missing required count tensor ('n').`);
+        }
+
+        const inputShape = inputTensor.shape;
+        if (dimTensor.shape.length !== 1 || dimTensor.shape[0] !== 1) {
+             throw new Error(`BroadcastNode (${this.name}): Dimension ('dim') must be a scalar tensor. Got shape ${dimTensor.shape}`);
+        }
+        if (nTensor.shape.length !== 1 || nTensor.shape[0] !== 1) {
+             throw new Error(`BroadcastNode (${this.name}): Count ('n') must be a scalar tensor. Got shape ${nTensor.shape}`);
+        }
+
+        let dim = dimTensor.getTypedArray()[0];
+        const n = nTensor.getTypedArray()[0];
+
+        const outputRank = inputShape.length;
+        if (dim < 0) {
+            dim = outputRank + dim;
+        }
+
+        if (dim < 0 || dim >= outputRank) {
+             throw new Error(`BroadcastNode (${this.name}): Dimension out of range. Got dim ${dimTensor.data[0]} for input shape ${inputShape}`);
+        }
+        if (n <= 0) {
+             throw new Error(`BroadcastNode (${this.name}): Count ('n') must be positive. Got ${n}`);
+        }
+        if (inputShape[dim] !== 1) {
+            throw new Error(`BroadcastNode (${this.name}): Dimension to broadcast ('dim'=${dim}) must have size 1. Got shape ${inputShape}`);
+        }
+
+
+        const outputShape = [...inputShape];
+        outputShape[dim] = n;
+        return outputShape;
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(BroadcastNode.INPUT);
+        const dimTensor = executionContext.cpu(BroadcastNode.DIM);
+        const nTensor = executionContext.cpu(BroadcastNode.N);
+        return this._calculateOutputShape(inputTensor, dimTensor, nTensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'broadcast',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(BroadcastNode.INPUT);
+                const dimTensor = executionContext.cpu(BroadcastNode.DIM);
+                const nTensor = executionContext.cpu(BroadcastNode.N);
+
+                if (!inputTensor || !dimTensor || !nTensor) {
+                    throw new Error(`BroadcastNode (${this.name}) kernel: Missing input, dim, or n tensor.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor, dimTensor, nTensor);
+                
+                // Create an uninitialized CPUTensor for the output
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                // Get a TypedArray view of its data buffer to populate
+                const outputDataView = outputTensor.getTypedArray();
+
+                const dim = dimTensor.getTypedArray()[0] >= 0 ? dimTensor.getTypedArray()[0] : inputTensor.shape.length + dimTensor.getTypedArray()[0];
+                const n = nTensor.getTypedArray()[0];
+
+                const inputData = inputTensor.getTypedArray();
+                const inputStrides = calculateStrides(inputTensor.shape);
+                const outputStrides = calculateStrides(outputShape);
+
+                 // Iterate through the output tensor elements
+                 // This is a generic way to handle broadcasting along any dimension
+                for (let outputIndex = 0; outputIndex < outputDataView.length; outputIndex++) {
+                    // Calculate the corresponding input index
+                    let remainingIndex = outputIndex;
+                    let inputIndex = 0;
+                    let isBroadcastDim = false;
+
+                    for (let d = 0; d < outputShape.length; d++) {
+                        const coord = Math.floor(remainingIndex / outputStrides[d]) % outputShape[d];
+                        remainingIndex %= outputStrides[d];
+
+                        if (d === dim) {
+                            // For the broadcast dimension, the input coordinate is always 0
+                            inputIndex += 0 * inputStrides[d]; // Since inputShape[dim] is 1
+                            isBroadcastDim = true;
+                        } else {
+                            // For other dimensions, use the calculated coordinate
+                            inputIndex += coord * inputStrides[d];
+                        }
+                    }
+                     // Get the value from the input tensor
+                     const value = inputData[inputIndex];
+                     // Set the value in the output tensor's view
+                     outputDataView[outputIndex] = value;
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor, // Return the populated CPUTensor
+                };
+            },
+            inputs: [BroadcastNode.INPUT, BroadcastNode.DIM, BroadcastNode.N],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**
@@ -695,10 +862,10 @@ class FixedNode extends Node {
         super(api_response);
         /** @type {CPUTensor} */
         this.tensor = (new APITensor(api_response.tensor)).toCPU();
-        this.device = new CPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
-    getKernel() {
+    getCPUKernel() {
         return new CPUKernel({
             name: 'fixed',
             func: (inputs) => {
@@ -736,7 +903,7 @@ class HadamardNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.device = new GPUDevice();
+        this.devicePreference = new DevicePreferences({ supportsGPU: true });
     }
 
     get_inputs() { return [HadamardNode.A, HadamardNode.B]; }
@@ -833,15 +1000,15 @@ class AddNode extends Node {
         super(api_response);
         // Add nodes typically run on CPU by default unless specified otherwise
         // Or they could be fused into GPU kernels. Let's assume CPU for now.
-        if (!this.device) {
-             this.device = new GPUDevice();
+        if (!this.devicePreference) {
+             this.devicePreference = new DevicePreferences({ supportsGPU: true });
         } 
     }
 
     /**
      * @returns {Promise<GPUKernel>}
      */
-    async getKernel() {
+    async getGPUKernel() {
         // From the horse's mouth: https://toji.dev/webgpu-best-practices/dynamic-shader-construction.html
         // This is a nice way to dynamically specialize kernels. The Kernel class has a key() method that allows as
         // much caching as possible. See GPUKernel for details.
