@@ -841,11 +841,145 @@ class CatNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     get_inputs() { return [CatNode.A, CatNode.B, CatNode.DIM]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    /**
+     * Helper method to calculate the output shape for concatenation.
+     * @param {CPUTensor} tensorA
+     * @param {CPUTensor} tensorB
+     * @param {CPUTensor} dimTensor
+     * @returns {number[]} The calculated output shape.
+     * @private
+     */
+    _calculateOutputShape(tensorA, tensorB, dimTensor) {
+        if (!tensorA || !tensorB) {
+            throw new Error(`CatNode (${this.name}): Missing required input tensors ('a' or 'b').`);
+        }
+        if (!dimTensor) {
+            throw new Error(`CatNode (${this.name}): Missing required dimension tensor ('dim').`);
+        }
+
+        const shapeA = tensorA.shape;
+        const shapeB = tensorB.shape;
+
+        if (dimTensor.shape.length !== 1 || dimTensor.shape[0] !== 1) {
+            throw new Error(`CatNode (${this.name}): Dimension ('dim') must be a scalar tensor. Got shape ${dimTensor.shape}`);
+        }
+        let dim = dimTensor.getTypedArray()[0];
+
+        if (shapeA.length !== shapeB.length) {
+            throw new Error(`CatNode (${this.name}): Input tensors must have the same rank. Got shapes ${shapeA} and ${shapeB}`);
+        }
+
+        const rank = shapeA.length;
+        if (dim < 0) {
+            dim = rank + dim;
+        }
+
+        if (dim < 0 || dim >= rank) {
+            throw new Error(`CatNode (${this.name}): Dimension out of range. Got dim ${dimTensor.getTypedArray()[0]} for rank ${rank}`);
+        }
+
+        for (let i = 0; i < rank; i++) {
+            if (i !== dim && shapeA[i] !== shapeB[i]) {
+                throw new Error(`CatNode (${this.name}): Input tensor shapes must match except along the concatenation dimension. Got ${shapeA} and ${shapeB} for dim ${dim}`);
+            }
+        }
+
+        const outputShape = [...shapeA];
+        outputShape[dim] = shapeA[dim] + shapeB[dim];
+        return outputShape;
+    }
+
+    getOutputShape(executionContext) {
+        const tensorA = executionContext.cpu(CatNode.A);
+        const tensorB = executionContext.cpu(CatNode.B);
+        const dimTensor = executionContext.cpu(CatNode.DIM);
+        return this._calculateOutputShape(tensorA, tensorB, dimTensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'cat',
+            func: (executionContext) => {
+                const tensorA = executionContext.cpu(CatNode.A);
+                const tensorB = executionContext.cpu(CatNode.B);
+                const dimTensor = executionContext.cpu(CatNode.DIM);
+
+                if (!tensorA || !tensorB || !dimTensor) {
+                    throw new Error(`CatNode (${this.name}) kernel: Missing input or dim tensor.`);
+                }
+                if (tensorA.dtype !== tensorB.dtype) {
+                    throw new Error(`CatNode (${this.name}) kernel: Input tensors must have the same dtype. Got ${tensorA.dtype} and ${tensorB.dtype}.`);
+                }
+
+                const outputShape = this._calculateOutputShape(tensorA, tensorB, dimTensor);
+                const outputTensor = CPUTensor.uninitialized(outputShape, tensorA.dtype);
+                const outputView = outputTensor.getTypedArray();
+
+                const dataA = tensorA.getTypedArray();
+                const dataB = tensorB.getTypedArray();
+                
+                let dim = dimTensor.getTypedArray()[0];
+                const rank = tensorA.shape.length;
+                if (dim < 0) {
+                    dim = rank + dim;
+                }
+
+                const stridesA = calculateStrides(tensorA.shape);
+                const stridesB = calculateStrides(tensorB.shape);
+                const stridesOut = calculateStrides(outputShape);
+
+                const sizeA_dim = tensorA.shape[dim];
+
+                // Iterate over all elements of the output tensor
+                for (let i = 0; i < outputView.length; i++) {
+                    let outMultiIndex = new Array(rank);
+                    let remainder = i;
+                    for (let d = 0; d < rank; d++) {
+                        outMultiIndex[d] = Math.floor(remainder / stridesOut[d]);
+                        remainder %= stridesOut[d];
+                    }
+
+                    let sourceData;
+                    let sourceStrides;
+                    let sourceShape;
+                    let inMultiIndex = [...outMultiIndex]; // Copy for modification
+
+                    if (outMultiIndex[dim] < sizeA_dim) {
+                        // This element comes from tensorA
+                        sourceData = dataA;
+                        sourceStrides = stridesA;
+                        sourceShape = tensorA.shape;
+                        // inMultiIndex is already correct for tensorA for this part
+                    } else {
+                        // This element comes from tensorB
+                        sourceData = dataB;
+                        sourceStrides = stridesB;
+                        sourceShape = tensorB.shape;
+                        inMultiIndex[dim] -= sizeA_dim; // Adjust index for tensorB
+                    }
+
+                    let sourceFlatIndex = 0;
+                    for (let d = 0; d < rank; d++) {
+                        sourceFlatIndex += inMultiIndex[d] * sourceStrides[d];
+                    }
+                    outputView[i] = sourceData[sourceFlatIndex];
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [CatNode.A, CatNode.B, CatNode.DIM],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**
@@ -868,7 +1002,7 @@ class FixedNode extends Node {
     getCPUKernel() {
         return new CPUKernel({
             name: 'fixed',
-            func: (inputs) => {
+            func: (executionContext) => {
                 return {
                     [DEFAULT_NODE_OUTPUT]: this.tensor,
                 };
@@ -878,7 +1012,7 @@ class FixedNode extends Node {
         });
     }
 
-    getOutputShape(inputShapes) {
+    getOutputShape(executionContext) {
         return this.tensor.shape;
     }
 

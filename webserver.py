@@ -85,7 +85,31 @@ def test_broadcast():
         ))
     return pipeline, g
 
-pipeline, g = test_broadcast()
+def test_cat():
+    g = ComputeGraphBuilder()
+    a_in = g.input("a")
+    b_in = g.input("b")
+    with g.partition("p0"):
+        # Concatenate along dimension 1
+        dim_tensor = g.fixed("dim", torch.tensor([1], dtype=torch.int32))
+        cat_node = g.cat("cat_op", a_in, b_in, dim_tensor)
+    output = g.output("output", cat_node)
+    graph = g.build()
+
+    pipeline = ComputePipeline(graph)
+    # Example input: two tensors of shape (2, 3, 4)
+    # Expected output shape after cat along dim 1: (2, 6, 4)
+    for i in range(5): # Let's create a few work items
+        pipeline.enqueue_input(PipelineInput(
+            correlation_id=f"cat_test_{i}",
+            inputs={
+                "a": Tensor.from_torch(torch.randn(2, 3, 4)),
+                "b": Tensor.from_torch(torch.randn(2, 3, 4)),
+            },
+        ))
+    return pipeline, graph
+
+pipeline, g = test_cat()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()
