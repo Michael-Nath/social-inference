@@ -186,6 +186,18 @@ export class Node {
     }
 
     /**
+     * Estimates the weight of the node, typically the number of elements it produces.
+     * @param {Map<string, number>} inputsMap - A map of input names to their weights.
+     * @returns {number} The estimated weight of the node.
+     */
+    estimateWeight(inputsMap) {
+        // Default implementation: sum of input weights.
+        // This is often a placeholder and should be overridden by subclasses
+        // where a more accurate estimate of produced elements is possible.
+        return Array.from(inputsMap.values()).reduce((a, b) => a + b, 0);
+    }
+
+    /**
      * @returns {Array<string>}
      */
     get_inputs() { return []; }
@@ -229,14 +241,12 @@ export class DevicePreferences {
      * @param {Object} options 
      * @param {boolean} options.supportsCPU - Whether to prefer the CPU
      * @param {boolean} options.supportsGPU - Whether to prefer the GPU
-     * @param {boolean} options.prefersGPU - Whether to prefer WebGPU
-     * @param {boolean} options.prefersCPU - Whether to prefer CPU
+     * @param {number} options.gpuWeightThreshold - The weight threshold for GPU
      */
     constructor(options) {
         this.supportsCPU = options.supportsCPU || false;
         this.supportsGPU = options.supportsGPU || false;
-        this.prefersGPU = options.prefersGPU || false;
-        this.prefersCPU = options.prefersCPU || false;
+        this.gpuWeightThreshold = options.gpuWeightThreshold || 1000;
     }
 
     /**
@@ -254,20 +264,26 @@ export class DevicePreferences {
     }
 
     /**
-     * @returns {boolean}
+     * Picks a device based on the weight of the node.
+     * @param {number} weight
+     * @returns {string} - "gpu" or "cpu"
      */
-    prefersGPU() {
-        return this.prefersGPU || (this.supportsGPU && !this.supportsCPU);
-    }
+    pickDevice(weight) {
+        // Just CPU
+        if(this.supportsCPU && !this.supportsGPU) {
+            return "cpu";
+        }
+        // Just GPU
+        if(!this.supportsCPU && this.supportsGPU) {
+            return "gpu";
+        }
 
-    /**
-     * @returns {boolean}
-     */
-    prefersCPU() {
-        return this.prefersCPU || (this.supportsCPU && !this.supportsGPU);
+        // GPU if weight is greater than threshold, otherwise CPU
+        if(weight > this.gpuWeightThreshold) {
+            return "gpu";
+        }
+        return "cpu";
     }
-    
-    
 }
 
 /**
@@ -287,6 +303,15 @@ class MatmulNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Very rough estimate for Matmul. Output size is M*N.
+        // Input weights are M*K and K*N.
+        // This averages the input element counts.
+        const lhsWeight = inputsMap.get(MatmulNode.LHS) || 0;
+        const rhsWeight = inputsMap.get(MatmulNode.RHS) || 0;
+        return (lhsWeight + rhsWeight) / 2;
     }
 
     get_inputs() { return [MatmulNode.LHS, MatmulNode.RHS]; }
@@ -389,6 +414,14 @@ class ConstantNode extends Node {
         this.tensor_name = api_response.tensor_name;
     }
 
+    estimateWeight(inputsMap) {
+        // Placeholder: ConstantNode cannot determine its actual size from inputsMap
+        // and doesn't store its shape/tensor directly.
+        // This should ideally be seeded by _computeWeights if shape info is available
+        // or ConstantNode should store its shape.
+        return 1;
+    }
+
     get_inputs() { return []; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
@@ -425,6 +458,11 @@ class SoftmaxNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as the input.
+        return inputsMap.get(SoftmaxNode.INPUT) || 0;
     }
 
     /**
@@ -613,6 +651,12 @@ class SliceNode extends Node {
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
+    estimateWeight(inputsMap) {
+        // Estimate: output elements are same as input (overestimate if not full slice).
+        // A more accurate estimate would need slice parameters (start, end, dim sizes).
+        return inputsMap.get(SliceNode.INPUT) || 0;
+    }
+
     get_inputs() { return [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
@@ -637,6 +681,11 @@ class ReshapeNode extends Node {
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as the input.
+        return inputsMap.get(ReshapeNode.INPUT) || 0;
+    }
+
     get_inputs() { return [ReshapeNode.INPUT, ReshapeNode.DIMS]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
@@ -659,6 +708,11 @@ class UnsqueezeNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as the input.
+        return inputsMap.get(UnsqueezeNode.INPUT) || 0;
     }
 
     get_inputs() { return [UnsqueezeNode.INPUT, UnsqueezeNode.DIM]; }
@@ -757,6 +811,12 @@ class BroadcastNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Estimate: output elements = input elements * n. Assume n=2 as a guess.
+        const inputWeight = inputsMap.get(BroadcastNode.INPUT) || 0;
+        return inputWeight * 2;
     }
 
     get_inputs() { return [BroadcastNode.INPUT, BroadcastNode.DIM, BroadcastNode.N]; }
@@ -903,6 +963,13 @@ class CatNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output elements = elements(A) + elements(B).
+        const weightA = inputsMap.get(CatNode.A) || 0;
+        const weightB = inputsMap.get(CatNode.B) || 0;
+        return weightA + weightB;
     }
 
     get_inputs() { return [CatNode.A, CatNode.B, CatNode.DIM]; }
@@ -1060,6 +1127,14 @@ class FixedNode extends Node {
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
+    estimateWeight(inputsMap) {
+        // Weight is the number of elements in the fixed tensor.
+        if (this.tensor && this.tensor.shape) {
+            return this.tensor.shape.reduce((acc, val) => acc * val, 1);
+        }
+        return 0; // Should not happen if tensor is always present
+    }
+
     getCPUKernel() {
         return new CPUKernel({
             name: 'fixed',
@@ -1099,6 +1174,11 @@ class HadamardNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as input A (assuming A and B are same size).
+        return inputsMap.get(HadamardNode.A) || 0;
     }
 
     get_inputs() { return [HadamardNode.A, HadamardNode.B]; }
@@ -1198,6 +1278,12 @@ class IndexNode extends Node {
         super(api_response);
     }
 
+    estimateWeight(inputsMap) {
+        // Estimate: output elements are significantly fewer than input.
+        const inputWeight = inputsMap.get(IndexNode.INPUT) || 0;
+        return Math.max(1, Math.floor(inputWeight / 2));
+    }
+
     get_inputs() { return [IndexNode.INPUT, IndexNode.INDEX]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
@@ -1218,6 +1304,11 @@ class ShapeNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output is a 1D tensor of input's rank. Estimate average rank = 4.
+        return 4;
     }
 
     get_inputs() { return [ShapeNode.INPUT]; }
@@ -1273,6 +1364,11 @@ class TransposeNode extends Node {
         this.dim1 = api_response.dim1;
     }
 
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as the input.
+        return inputsMap.get(TransposeNode.INPUT) || 0;
+    }
+
     get_inputs() { return [TransposeNode.INPUT]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
@@ -1299,6 +1395,11 @@ class AddNode extends Node {
         if (!this.devicePreference) {
              this.devicePreference = new DevicePreferences({ supportsGPU: true });
         } 
+    }
+
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as input A (assuming A and B are same size).
+        return inputsMap.get(AddNode.A) || 0;
     }
 
     /**
@@ -1387,7 +1488,12 @@ class DivNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
-        this.devicePreference = new DevicePreferences({ supportsCPU: true });
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as input A (assuming A and B are same size).
+        return inputsMap.get(DivNode.A) || 0;
     }
 
     get_inputs() { return [DivNode.A, DivNode.B]; }
@@ -1415,8 +1521,8 @@ class DivNode extends Node {
     }
 
     getOutputShape(executionContext) {
-        const tensorA = executionContext.cpu(DivNode.A);
-        const tensorB = executionContext.cpu(DivNode.B);
+        const tensorA = executionContext.cpu(DivNode.A) || executionContext.gpu(DivNode.A);
+        const tensorB = executionContext.cpu(DivNode.B) || executionContext.gpu(DivNode.B);
         // Shape is determined by inputs, dtype is handled in kernel/fixed to float32
         return this._calculateOutputShape(tensorA, tensorB); 
     }
@@ -1462,6 +1568,45 @@ class DivNode extends Node {
             outputs: [DEFAULT_NODE_OUTPUT],
         });
     }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: 'divide',
+            shader: await fetch('kernels/divide.wgsl').then(r => r.text()),
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const tensorA = executionContext.gpu(DivNode.A);
+                    if (!tensorA) {
+                        throw new Error(`DivNode (${this.name}): Missing GPU tensor A for dimensionBuffer.`);
+                    }
+                    const num_elements = tensorA.shape.reduce((acc, val) => acc * val, 1);
+                    return new Uint32Array([num_elements, 0]); // num_elements, padding
+                },
+                index: 3, // Matches @group(0) @binding(3) in shader
+            },
+            workgroupFunction: (executionContext) => {
+                const tensorA = executionContext.gpu(DivNode.A);
+                 if (!tensorA) {
+                    throw new Error(`DivNode (${this.name}): Missing GPU tensor A for workgroupFunction.`);
+                }
+                const num_elements = tensorA.shape.reduce((acc, val) => acc * val, 1);
+                const workgroupSizeX = 256; // Must match WORKGROUP_SIZE_X in shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [
+                { name: DivNode.A, cpu: false, binding: {type: "read-only-storage", index: 0 } },
+                { name: DivNode.B, cpu: false, binding: {type: "read-only-storage", index: 1 } },
+            ],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 2 } },
+            ],
+        });
+    }
 }
 
 /**
@@ -1479,6 +1624,11 @@ class FloorNode extends Node {
     constructor(api_response) {
         super(api_response);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as the input.
+        return inputsMap.get(FloorNode.INPUT) || 0;
     }
 
     get_inputs() { return [FloorNode.INPUT]; }
@@ -1543,6 +1693,11 @@ class CeilNode extends Node {
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
+    estimateWeight(inputsMap) {
+        // Output has the same number of elements as the input.
+        return inputsMap.get(CeilNode.INPUT) || 0;
+    }
+
     get_inputs() { return [CeilNode.INPUT]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
@@ -1602,6 +1757,11 @@ class DebugNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+    }
+
+    estimateWeight(inputsMap) {
+        // Pass-through node, output elements same as input.
+        return inputsMap.get(DebugNode.INPUT) || 0;
     }
 
     get_inputs() { return [DebugNode.INPUT]; }

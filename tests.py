@@ -178,3 +178,37 @@ def test_hadamard():
             },
         ))
     return pipeline, graph
+
+def test_gpu_division():
+    g = ComputeGraphBuilder()
+    a_in = g.input("a_div_gpu")
+    b_in = g.input("b_div_gpu")
+
+    with g.partition("p0_gpu_div"):
+        # This node should be heavy enough to be scheduled on GPU
+        # if DivNode supports GPU and threshold (default 1000) is met.
+        # Input elements = 64 * 64 = 4096.
+        div_node = g.div("heavy_div_op", a_in, b_in)
+    
+    g.output("div_out_gpu", div_node)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    tensor_a_data = torch.randn(64, 64, dtype=torch.float32)
+    # Ensure b_in does not contain zeros for simplicity
+    tensor_b_data = torch.rand(64, 64, dtype=torch.float32) + 0.1 
+
+    # Optional: if ComputePipeline supports checking expected outputs
+    # expected_output_torch = tensor_a_data / tensor_b_data
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="gpu_div_test_0",
+        inputs={
+            "a_div_gpu": Tensor.from_torch(tensor_a_data),
+            "b_div_gpu": Tensor.from_torch(tensor_b_data),
+        },
+        # expected_outputs={ 
+        #     "div_out_gpu": Tensor.from_torch(expected_output_torch)
+        # }
+    ))
+    return pipeline, graph

@@ -14,14 +14,14 @@ from inference import (
 import tests
 
 # Import test functions from tests.py
-from tests import simple_two_node, test_softmax, test_unsqueeze, test_broadcast, test_cat, test_math_ops, test_hadamard
+import tests
 
 CHECK_WORK = True
 
 # model_cache = ModelCache()
 model_cache = None
 
-pipeline, g = test_hadamard()
+pipeline, g = tests.test_gpu_division()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

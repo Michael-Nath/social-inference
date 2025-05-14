@@ -327,18 +327,23 @@ export class SessionGraph {
             if (!node.devicePreference) {
                  throw new Error(`Node ${node.name} has no devicePreference assigned.`);
             }
-
-            // Determine the effective device type for the current node
-            let nodeDeviceType = null;
-            if (node.devicePreference.supportsGPU) {
-                nodeDeviceType = GPUDevice;
-            } else if (node.devicePreference.supportsCPU) {
-                nodeDeviceType = CPUDevice;
-            } else {
-                throw new Error(`Node ${node.name}'s preference supports neither CPU nor GPU.`);
+            if (node.weight === undefined) {
+                throw new Error(`Weight not computed for node ${node.name} (${node.type}). Ensure _computeWeights runs before buildFromGraph.`);
             }
 
-            if (!currentSession || !(currentSession.device instanceof nodeDeviceType)) {
+            // Determine the target device ("gpu" or "cpu") for the current node using its weight.
+            const targetDeviceName = node.devicePreference.pickDevice(node.weight);
+            let TargetDeviceClass;
+            if (targetDeviceName === "gpu") {
+                TargetDeviceClass = GPUDevice;
+            } else if (targetDeviceName === "cpu") {
+                TargetDeviceClass = CPUDevice;
+            } else {
+                // This case should ideally be caught by pickDevice or earlier checks if neither is supported
+                throw new Error(`Node ${node.name}'s preference resolved to an unknown device type: ${targetDeviceName}`);
+            }
+
+            if (!currentSession || !(currentSession.device instanceof TargetDeviceClass)) {
                 shouldStartNewSession = true;
             } else {
                 for (const edge of graph.edges) {
@@ -353,15 +358,11 @@ export class SessionGraph {
             }
 
             if (shouldStartNewSession) {
-                // Determine the actual device instance based on preference
                 let chosenDevice;
-                if (node.devicePreference.supportsGPU) {
+                if (targetDeviceName === "gpu") {
                     chosenDevice = new GPUDevice();
-                } else if (node.devicePreference.supportsCPU) {
+                } else { // targetDeviceName === "cpu"
                     chosenDevice = new CPUDevice();
-                } else {
-                    // This case should have been caught earlier by the nodeDeviceType check
-                    throw new Error(`Node ${node.name}'s preference supports neither CPU nor GPU at session creation.`);
                 }
                 currentSession = SessionGraph.createSession(chosenDevice, initialSessions.length);
                 initialSessions.push(currentSession);
@@ -445,119 +446,56 @@ export class KernelCompiler {
      * @param {Graph} graph - The compute graph for the partition.
      * @private // Keep static for now as it doesn't depend on this.device
      */
-    static _computeAndAnnotateShapes(graph, partitionInputs) {
-        // Map to store computed shapes during propagation: Map<NodeName, Map<OutputName, Shape>>
-        const outputShapes = new Map();
-        // Map to gather input shapes for each node: Map<NodeName, Map<InputName, Shape>>
-        const inputShapes = new Map();
-
-
-        // 1. Seed known shapes from partition inputs
-        for (const assignment of partitionInputs) {
-            if (!inputShapes.has(assignment.node)) {
-                inputShapes.set(assignment.node, new Map());
-            }
-            // Store shape by the specific input name it connects to
-            inputShapes.get(assignment.node).set(assignment.input, assignment.tensor.shape);
-        }
-
-        // 2. Seed shapes from constant/fixed nodes and initialize nodeInputShapes map
-        for (const [nodeName, node] of Object.entries(graph.nodes)) {
-            if (!inputShapes.has(nodeName)) {
-                inputShapes.set(nodeName, new Map());
-            }
-
-            let nodeOutputMap;
-            if (node.type === 'fixed' && node.tensor) {
-                // Fixed nodes have a known tensor and shape
-                nodeOutputMap = new Map();
-                nodeOutputMap.set('output', [...node.tensor.shape]);
-            } else if (node.type === 'constant') {
-                // TODO: Handle ConstantNode shape retrieval (needs access to tensor cache/info)
-                console.warn(`Shape inference for ConstantNode '${nodeName}' not implemented yet.`);
-                // If shape were retrieved: nodeOutputMap = {'output': retrievedShape};
-            }
-
-            if (nodeOutputMap) {
-                outputShapes.set(nodeName, nodeOutputMap);
-                node.computedOutputShapes = nodeOutputMap; // Annotate node directly
-            }
-        }
-
-        // 3. Topological Propagation
+    static _computeWeights(graph, partitionInputs) {
+        // Map to store computed weights for each node: Map<NodeName, WeightNumber>
+        const nodeComputedWeights = new Map();
         const sortedNodes = graph.topologicalSort();
+
         for (const node of sortedNodes) {
             const nodeName = node.name;
+            const currentEstimatorInputs = new Map(); // Map<inputNameOnNode, weightValue>
 
-            // Skip nodes whose shapes are already known (Fixed/Constant)
-            if (outputShapes.has(nodeName)) {
-                // Still need to ensure input shapes are gathered if needed for debugging?
-                // Let's gather them anyway for completeness, even if output is known.
-                ;
-            }
-
-            // Gather input shapes for the current node from predecessors
-            const currentNodeInputMap = inputShapes.get(nodeName);
+            // Populate currentEstimatorInputs from graph edges (weights of predecessor nodes)
             for (const edge of graph.edges) {
                 if (edge.dst === nodeName) {
                     const srcNodeName = edge.src;
-                    const srcOutputName = edge.src_output || 'output'; // Assume default output name if not specified
                     const dstInputName = edge.dst_input;
 
-                    if (!outputShapes.has(srcNodeName) || !outputShapes.get(srcNodeName).has(srcOutputName)) {
-                        throw new Error(`Shape inference error: Missing shape for input '${dstInputName}' of node '${nodeName}' from output '${srcOutputName}' of node '${srcNodeName}'.`);
+                    if (!nodeComputedWeights.has(srcNodeName)) {
+                        // This should not happen if the graph is valid and sorted topologically,
+                        // and all nodes correctly compute a weight.
+                        throw new Error(`Weight for source node '${srcNodeName}' (providing input '${dstInputName}' to '${nodeName}') not yet computed.`);
                     }
-
-                    const inputShape = outputShapes.get(srcNodeName).get(srcOutputName);
-                    currentNodeInputMap.set(dstInputName, inputShape);
+                    const inputWeightValue = nodeComputedWeights.get(srcNodeName);
+                    currentEstimatorInputs.set(dstInputName, inputWeightValue);
                 }
             }
 
-            // ---> Store the computed input shapes on the node <--- 
-            // Store a shallow copy of the map
-            node.computedInputShapes = new Map(currentNodeInputMap);
-
-            // Compute and store output shape for the current node
-            if (outputShapes.has(nodeName)) {
-                // Already processed (Fixed/Constant), skip re-computation
-                continue;
-            }
-
-            if (typeof node.getOutputShape === 'function') {
-                try {
-                    // getOutputShape expects Map<InputName, Shape>
-                    const outputShapeResult = node.getOutputShape(currentNodeInputMap);
-
-                    // Standardize: Ensure result is Map<OutputName, Shape>
-                    let nodeOutputMap = new Map();
-                    if (Array.isArray(outputShapeResult)) {
-                        // Assume single default output 'output'
-                        nodeOutputMap.set('output', outputShapeResult);
-                    } else if (outputShapeResult instanceof Map) {
-                        // If it's already a Map, use it directly
-                        nodeOutputMap = outputShapeResult;
-                    } else if (typeof outputShapeResult === 'object') {
-                        // Convert plain object to Map
-                        for (const [key, value] of Object.entries(outputShapeResult)) {
-                            nodeOutputMap.set(key, value);
-                        }
-                    } else {
-                        throw new Error(`Node ${nodeName} getOutputShape returned unexpected type: ${typeof outputShapeResult}`);
-                    }
-                    outputShapes.set(nodeName, nodeOutputMap);
-                    node.computedOutputShapes = nodeOutputMap; // Annotate node output
-                } catch (error) {
-                    console.error(`Error computing shape for node ${nodeName} (${node.type}):`, error);
-                    throw new Error(`Shape computation failed for node ${nodeName}. Reason: ${error.message}`);
+            // Populate/overwrite currentEstimatorInputs from partitionInputs (external tensors)
+            // These represent the "starting weights" for inputs coming directly into the graph.
+            for (const assignment of partitionInputs) {
+                if (assignment.node === nodeName) {
+                    const inputSlotName = assignment.input;
+                    // The weight of a raw input tensor is its number of elements.
+                    const tensorWeight = assignment.tensor.shape.reduce((a, b) => a * b, 1);
+                    currentEstimatorInputs.set(inputSlotName, tensorWeight);
                 }
-            } else {
-                console.warn(`Node ${nodeName} (${node.type}) does not have a getOutputShape method.`);
-                // Handle nodes without shape calculation (e.g., control flow, or assume identity shape?)
-                // For now, we might need to error if its output is needed by others and shape is unknown.
-                // Let's assume for now such nodes won't exist or their shapes aren't critical downstream.
             }
+
+            // For all other node types, rely on their estimateWeight method.
+            // Nodes with no inputs (e.g., ConstantNode) will call estimateWeight with an empty map.
+            if (typeof node.estimateWeight !== 'function') {
+                throw new Error(`Node ${nodeName} (type: ${node.type}) does not have an estimateWeight method.`);
+            }
+            const calculatedWeight = node.estimateWeight(currentEstimatorInputs);
+
+            // Store the computed weight on the node instance itself.
+            node.weight = calculatedWeight;
+            // Store it in our map for downstream nodes that consume this node's output.
+            nodeComputedWeights.set(nodeName, calculatedWeight);
         }
-        // Nodes are annotated in place with computedInputShapes and computedOutputShapes
+        // All nodes in graph.nodes are now annotated with a 'weight' property.
+        // The function modifies nodes in-place, so no explicit return is necessary.
     }
 
     /**
@@ -794,13 +732,13 @@ export class KernelCompiler {
         console.log("Compile Step: Received Original Graph:", graph);
 
         // 1. Shape Inference Pass (Static)
-        // try {
-        //     KernelCompiler._computeAndAnnotateShapes(graph, partition.inputs);
-        //     console.log("Compile Step: Shape inference complete.");
-        // } catch (error) {
-        //     console.error("Compile Step: Shape inference failed:", error);
-        //     throw error;
-        // }
+        try {
+            KernelCompiler._computeWeights(graph, partition.inputs);
+            console.log("Compile Step: Shape inference complete.");
+        } catch (error) {
+            console.error("Compile Step: Shape inference failed:", error);
+            throw error;
+        }
 
         // 2. Create Session DAG (Static)
         const sessionGraph = KernelCompiler.createSessionsFrom(graph);
