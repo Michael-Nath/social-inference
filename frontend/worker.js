@@ -748,8 +748,8 @@ class ReshapeNode extends Node {
     }
 
     getOutputShape(executionContext) {
-        const inputTensor = executionContext.cpu(ReshapeNode.INPUT);
-        const dimsTensor = executionContext.cpu(ReshapeNode.DIMS);
+        const inputTensor = executionContext.cpu(ReshapeNode.INPUT) || executionContext.gpu(ReshapeNode.INPUT);
+        const dimsTensor = executionContext.cpu(ReshapeNode.DIMS) || executionContext.gpu(ReshapeNode.DIMS);
         return this._calculateOutputShape(inputTensor, dimsTensor);
     }
 
@@ -779,6 +779,18 @@ class ReshapeNode extends Node {
             },
             inputs: [ReshapeNode.INPUT, ReshapeNode.DIMS],
             outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+
+    async getGPUKernel() {
+        /* TODO: We need a ShapeKernel that is IDENTICAL to a CPU kernel except operates on GPU tensors. */
+        return new GPUKernel({
+            name: 'reshape',
+            shader: await fetch('kernels/empty.wgsl').then((res) => res.text()),
+            entryPoint: 'main',
+            workgroupFunction: (executionContext) => { return {x: 1}; },
+            inputs: [],
+            outputs: []
         });
     }
 }
@@ -1570,6 +1582,7 @@ class TransposeNode extends Node {
         this.dim0 = api_response.dim0;
         /** @type {number} */
         this.dim1 = api_response.dim1;
+        this.devicePreference = new DevicePreferences({ supportsGPU: true });
     }
 
     estimateWeight(inputsMap) {
@@ -1580,6 +1593,107 @@ class TransposeNode extends Node {
     get_inputs() { return [TransposeNode.INPUT]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _normalize_dim(dim, rank) {
+        if (dim < 0) {
+            return dim + rank;
+        }
+        return dim;
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(TransposeNode.INPUT) || executionContext.gpu(TransposeNode.INPUT);
+        if (!inputTensor || !inputTensor.shape) {
+            throw new Error(`TransposeNode (${this.name}): Missing input tensor or shape.`);
+        }
+        const inputShape = [...inputTensor.shape]; // Make a copy
+        const rank = inputShape.length;
+
+        if (rank === 0) return []; // Transpose of a scalar is the scalar itself
+
+        const d0 = this._normalize_dim(this.dim0, rank);
+        const d1 = this._normalize_dim(this.dim1, rank);
+
+        if (d0 < 0 || d0 >= rank || d1 < 0 || d1 >= rank) {
+            throw new Error(`TransposeNode (${this.name}): Invalid dimensions (${this.dim0}, ${this.dim1}) for rank ${rank}.`);
+        }
+
+        // Swap the dimensions in the shape array
+        const temp = inputShape[d0];
+        inputShape[d0] = inputShape[d1];
+        inputShape[d1] = temp;
+        return inputShape;
+    }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: 'transpose',
+            shader: await fetch('kernels/transpose.wgsl').then(r => r.text()),
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(TransposeNode.INPUT);
+                    if (!inputTensor) {
+                        throw new Error(`TransposeNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    const inputShape = inputTensor.shape;
+                    const rank = inputShape.length;
+
+                    const d0 = this._normalize_dim(this.dim0, rank);
+                    const d1 = this._normalize_dim(this.dim1, rank);
+
+                    if (rank > MAX_DIMS_SOFTMAX) {
+                        throw new Error(`TransposeNode (${this.name}): Input tensor rank (${rank}) exceeds MAX_DIMS_SOFTMAX (${MAX_DIMS_SOFTMAX}).`);
+                    }
+
+                    const paddedInputShape = new Array(MAX_DIMS_SOFTMAX).fill(1);
+                    const paddedInputStrides = new Array(MAX_DIMS_SOFTMAX).fill(0);
+                    
+                    if (rank > 0) {
+                        for (let i = 0; i < rank; i++) {
+                            paddedInputShape[i] = inputShape[i];
+                        }
+                        const inputStrides = calculateStrides(inputShape);
+                        for (let i = 0; i < rank; i++) {
+                            paddedInputStrides[i] = inputStrides[i];
+                        }
+                    }
+                    // For 0D tensor, shape [1,...], strides [0,...], rank 0 is fine.
+
+                    const num_elements = rank > 0 ? inputShape.reduce((acc, val) => acc * val, 1) : 1;
+
+                    // Uniform buffer layout: input_shape_vecs, input_strides_vecs, rank, dim0, dim1, num_elements, padding
+                    // Padded sizes: 8 (shape) + 8 (strides) + 1 (rank) + 1 (d0) + 1 (d1) + 1 (num_elements) = 20 u32s
+                    // Total 20 * 4 = 80 bytes. This is a multiple of 16, so no extra padding u32s needed if aligned.
+                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 4); 
+                    uniformData.set(paddedInputShape, 0);
+                    uniformData.set(paddedInputStrides, MAX_DIMS_SOFTMAX);
+                    uniformData.set([rank, d0, d1, num_elements], MAX_DIMS_SOFTMAX * 2);
+                    return uniformData;
+                },
+                index: 2, // Binding for params uniform buffer
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(TransposeNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`TransposeNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                const workgroupSizeX = 256; // Must match shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [
+                { name: TransposeNode.INPUT, cpu: false, binding: {type: "read-only-storage", index: 0 } }
+            ],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 1 } },
+            ],
+        });
+    }
 }
 
 /**

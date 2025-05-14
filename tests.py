@@ -269,3 +269,36 @@ def test_index_reshape():
         }
     ))
     return pipeline, graph
+
+def test_transpose():
+    g = ComputeGraphBuilder()
+    input_tp = g.input("input_tp") # Transpose Input
+
+    dim0_val = 1
+    dim1_val = 2
+
+    with g.partition("p0_transpose"):
+        # TransposeNode constructor in worker.js will take dim0, dim1 from api_response
+        # The ComputeGraphBuilder.transpose() should pass these.
+        # No need for fixed tensors for dim0, dim1 if they are direct node attributes.
+        transposed_node = g.transpose("transpose_op", input_tp, dim0=dim0_val, dim1=dim1_val)
+    
+    g.output("transpose_out", transposed_node)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    # Input tensor: 2x3x4 (arange(24))
+    # Transposing dim 1 and 2: expected output shape 2x4x3
+    input_data = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    # PyTorch transpose for verification:
+    # expected_output_torch = input_data.transpose(dim0_val, dim1_val)
+    # print("Input for transpose:\n", input_data)
+    # print(f"Expected output after transpose({dim0_val}, {dim1_val}):\n", expected_output_torch)
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="transpose_test_0",
+        inputs={
+            "input_tp": Tensor.from_torch(input_data),
+        }
+    ))
+    return pipeline, graph
