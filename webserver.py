@@ -21,7 +21,7 @@ CHECK_WORK = True
 # model_cache = ModelCache()
 model_cache = None
 
-pipeline, g = tests.test_reduce_mean()
+pipeline, g = tests.test_index_select()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

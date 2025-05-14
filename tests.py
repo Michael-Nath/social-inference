@@ -449,3 +449,39 @@ def test_reduce_mean():
         }
     ))
     return pipeline, graph
+
+def test_index_select():
+    g = ComputeGraphBuilder()
+    is_input = g.input("is_input_val") # Index Select input (e.g., 3D tensor)
+
+    with g.partition("p0_index_select"):
+        is_dim_ignored = g.fixed("is_dim_ignore", torch.tensor([0], dtype=torch.int32)) # Will be ignored by CPU kernel
+
+        # Case 1: 1D index tensor
+        is_index_1d = g.fixed("is_index_1d_val", torch.tensor([0, 2, 1], dtype=torch.int32)) # int32 for PyTorch indexing
+        selected_1d = g.index_select("index_select_1d_op", is_input, is_dim_ignored, is_index_1d)
+
+    g.output("index_select_1d_out", selected_1d)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    # Input: 3x2x2 tensor
+    input_data = torch.arange(12, dtype=torch.float32).reshape(3, 2, 2)
+    # [[[ 0.,  1.],
+    #   [ 2.,  3.]],
+    #  [[ 4.,  5.],
+    #   [ 6.,  7.]],
+    #  [[ 8.,  9.],
+    #   [10., 11.]]]
+
+    # PyTorch behavior for reference:
+    # pt_selected_1d = input_data[is_index_1d.tensor] -> shape (3,2,2)
+    # pt_selected_2d = input_data[is_index_2d.tensor] -> shape (2,2,2,2)
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="index_select_test_0",
+        inputs={
+            "is_input_val": Tensor.from_torch(input_data),
+        }
+    ))
+    return pipeline, graph

@@ -2561,24 +2561,116 @@ class IndexSelectNode extends Node {
 
     estimateWeight(inputsMap) {
         const inputWeight = inputsMap.get(IndexSelectNode.INPUT) || 0;
-        // This is a very rough placeholder.
+        const indexWeight = inputsMap.get(IndexSelectNode.INDEX) || 1;
+        // Output weight is roughly indexWeight * (inputWeight / inputShape[0])
+        // This is a simplification.
+        if (inputWeight > 0 && indexWeight > 0) {
+             // Assuming inputShape[0] is at least 1 for this rough estimate
+            return indexWeight * (inputWeight / (inputsMap.get('_inputShape0SizePlaceholder_') || Math.max(1, inputWeight / indexWeight) ));
+        }
         return inputWeight; 
     }
 
     get_inputs() { return [IndexSelectNode.INPUT, IndexSelectNode.DIM, IndexSelectNode.INDEX]; }
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 
+    _calculateOutputShape(inputTensor, indexTensor) {
+        if (!inputTensor || !inputTensor.shape) {
+            throw new Error(`IndexSelectNode (${this.name}): Missing input tensor or shape.`);
+        }
+        if (!indexTensor || !indexTensor.shape) {
+            throw new Error(`IndexSelectNode (${this.name}): Missing index tensor or shape.`);
+        }
+        const inputShape = inputTensor.shape;
+        const indexShape = indexTensor.shape;
+
+        if (inputShape.length === 0) {
+            throw new Error(`IndexSelectNode (${this.name}): Cannot index a 0D (scalar) input tensor with index_select semantics.`);
+        }
+
+        // Output shape is index.shape + input.shape[1:]
+        const outputShape = [...indexShape, ...inputShape.slice(1)];
+        return outputShape;
+    }
+
     getOutputShape(executionContext) {
-        console.warn(`IndexSelectNode (${this.name}): getOutputShape not implemented.`);
         const inputTensor = executionContext.cpu(IndexSelectNode.INPUT);
-        return inputTensor ? [...inputTensor.shape] : [0]; // Highly dependent on actual logic
+        const indexTensor = executionContext.cpu(IndexSelectNode.INDEX);
+        // const dimTensor = executionContext.cpu(IndexSelectNode.DIM); // DIM is ignored
+        return this._calculateOutputShape(inputTensor, indexTensor);
     }
 
     getCPUKernel() {
-        console.warn(`IndexSelectNode (${this.name}): CPU kernel not yet implemented.`);
         return new CPUKernel({
-            name: 'index_select_placeholder',
-            func: (ctx) => { throw new Error('IndexSelectNode CPU kernel not implemented'); },
+            name: 'index_select',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(IndexSelectNode.INPUT);
+                const indexTensor = executionContext.cpu(IndexSelectNode.INDEX);
+                // DIM is ignored: const dimTensor = executionContext.cpu(IndexSelectNode.DIM);
+
+                if (!inputTensor || !indexTensor) {
+                    throw new Error(`IndexSelectNode (${this.name}) kernel: Missing input or index tensor.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor, indexTensor);
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                
+                const outputView = outputTensor.getTypedArray();
+                const inputData = inputTensor.getTypedArray();
+                const indexData = indexTensor.getTypedArray();
+
+                const inputShape = inputTensor.shape;
+                const inputStrides = calculateStrides(inputShape);
+
+                // Size of one slice from the input tensor (all dimensions except the first)
+                let sliceSize = 1;
+                for (let i = 1; i < inputShape.length; i++) {
+                    sliceSize *= inputShape[i];
+                }
+                if (inputShape.length === 0) { // Should be caught by _calculateOutputShape
+                    sliceSize = 0; 
+                } else if (inputShape.length === 1) { // Input is 1D, slice is a single element
+                    sliceSize = 1;
+                }
+
+                const numIndices = indexData.length; // Total number of indices to select
+                let outputBufferOffset = 0;
+
+                for (let i = 0; i < numIndices; i++) {
+                    let selectedInputDim0Index = indexData[i];
+                    
+                    // Bounds checking for the index
+                    if (selectedInputDim0Index < 0 || selectedInputDim0Index >= inputShape[0]) {
+                        throw new Error(`IndexSelectNode (${this.name}) kernel: Index ${selectedInputDim0Index} at index tensor position ${i} is out of bounds for input dimension 0 size ${inputShape[0]}.`);
+                    }
+
+                    const inputBufferOffset = selectedInputDim0Index * sliceSize * inputStrides[0] / inputShape[0]; // More robust: selectedInputDim0Index * inputStrides[0]
+                    // Corrected offset: index along dim 0 * stride of dim 0
+                    const currentInputSliceOffset = selectedInputDim0Index * (inputShape.length > 1 ? inputStrides[0] : 1) ; 
+                    // If input is 1D, inputStrides[0] is 1.
+                    // If input is >1D, inputStrides[0] is product of shape[1]*shape[2]*...
+                    // sliceSize is also product of shape[1]*shape[2]*...
+                    // So, selectedInputDim0Index * sliceSize is the correct start for N-D.
+                    // For 1D, inputStrides[0] is 1, selectedInputDim0Index * 1 is the offset.
+
+                    let actualInputOffset;
+                    if (inputShape.length === 1) { // Input is 1D
+                        actualInputOffset = selectedInputDim0Index; 
+                    } else { // Input is N-D (N > 1)
+                        actualInputOffset = selectedInputDim0Index * sliceSize; 
+                    }
+
+                    // Copy the slice
+                    for (let j = 0; j < sliceSize; j++) {
+                        outputView[outputBufferOffset + j] = inputData[actualInputOffset + j];
+                    }
+                    outputBufferOffset += sliceSize;
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
             inputs: [IndexSelectNode.INPUT, IndexSelectNode.DIM, IndexSelectNode.INDEX],
             outputs: [DEFAULT_NODE_OUTPUT],
         });
