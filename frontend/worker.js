@@ -1735,14 +1735,24 @@ class AddNode extends Node {
             name: 'add',
             shader: await fetch('kernels/add.wgsl').then(r => r.text()),
             dimensionBuffer: {
-                func: (inputShapes, outputShapes) => {
-                    let size = inputShapes.get(AddNode.A).reduce((a, b) => a * b, 1);
+                func: (executionContext) => {
+                    const inputTensorA = executionContext.gpu(AddNode.A);
+                    const inputTensorB = executionContext.gpu(AddNode.B);
+                    if (!inputTensorA || !inputTensorB) {
+                        throw new Error(`AddNode (${this.name}): Missing GPU input tensors.`);
+                    }
+                    const size = inputTensorA.shape.reduce((a, b) => a * b, 1);
                     return new Uint32Array([size]);
                 },
                 index: 3,
             },
-            workgroupFunction: (inputShapes, outputShapes) => {
-                let size = inputShapes.get(AddNode.A).reduce((a, b) => a * b, 1);
+            workgroupFunction: (executionContext) => {
+                const inputTensorA = executionContext.gpu(AddNode.A);
+                const inputTensorB = executionContext.gpu(AddNode.B);
+                if (!inputTensorA || !inputTensorB) {
+                    throw new Error(`AddNode (${this.name}): Missing GPU input tensors.`);
+                }
+                const size = inputTensorA.shape.reduce((a, b) => a * b, 1);
                 return {
                     x: Math.ceil(size / 256),
                     y: 1,
@@ -1764,14 +1774,13 @@ class AddNode extends Node {
     /**
      * Calculates the output shape for an element-wise addition.
      * Assumes input shapes are identical (no broadcasting yet).
-     * @param {Map<string, number[]>} inputShapes - A map containing shapes for 'inputA' and 'inputB'.
-     *                                            Example: Map { 'inputA' => [X, Y], 'inputB' => [X, Y] }
+     * @param {ExecutionContext} executionContext - The execution context for the node.
      * @returns {number[]} The output shape, same as input shapes.
      * @throws {Error} If input shapes are missing or incompatible.
      */
-    getOutputShape(inputShapes) {
-        const shapeA = inputShapes.get(AddNode.A);
-        const shapeB = inputShapes.get(AddNode.B);
+    getOutputShape(executionContext) {
+        const shapeA = executionContext.gpu(AddNode.A).shape;
+        const shapeB = executionContext.gpu(AddNode.B).shape;
 
         if (!shapeA || !shapeB) {
             throw new Error(`AddNode (${this.name}): Missing required input shapes ('inputA' or 'inputB').`);
@@ -2016,7 +2025,6 @@ class CeilNode extends Node {
     }
 
     estimateWeight(inputsMap) {
-        // Output has the same number of elements as the input.
         return inputsMap.get(CeilNode.INPUT) || 0;
     }
 
@@ -2028,7 +2036,7 @@ class CeilNode extends Node {
         if (!tensor) {
             throw new Error(`CeilNode (${this.name}): Missing required input tensor.`);
         }
-        return [...tensor.shape]; // Output shape is same as input shape
+        return [...tensor.shape];
     }
 
     getOutputShape(executionContext) {
@@ -2140,6 +2148,22 @@ export class Graph {
                 this.nodes[key] = new FloorNode(value);
             } else if (value.type === "ceil") {
                 this.nodes[key] = new CeilNode(value);
+            } else if (value.type === "cos") {
+                this.nodes[key] = new CosNode(value);
+            } else if (value.type === "debug") {
+                this.nodes[key] = new DebugNode(value);            
+            } else if (value.type === "index_select") {
+                this.nodes[key] = new IndexSelectNode(value);
+            } else if (value.type === "reduce_mean") {
+                this.nodes[key] = new ReduceMeanNode(value);
+            } else if (value.type === "rsqrt") {
+                this.nodes[key] = new RsqrtNode(value);
+            } else if (value.type === "silu") {
+                this.nodes[key] = new SiluNode(value);
+            } else if (value.type === "sin") {
+                this.nodes[key] = new SinNode(value);
+            } else if (value.type === "squared") {
+                this.nodes[key] = new SquaredNode(value);
             } else {
                 // Throw error for unknown node types
                 throw new Error(`Unknown node type: ${value.type}`);
@@ -2448,6 +2472,342 @@ export class Worker {
             correlation_id: partition_work.correlation_id,
             partition: partition_work.partition,
             outputs: [] // Replace with actual outputs
+        });
+    }
+}
+
+// Insert new node class skeletons alphabetically here
+
+/**
+ * @class CosNode
+ * @classdesc Represents an element-wise cosine operation node.
+ * @extends Node
+ */
+class CosNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(CosNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [CosNode.INPUT]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.gpu(CosNode.INPUT) || executionContext.cpu(CosNode.INPUT);
+        if (!inputTensor) throw new Error(`CosNode (${this.name}): Missing input tensor.`);
+        return [...inputTensor.shape];
+    }
+
+    async getGPUKernel() {
+        // console.warn(`CosNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        return new GPUKernel({
+            name: 'cos',
+            shader: await fetch('kernels/cos.wgsl').then(r => r.text()), 
+            entryPoint: 'main',
+            dimensionBuffer: { 
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(CosNode.INPUT);
+                    if (!inputTensor) {
+                        throw new Error(`CosNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                    return new Uint32Array([num_elements]); // num_elements
+                },
+                index: 2 
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(CosNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`CosNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                const workgroupSizeX = 256; // Must match WORKGROUP_SIZE_X in shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            inputs: [{ name: CosNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
+        });
+    }
+}
+
+/**
+ * @class IndexSelectNode
+ * @classdesc Selects slices from an input tensor along a given dimension at specified indices.
+ * @extends Node
+ */
+class IndexSelectNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+    /** @type {string} */
+    static DIM = "dim";
+    /** @type {string} */
+    static INDEX = "index";
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    estimateWeight(inputsMap) {
+        const inputWeight = inputsMap.get(IndexSelectNode.INPUT) || 0;
+        // This is a very rough placeholder.
+        return inputWeight; 
+    }
+
+    get_inputs() { return [IndexSelectNode.INPUT, IndexSelectNode.DIM, IndexSelectNode.INDEX]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        console.warn(`IndexSelectNode (${this.name}): getOutputShape not implemented.`);
+        const inputTensor = executionContext.cpu(IndexSelectNode.INPUT);
+        return inputTensor ? [...inputTensor.shape] : [0]; // Highly dependent on actual logic
+    }
+
+    getCPUKernel() {
+        console.warn(`IndexSelectNode (${this.name}): CPU kernel not yet implemented.`);
+        return new CPUKernel({
+            name: 'index_select_placeholder',
+            func: (ctx) => { throw new Error('IndexSelectNode CPU kernel not implemented'); },
+            inputs: [IndexSelectNode.INPUT, IndexSelectNode.DIM, IndexSelectNode.INDEX],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+}
+
+/**
+ * @class ReduceMeanNode
+ * @classdesc Reduces a tensor by taking the mean along a given dimension.
+ * @extends Node
+ */
+class ReduceMeanNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+    /** @type {string} */
+    static DIM = "dim"; // This will be a CPUTensor containing the dimension(s) to reduce
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true }); 
+    }
+
+    estimateWeight(inputsMap) {
+        const inputWeight = inputsMap.get(ReduceMeanNode.INPUT) || 0;
+        return Math.max(1, Math.floor(inputWeight / 2)); // Output is smaller
+    }
+
+    get_inputs() { return [ReduceMeanNode.INPUT, ReduceMeanNode.DIM]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        console.warn(`ReduceMeanNode (${this.name}): getOutputShape not implemented.`);
+        const inputTensor = executionContext.cpu(ReduceMeanNode.INPUT);
+        return inputTensor ? [...inputTensor.shape] : [0]; // Will be smaller
+    }
+
+    getCPUKernel() {
+        console.warn(`ReduceMeanNode (${this.name}): CPU kernel not yet implemented.`);
+        return new CPUKernel({
+            name: 'reduce_mean_placeholder',
+            func: (ctx) => { throw new Error('ReduceMeanNode CPU kernel not implemented'); },
+            inputs: [ReduceMeanNode.INPUT, ReduceMeanNode.DIM],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+}
+
+/**
+ * @class RsqrtNode
+ * @classdesc Represents an element-wise reciprocal square root node.
+ * @extends Node
+ */
+class RsqrtNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(RsqrtNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [RsqrtNode.INPUT]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.gpu(RsqrtNode.INPUT) || executionContext.cpu(RsqrtNode.INPUT);
+        if (!inputTensor) throw new Error(`RsqrtNode (${this.name}): Missing input tensor.`);
+        return [...inputTensor.shape];
+    }
+
+    async getGPUKernel() {
+        console.warn(`RsqrtNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        return new GPUKernel({
+            name: 'rsqrt_placeholder',
+            shader: await fetch('kernels/empty.wgsl').then(r => r.text()), // Placeholder shader
+            entryPoint: 'main',
+            dimensionBuffer: { func: () => new Uint32Array([1]), index: 0 }, // Placeholder
+            workgroupFunction: () => ({ x: 1, y: 1, z: 1 }), // Placeholder
+            inputs: [{ name: RsqrtNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
+        });
+    }
+}
+
+/**
+ * @class SiluNode
+ * @classdesc Represents an SiLU activation function node.
+ * @extends Node
+ */
+class SiluNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(SiluNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [SiluNode.INPUT]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.gpu(SiluNode.INPUT) || executionContext.cpu(SiluNode.INPUT);
+        if (!inputTensor) throw new Error(`SiluNode (${this.name}): Missing input tensor.`);
+        return [...inputTensor.shape];
+    }
+
+    async getGPUKernel() {
+        console.warn(`SiluNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        return new GPUKernel({
+            name: 'silu_placeholder',
+            shader: await fetch('kernels/empty.wgsl').then(r => r.text()), // Placeholder shader
+            entryPoint: 'main',
+            dimensionBuffer: { func: () => new Uint32Array([1]), index: 0 }, // Placeholder
+            workgroupFunction: () => ({ x: 1, y: 1, z: 1 }), // Placeholder
+            inputs: [{ name: SiluNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
+        });
+    }
+}
+
+/**
+ * @class SinNode
+ * @classdesc Represents an element-wise sine operation node.
+ * @extends Node
+ */
+class SinNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(SinNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [SinNode.INPUT]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.gpu(SinNode.INPUT) || executionContext.cpu(SinNode.INPUT);
+        if (!inputTensor) throw new Error(`SinNode (${this.name}): Missing input tensor.`);
+        return [...inputTensor.shape];
+    }
+
+    async getGPUKernel() {
+        // console.warn(`SinNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        return new GPUKernel({
+            name: 'sin',
+            shader: await fetch('kernels/sin.wgsl').then(r => r.text()), 
+            entryPoint: 'main',
+            dimensionBuffer: { 
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(SinNode.INPUT);
+                    if (!inputTensor) {
+                        throw new Error(`SinNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                    return new Uint32Array([num_elements]); // num_elements
+                },
+                index: 2 
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(SinNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`SinNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                const workgroupSizeX = 256; // Must match WORKGROUP_SIZE_X in shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            inputs: [{ name: SinNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
+        });
+    }
+}
+
+/**
+ * @class SquaredNode
+ * @classdesc Represents an element-wise square operation node.
+ * @extends Node
+ */
+class SquaredNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+
+    constructor(api_response) {
+        super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(SquaredNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [SquaredNode.INPUT]; }
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.gpu(SquaredNode.INPUT) || executionContext.cpu(SquaredNode.INPUT);
+        if (!inputTensor) throw new Error(`SquaredNode (${this.name}): Missing input tensor.`);
+        return [...inputTensor.shape];
+    }
+
+    async getGPUKernel() {
+        console.warn(`SquaredNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        return new GPUKernel({
+            name: 'squared_placeholder',
+            shader: await fetch('kernels/empty.wgsl').then(r => r.text()), // Placeholder shader
+            entryPoint: 'main',
+            dimensionBuffer: { func: () => new Uint32Array([1]), index: 0 }, // Placeholder
+            workgroupFunction: () => ({ x: 1, y: 1, z: 1 }), // Placeholder
+            inputs: [{ name: SquaredNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
         });
     }
 }

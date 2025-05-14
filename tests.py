@@ -302,3 +302,34 @@ def test_transpose():
         }
     ))
     return pipeline, graph
+
+def test_trig_ops():
+    g = ComputeGraphBuilder()
+    trig_input = g.input("trig_input_val")
+
+    with g.partition("p0_trig"):
+        sin_node = g.sin("sin_op", trig_input)
+        cos_node = g.cos("cos_op", trig_input)
+        # Example: sin^2(x) + cos^2(x) = 1
+        sin_squared = g.hadamard("sin_sq", sin_node, sin_node) # Using hadamard for square
+        cos_squared = g.hadamard("cos_sq", cos_node, cos_node) # Using hadamard for square
+        sum_sq = g.add("sum_sq_trig", sin_squared, cos_squared)
+
+    g.output("sin_out", sin_node)
+    g.output("cos_out", cos_node)
+    g.output("sum_sq_out", sum_sq) # Should be close to 1
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    # Input values including 0, pi/2, pi, 3pi/2, 2pi
+    # And some other values to check general computation
+    angles = torch.tensor([[0, torch.pi/2, torch.pi, 3*torch.pi/2, 2*torch.pi],
+                           [torch.pi/4, torch.pi/6, 1.0, -1.0, 2.5]], dtype=torch.float32)
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="trig_test_0",
+        inputs={
+            "trig_input_val": Tensor.from_torch(angles),
+        }
+    ))
+    return pipeline, graph

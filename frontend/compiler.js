@@ -522,7 +522,7 @@ export class KernelCompiler {
      * @param {Graph} originalGraph - The original graph structure for edge info.
      * @private // Keep static for now as it doesn't depend on this.device
      */
-    static _planSessionResources(sessionGraph, originalGraph) {
+    static async _planSessionResources(sessionGraph, originalGraph) {
         // Precompute forward and backward edges for all sessions
         const forwardEdges = new Map(); // Map<OutputKey, Set<InputKey>>
         const backwardEdges = new Map(); // Map<nodeName,Map<inputName, OutputKey>>
@@ -592,7 +592,7 @@ export class KernelCompiler {
                                         throw new Error(`User node ${inputNode} not found in session ${userSession.name}`);
                                     }
                                     // Check if input has CPU flag set
-                                    for (const input of userNode.getGPUKernel().inputs) {
+                                    for (const input of (await userNode.getGPUKernel()).inputs) {
                                         if (input.name === inputName && input.cpu) {
                                             console.debug(`Readback flagged for ${outputKey} because input ${inputName} of node ${inputNode} is CPU-bound.`)
                                             readback = true;
@@ -759,7 +759,7 @@ export class KernelCompiler {
 
         // 3. Resource Planning Pass (Static)
         try {
-            KernelCompiler._planSessionResources(sessionGraph, graph);
+            await KernelCompiler._planSessionResources(sessionGraph, graph);
             console.log("Compile Step: Resource planning complete.");
         } catch (error) {
             console.error("Compile Step: Resource planning failed:", error);
