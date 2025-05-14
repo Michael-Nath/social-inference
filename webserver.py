@@ -21,7 +21,7 @@ CHECK_WORK = True
 # model_cache = ModelCache()
 model_cache = None
 
-pipeline, g = tests.test_squared()
+pipeline, g = tests.test_silu_rsqrt()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

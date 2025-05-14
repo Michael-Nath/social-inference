@@ -2654,13 +2654,35 @@ class RsqrtNode extends Node {
     }
 
     async getGPUKernel() {
-        console.warn(`RsqrtNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        // console.warn(`RsqrtNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
-            name: 'rsqrt_placeholder',
-            shader: await fetch('kernels/empty.wgsl').then(r => r.text()), // Placeholder shader
+            name: 'rsqrt',
+            shader: await fetch('kernels/rsqrt.wgsl').then(r => r.text()), 
             entryPoint: 'main',
-            dimensionBuffer: { func: () => new Uint32Array([1]), index: 0 }, // Placeholder
-            workgroupFunction: () => ({ x: 1, y: 1, z: 1 }), // Placeholder
+            dimensionBuffer: { 
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(RsqrtNode.INPUT);
+                    if (!inputTensor) {
+                        throw new Error(`RsqrtNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                    return new Uint32Array([num_elements]); // num_elements
+                },
+                index: 2 // Binding for params
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(RsqrtNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`RsqrtNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                const workgroupSizeX = 256; // Must match WORKGROUP_SIZE_X in shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
             inputs: [{ name: RsqrtNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
             outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
         });
@@ -2695,13 +2717,35 @@ class SiluNode extends Node {
     }
 
     async getGPUKernel() {
-        console.warn(`SiluNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        // console.warn(`SiluNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
-            name: 'silu_placeholder',
-            shader: await fetch('kernels/empty.wgsl').then(r => r.text()), // Placeholder shader
+            name: 'silu',
+            shader: await fetch('kernels/silu.wgsl').then(r => r.text()), 
             entryPoint: 'main',
-            dimensionBuffer: { func: () => new Uint32Array([1]), index: 0 }, // Placeholder
-            workgroupFunction: () => ({ x: 1, y: 1, z: 1 }), // Placeholder
+            dimensionBuffer: { 
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(SiluNode.INPUT);
+                    if (!inputTensor) {
+                        throw new Error(`SiluNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                    return new Uint32Array([num_elements]); // num_elements
+                },
+                index: 2 // Binding for params
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(SiluNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`SiluNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                const workgroupSizeX = 256; // Must match WORKGROUP_SIZE_X in shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
             inputs: [{ name: SiluNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
             outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
         });

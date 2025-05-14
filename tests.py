@@ -362,3 +362,40 @@ def test_squared():
         }
     ))
     return pipeline, graph
+
+def test_silu_rsqrt():
+    g = ComputeGraphBuilder()
+    silu_rsqrt_input = g.input("silu_rsqrt_in")
+
+    with g.partition("p0_silu_rsqrt"):
+        silu_node = g.silu("silu_op", silu_rsqrt_input)
+        # Rsqrt requires positive inputs, so apply to abs(input) or an intermediate positive tensor.
+        # For simplicity here, let's assume silu_rsqrt_input will be positive for rsqrt, or use abs.
+        # PyTorch torch.rsqrt(torch.tensor([-4.0, 0.0, 4.0])) -> [nan, inf, 0.5]
+        # We'll use a known positive tensor for rsqrt to avoid NaNs/Infs in simple test output.
+        positive_fixed = g.fixed("positive_vals_rs", torch.tensor([1.0, 4.0, 9.0, 16.0, 0.01, 100.0], dtype=torch.float32))
+        rsqrt_node = g.rsqrt("rsqrt_op", positive_fixed)
+        rsqrt_from_silu_abs = g.rsqrt("rsqrt_silu_abs", g.hadamard("abs_silu", silu_node, silu_node)) # rsqrt(abs(silu(x))) is not rsqrt(x*sig(x))
+                                                                                                # It's rsqrt( (x*sig(x))^2 ). A bit contrived.
+                                                                                                # Let's make it rsqrt from absolute input: 
+        abs_input_for_rsqrt = g.rsqrt("rsqrt_abs_input", g.hadamard("abs_in_val", silu_rsqrt_input, silu_rsqrt_input)) # rsqrt(x^2) = 1/|x|
+
+    g.output("silu_out", silu_node)
+    g.output("rsqrt_fixed_out", rsqrt_node) 
+    g.output("rsqrt_abs_input_out", abs_input_for_rsqrt)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    # Input values for SiLU: includes negative, zero, positive
+    input_data = torch.tensor([-5.0, -1.0, 0.0, 1.0, 5.0], dtype=torch.float32)
+    # SiLU(x) = x * sigmoid(x)
+    # Rsqrt(positive_fixed) = [1.0, 0.5, 0.333..., 0.25, 10.0, 0.1]
+    # Rsqrt(input_data^2) = 1/|input_data| = [0.2, 1.0, inf, 1.0, 0.2]
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="silu_rsqrt_test_0",
+        inputs={
+            "silu_rsqrt_in": Tensor.from_torch(input_data),
+        }
+    ))
+    return pipeline, graph
