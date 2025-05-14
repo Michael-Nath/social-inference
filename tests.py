@@ -399,3 +399,53 @@ def test_silu_rsqrt():
         }
     ))
     return pipeline, graph
+
+def test_reduce_mean():
+    g = ComputeGraphBuilder()
+    rm_input = g.input("rm_input_val") # Reduce Mean input
+
+    rm_input_3d = g.input("rm_input_3d_val")
+
+    with g.partition("p0_reduce_mean"):
+        # Test case 1: Reduce 2D tensor (3x4) along dim 1 (cols). Output should be (3,)
+        dim_reduce1 = g.fixed("dim_reduce1_rm", torch.tensor([1], dtype=torch.int32))
+        # Test case 2: Reduce same 2D tensor (3x4) along dim 0 (rows). Output should be (4,)
+        dim_reduce0 = g.fixed("dim_reduce0_rm", torch.tensor([0], dtype=torch.int32))
+        # Test case 3: Reduce 3D tensor (2x3x4) along dim 2. Output should be (2,3)
+        dim_reduce2_3d = g.fixed("dim_reduce2_3d_rm", torch.tensor([2], dtype=torch.int32))
+
+        reduced_node1 = g.reduce_mean("reduce_mean_op1", rm_input, dim_reduce1)
+        reduced_node0 = g.reduce_mean("reduce_mean_op0", rm_input, dim_reduce0)
+        reduced_node_3d = g.reduce_mean("reduce_mean_op3d", rm_input_3d, dim_reduce2_3d)
+
+    g.output("reduce_mean1_out", reduced_node1)
+    g.output("reduce_mean0_out", reduced_node0)
+    g.output("reduce_mean3d_out", reduced_node_3d)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    input_data_2d = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    # [[ 0,  1,  2,  3],
+    #  [ 4,  5,  6,  7],
+    #  [ 8,  9, 10, 11]]
+    # reduce dim 1: [1.5, 5.5, 9.5]
+    # reduce dim 0: [4., 5., 6., 7.]
+
+    input_data_3d = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    # reduce dim 2:
+    # [[[ 0,  1,  2,  3], -> 1.5
+    #   [ 4,  5,  6,  7], -> 5.5
+    #   [ 8,  9, 10, 11]], -> 9.5
+    #  [[12, 13, 14, 15], -> 13.5
+    #   [16, 17, 18, 19], -> 17.5
+    #   [20, 21, 22, 23]]] -> 21.5
+    # Result shape (2,3). Values: [[1.5, 5.5, 9.5], [13.5, 17.5, 21.5]]
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="reduce_mean_test_0",
+        inputs={
+            "rm_input_val": Tensor.from_torch(input_data_2d),
+            "rm_input_3d_val": Tensor.from_torch(input_data_3d),
+        }
+    ))
+    return pipeline, graph

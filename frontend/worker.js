@@ -2598,30 +2598,180 @@ class ReduceMeanNode extends Node {
 
     constructor(api_response) {
         super(api_response);
-        this.devicePreference = new DevicePreferences({ supportsCPU: true }); 
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 }); 
     }
 
     estimateWeight(inputsMap) {
         const inputWeight = inputsMap.get(ReduceMeanNode.INPUT) || 0;
-        return Math.max(1, Math.floor(inputWeight / 2)); // Output is smaller
+        // Estimate output weight based on input rank and typical reduction
+        // This is a rough heuristic.
+        const inputRank = inputsMap.get('_inputRankPlaceholder_') || 3; // Need actual rank if possible
+        const reduceDimSize = inputsMap.get('_reduceDimSizePlaceholder_') || 2;
+        if (inputRank > 1 && reduceDimSize > 0) {
+            return Math.max(1, Math.floor(inputWeight / reduceDimSize));
+        }
+        return Math.max(1, Math.floor(inputWeight / 2)); 
     }
 
     get_inputs() { return [ReduceMeanNode.INPUT, ReduceMeanNode.DIM]; }
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 
-    getOutputShape(executionContext) {
-        console.warn(`ReduceMeanNode (${this.name}): getOutputShape not implemented.`);
-        const inputTensor = executionContext.cpu(ReduceMeanNode.INPUT);
-        return inputTensor ? [...inputTensor.shape] : [0]; // Will be smaller
+    _normalize_dim(dim, rank) {
+        if (rank === 0) return 0; // No dims to normalize for a scalar
+        if (dim < 0) {
+            return dim + rank;
+        }
+        return dim;
     }
 
-    getCPUKernel() {
-        console.warn(`ReduceMeanNode (${this.name}): CPU kernel not yet implemented.`);
-        return new CPUKernel({
-            name: 'reduce_mean_placeholder',
-            func: (ctx) => { throw new Error('ReduceMeanNode CPU kernel not implemented'); },
-            inputs: [ReduceMeanNode.INPUT, ReduceMeanNode.DIM],
-            outputs: [DEFAULT_NODE_OUTPUT],
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(ReduceMeanNode.INPUT) || executionContext.gpu(ReduceMeanNode.INPUT);
+        const dimCPUTensor = executionContext.cpu(ReduceMeanNode.DIM) || executionContext.gpu(ReduceMeanNode.DIM); // DIM can be CPU or GPU
+
+        if (!inputTensor || !inputTensor.shape) {
+            throw new Error(`ReduceMeanNode (${this.name}): Missing input tensor or shape.`);
+        }
+        if (!dimCPUTensor) {
+            throw new Error(`ReduceMeanNode (${this.name}): Missing dim tensor.`);
+        }
+
+        const inputShape = [...inputTensor.shape];
+        const rank = inputShape.length;
+        
+        if (rank === 0) return []; // ReduceMean of a scalar is the scalar itself
+
+        const dimToReduce = this._normalize_dim(dimCPUTensor.getTypedArray()[0], rank);
+
+        if (dimToReduce < 0 || dimToReduce >= rank) {
+            throw new Error(`ReduceMeanNode (${this.name}): Invalid dimension ${dimCPUTensor.getTypedArray()[0]} for input rank ${rank}.`);
+        }
+
+        const outputShape = [];
+        for (let i = 0; i < rank; i++) {
+            if (i !== dimToReduce) {
+                outputShape.push(inputShape[i]);
+            }
+        }
+        // If input was 1D and reduced, output is scalar (shape [])
+        // If input was N-D and all non-reduced dims were 1, and reduced dim was >1, output is also scalar.
+        // If outputShape is empty, it means the result is a scalar.
+        return outputShape; 
+    }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: 'reduce_mean',
+            shader: await fetch('kernels/reduce_mean.wgsl').then(r => r.text()),
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(ReduceMeanNode.INPUT);
+                    const dimCPUTensor = executionContext.cpu(ReduceMeanNode.DIM);
+
+                    if (!inputTensor) {
+                        throw new Error(`ReduceMeanNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    if (!dimCPUTensor) {
+                        throw new Error(`ReduceMeanNode (${this.name}): Missing CPU dim tensor for dimensionBuffer.`);
+                    }
+
+                    const inputShape = inputTensor.shape;
+                    const inputRank = inputShape.length;
+                    const reduceDimRaw = dimCPUTensor.getTypedArray()[0];
+                    const reduceDim = this._normalize_dim(reduceDimRaw, inputRank);
+
+                    if (inputRank > MAX_DIMS_SOFTMAX) { // Using MAX_DIMS_SOFTMAX as MAX_DIMS
+                        throw new Error(`ReduceMeanNode (${this.name}): Input tensor rank (${inputRank}) exceeds MAX_DIMS (${MAX_DIMS_SOFTMAX}).`);
+                    }
+                    if (reduceDim < 0 || reduceDim >= inputRank && inputRank > 0) {
+                        throw new Error(`ReduceMeanNode (${this.name}): Invalid reduce_dim ${reduceDimRaw} for rank ${inputRank}.`);
+                    }
+
+                    const paddedInputShape = new Array(MAX_DIMS_SOFTMAX).fill(1);
+                    const paddedInputStrides = new Array(MAX_DIMS_SOFTMAX).fill(0);
+                    if (inputRank > 0) {
+                        for (let i = 0; i < inputRank; i++) paddedInputShape[i] = inputShape[i];
+                        const inputStrides = calculateStrides(inputShape);
+                        for (let i = 0; i < inputRank; i++) paddedInputStrides[i] = inputStrides[i];
+                    }
+
+                    let outputRank = 0;
+                    let numOutputElements = 1;
+                    if (inputRank > 0) {
+                        outputRank = inputRank - 1;
+                        for(let i=0; i < inputRank; i++) {
+                            if (i !== reduceDim) {
+                                numOutputElements *= inputShape[i];
+                            }
+                        }
+                        if (inputRank === 1) { // Reducing a 1D tensor results in a scalar
+                           outputRank = 0; // Scalar output
+                           numOutputElements = 1;
+                        }
+                    } // else for inputRank 0, outputRank 0, numOutputElements 1 (scalar)
+                    
+
+                    const reduceDimSize = (inputRank > 0 && inputShape[reduceDim] !== undefined) ? inputShape[reduceDim] : 1;
+                    if (reduceDimSize === 0 && inputRank > 0) {
+                        console.warn(`ReduceMeanNode (${this.name}): Reducing along a dimension of size 0. Mean is ill-defined (output will be 0).`);
+                    }
+
+                    // Params: input_shape_vecs, input_strides_vecs, input_rank, 
+                    //         output_rank, num_output_elements, 
+                    //         reduce_dim, reduce_dim_size, padding (3)
+                    // Total elements: (MAX_DIMS_SOFTMAX * 2) + 5 data scalars + 3 padding scalars = 16 + 5 + 3 = 24 u32s.
+                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 5 + 3); 
+                    uniformData.set(paddedInputShape, 0);
+                    uniformData.set(paddedInputStrides, MAX_DIMS_SOFTMAX);
+                    uniformData.set([inputRank, outputRank, numOutputElements, reduceDim, reduceDimSize], MAX_DIMS_SOFTMAX * 2);
+                    return uniformData;
+                },
+                index: 2, // Binding for params
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(ReduceMeanNode.INPUT);
+                const dimCPUTensor = executionContext.cpu(ReduceMeanNode.DIM);
+                if (!inputTensor || !dimCPUTensor) {
+                    throw new Error(`ReduceMeanNode (${this.name}): Missing GPU input or CPU dim tensor for workgroupFunction.`);
+                }
+                const inputShape = inputTensor.shape;
+                const inputRank = inputShape.length;
+                const reduceDim = this._normalize_dim(dimCPUTensor.getTypedArray()[0], inputRank);
+
+                let numOutputElements = 1; // This is the number of slices
+                 if (inputRank > 0) {
+                    for(let i=0; i < inputRank; i++) {
+                        if (i !== reduceDim) {
+                            numOutputElements *= inputShape[i];
+                        }
+                    }
+                    if (inputRank === 1) numOutputElements = 1; // Scalar output
+                } // else for inputRank 0, numOutputElements is 1 (scalar)
+
+
+                const workgroupSizeX = 256; // Must match shader
+                return {
+                    x: workgroupSizeX, // We dispatch enough threads to cover reduce_dim_size in one go per slice.
+                                       // The shader loop handles elements > WORKGROUP_SIZE_X.
+                                       // Actual number of workgroups in X is 1 for this strategy.
+                                       // More accurately, x is related to reduce_dim_size, and y is numOutputElements.
+                                       // Let's re-think the dispatch to match the shader's expectation.
+                                       // Shader uses workgroup_id.y as slice_idx.
+                    y: numOutputElements, // Number of output elements (slices)
+                    x: 1, // Each workgroup processes one full slice reduction internally.
+                           // The parallelism is over the elements *within* the reduction dimension for that slice.
+                           // The shader loops if reduce_dim_size > WORKGROUP_SIZE_X.
+                           // So, we need WORKGROUP_SIZE_X threads in x, and numOutputElements workgroups in y.
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [
+                { name: ReduceMeanNode.INPUT, cpu: false, binding: {type: "read-only-storage", index: 0 } },
+                { name: ReduceMeanNode.DIM, cpu: true } // DIM is used by JS helpers
+            ],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 1 } },
+            ],
         });
     }
 }
