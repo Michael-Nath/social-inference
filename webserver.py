@@ -21,7 +21,7 @@ CHECK_WORK = True
 # model_cache = ModelCache()
 model_cache = None
 
-pipeline, g = tests.test_trig_ops()
+pipeline, g = tests.test_squared()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

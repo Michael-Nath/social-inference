@@ -333,3 +333,32 @@ def test_trig_ops():
         }
     ))
     return pipeline, graph
+
+def test_squared():
+    g = ComputeGraphBuilder()
+    sq_input = g.input("sq_input_val")
+
+    with g.partition("p0_squared"):
+        # Test squaring a mix of positive, negative, and zero values
+        squared_node_float = g.square("squared_float", sq_input) # float32 input
+
+        # Test with integer input
+        int_input_fixed = g.fixed("int_fixed_sq", torch.tensor([-2, 0, 5, 100], dtype=torch.int32))
+        squared_node_int = g.square("squared_int", int_input_fixed)
+    
+    g.output("squared_float_out", squared_node_float)
+    g.output("squared_int_out", squared_node_int)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    float_data = torch.tensor([-3.0, -0.5, 0.0, 1.5, 10.0], dtype=torch.float32)
+    # Expected float: [9.0, 0.25, 0.0, 2.25, 100.0]
+    # Expected int:   [4, 0, 25, 10000]
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="squared_test_0",
+        inputs={
+            "sq_input_val": Tensor.from_torch(float_data),
+        }
+    ))
+    return pipeline, graph

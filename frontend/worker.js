@@ -2782,7 +2782,7 @@ class SquaredNode extends Node {
 
     constructor(api_response) {
         super(api_response);
-        this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+        this.devicePreference = new DevicePreferences({ supportsGPU: true, supportsCPU: true, gpuWeightThreshold: 512 });
     }
 
     estimateWeight(inputsMap) {
@@ -2798,14 +2798,65 @@ class SquaredNode extends Node {
         return [...inputTensor.shape];
     }
 
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'squared',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(SquaredNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`SquaredNode (${this.name}) kernel: Missing input tensor.`);
+                }
+
+                const outputShape = this.getOutputShape(executionContext); // Re-use for consistency
+                // Output tensor will have the same dtype as the input tensor
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputData = inputTensor.getTypedArray();
+
+                for (let i = 0; i < outputView.length; i++) {
+                    const val = inputData[i];
+                    outputView[i] = val * val;
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [SquaredNode.INPUT],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+
     async getGPUKernel() {
-        console.warn(`SquaredNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
+        // console.warn(`SquaredNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
-            name: 'squared_placeholder',
-            shader: await fetch('kernels/empty.wgsl').then(r => r.text()), // Placeholder shader
+            name: 'squared',
+            shader: await fetch('kernels/squared.wgsl').then(r => r.text()), 
             entryPoint: 'main',
-            dimensionBuffer: { func: () => new Uint32Array([1]), index: 0 }, // Placeholder
-            workgroupFunction: () => ({ x: 1, y: 1, z: 1 }), // Placeholder
+            dimensionBuffer: { 
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(SquaredNode.INPUT);
+                    if (!inputTensor) {
+                        throw new Error(`SquaredNode (${this.name}): Missing GPU input tensor for dimensionBuffer.`);
+                    }
+                    const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                    return new Uint32Array([num_elements]); // num_elements
+                },
+                index: 2 // Binding for params
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(SquaredNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`SquaredNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
+                const workgroupSizeX = 256; // Must match WORKGROUP_SIZE_X in shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
             inputs: [{ name: SquaredNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
             outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
         });
