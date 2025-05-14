@@ -212,3 +212,60 @@ def test_gpu_division():
         # }
     ))
     return pipeline, graph
+
+def test_index_reshape():
+    g = ComputeGraphBuilder()
+    # Input tensor: 2x3x4
+    main_input = g.input("main_input_ir") 
+
+    with g.partition("p0_index_reshape"):
+        # IndexNode: Select the slice at index 1 along dim 0. Output should be 3x4.
+        # For simplicity, our IndexNode will assume index is scalar and applies to dim 0.
+        index_val = g.fixed("index_val_ir", torch.tensor([1], dtype=torch.int32))
+        indexed_slice = g.index("indexed_op", main_input, index_val)
+
+        # ReshapeNode: Reshape the 3x4 slice to 2x6
+        reshape_dims1 = g.fixed("reshape_dims1_ir", torch.tensor([2, 6], dtype=torch.int32))
+        reshaped_node1 = g.reshape("reshape_op1", indexed_slice, reshape_dims1)
+
+        # ReshapeNode: Reshape the original 2x3x4 tensor to 6x4 (using -1)
+        reshape_dims2 = g.fixed("reshape_dims2_ir", torch.tensor([-1, 4], dtype=torch.int32))
+        reshaped_node2 = g.reshape("reshape_op2", main_input, reshape_dims2)
+        
+        # IndexNode: Select element at index [0,0] from reshaped_node1 (2x6 -> scalar)
+        # This would require more complex indexing (e.g. index is [0,0] or multiple index nodes)
+        # Let's simplify: index element at index 3 from a flattened version first.
+        # Flatten reshaped_node1 (2x6 -> 12 elements)
+        flatten_dims = g.fixed("flatten_dims_ir", torch.tensor([12], dtype=torch.int32))
+        flattened_for_index = g.reshape("flatten_for_index_op", reshaped_node1, flatten_dims)
+        scalar_index_val = g.fixed("scalar_index_val_ir", torch.tensor([3], dtype=torch.int32)) # 4th element
+        indexed_element = g.index("indexed_element_op", flattened_for_index, scalar_index_val)
+
+    g.output("indexed_slice_out", indexed_slice)
+    g.output("reshaped1_out", reshaped_node1)
+    g.output("reshaped2_out", reshaped_node2)
+    g.output("indexed_element_out", indexed_element)
+    
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+
+    input_tensor_data = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    # main_input_ir: [[[ 0,  1,  2,  3], [ 4,  5,  6,  7], [ 8,  9, 10, 11]],
+    #                 [[12, 13, 14, 15], [16, 17, 18, 19], [20, 21, 22, 23]]]
+
+    # indexed_slice (main_input_ir[1]): [[12,13,14,15], [16,17,18,19], [20,21,22,23]] (shape 3x4)
+    # reshaped_node1 (indexed_slice.reshape(2,6)): 
+    #   [[12,13,14,15,16,17], [18,19,20,21,22,23]] (shape 2x6)
+    # reshaped_node2 (main_input_ir.reshape(-1,4)): 
+    #   [[0,1,2,3],[4,5,6,7],[8,9,10,11],[12,13,14,15],[16,17,18,19],[20,21,22,23]] (shape 6x4)
+    # flattened_for_index (reshaped_node1.reshape(12)): 
+    #   [12,13,14,15,16,17,18,19,20,21,22,23]
+    # indexed_element (flattened_for_index[3]): 15 (scalar)
+
+    pipeline.enqueue_input(PipelineInput(
+        correlation_id="index_reshape_test_0",
+        inputs={
+            "main_input_ir": Tensor.from_torch(input_tensor_data),
+        }
+    ))
+    return pipeline, graph

@@ -343,6 +343,10 @@ export class SessionGraph {
                 throw new Error(`Node ${node.name}'s preference resolved to an unknown device type: ${targetDeviceName}`);
             }
 
+            if(targetDeviceName === "cpu" && node.weight > 10000) {
+                console.warn(`Node ${node.name} has a weight of ${node.weight} and is being placed on the CPU.`);
+            }
+
             if (!currentSession || !(currentSession.device instanceof TargetDeviceClass)) {
                 shouldStartNewSession = true;
             } else {

@@ -689,6 +689,98 @@ class ReshapeNode extends Node {
     get_inputs() { return [ReshapeNode.INPUT, ReshapeNode.DIMS]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _calculateOutputShape(inputTensor, dimsTensor) {
+        if (!inputTensor) {
+            throw new Error(`ReshapeNode (${this.name}): Missing input tensor.`);
+        }
+        if (!dimsTensor) {
+            throw new Error(`ReshapeNode (${this.name}): Missing dims tensor.`);
+        }
+
+        const inputShape = inputTensor.shape;
+        const inputNumElements = inputShape.reduce((acc, val) => acc * val, 1);
+        
+        const newDimsTypedArray = dimsTensor.getTypedArray();
+        let newShape = Array.from(newDimsTypedArray);
+
+        let unknownDimIndex = -1;
+        let productOfKnownDims = 1;
+
+        for (let i = 0; i < newShape.length; i++) {
+            if (newShape[i] === -1) {
+                if (unknownDimIndex !== -1) {
+                    throw new Error(`ReshapeNode (${this.name}): Can only specify one unknown dimension (-1). Got shape: ${newShape}`);
+                }
+                unknownDimIndex = i;
+            } else if (newShape[i] < 0) {
+                throw new Error(`ReshapeNode (${this.name}): Dimension size cannot be negative (except -1 for unknown). Got shape: ${newShape}`);
+            } else if (newShape[i] === 0 && inputNumElements !== 0) {
+                // If input has elements, a zero dimension in new shape is only valid if input also has zero elements along some dimension making total zero.
+                // Or, more strictly, a zero dimension generally means zero elements in that dim.
+                // If inputNumElements > 0, newShape containing 0 is an error unless inputNumElements is also 0.
+                // Allowing 0 dim if input is 0 elements. E.g. reshape [0,2] to [0,5]
+                 productOfKnownDims = 0; // If any dim is 0, product is 0
+            } else if (newShape[i] > 0) {
+                productOfKnownDims *= newShape[i];
+            }
+        }
+
+        if (unknownDimIndex !== -1) {
+            if (productOfKnownDims === 0) {
+                if (inputNumElements === 0) { // e.g. input [0,2], reshape to [-1, 0]
+                    newShape[unknownDimIndex] = 0; // or 1, depends on convention for 0-element tensors
+                } else {
+                     throw new Error(`ReshapeNode (${this.name}): Cannot infer dimension marked -1 when other dimensions result in zero product (${productOfKnownDims}) but input has elements (${inputNumElements}).`);
+                }
+            } else if (inputNumElements % productOfKnownDims !== 0) {
+                throw new Error(`ReshapeNode (${this.name}): Input total elements (${inputNumElements}) not divisible by product of known new dimensions (${productOfKnownDims}) for shape ${Array.from(newDimsTypedArray)}`);
+            }
+            newShape[unknownDimIndex] = inputNumElements / productOfKnownDims;
+        }
+        
+        const newNumElements = newShape.reduce((acc, val) => acc * val, 1);
+        if (newNumElements !== inputNumElements) {
+            throw new Error(`ReshapeNode (${this.name}): Total number of elements mismatch. Input: ${inputNumElements} (${inputShape}), Requested New Shape: ${newNumElements} (${newShape}) from dims ${Array.from(newDimsTypedArray)}.`);
+        }
+
+        return newShape;
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(ReshapeNode.INPUT);
+        const dimsTensor = executionContext.cpu(ReshapeNode.DIMS);
+        return this._calculateOutputShape(inputTensor, dimsTensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'reshape',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(ReshapeNode.INPUT);
+                const dimsTensor = executionContext.cpu(ReshapeNode.DIMS);
+
+                if (!inputTensor || !dimsTensor) {
+                    throw new Error(`ReshapeNode (${this.name}) kernel: Missing input or dims tensor.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor, dimsTensor);
+                
+                // Reshape reuses the input tensor's data buffer.
+                const outputTensor = new CPUTensor({
+                    data: inputTensor.data, // Re-use the underlying ArrayBuffer
+                    shape: outputShape,
+                    dtype: inputTensor.dtype,
+                });
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [ReshapeNode.INPUT, ReshapeNode.DIMS],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**
@@ -1276,17 +1368,133 @@ class IndexNode extends Node {
      */
     constructor(api_response) {
         super(api_response);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     estimateWeight(inputsMap) {
-        // Estimate: output elements are significantly fewer than input.
         const inputWeight = inputsMap.get(IndexNode.INPUT) || 0;
-        return Math.max(1, Math.floor(inputWeight / 2));
+        // Rough estimate: output is a slice, so smaller than input.
+        // This needs to be much better if we know input rank and index type.
+        // For now, assume it reduces elements significantly.
+        return Math.max(1, Math.floor(inputWeight / 2)); // Placeholder
     }
 
     get_inputs() { return [IndexNode.INPUT, IndexNode.INDEX]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _calculateOutputShape(inputTensor, indexTensor) {
+        if (!inputTensor) {
+            throw new Error(`IndexNode (${this.name}): Missing input tensor.`);
+        }
+        if (!indexTensor) {
+            throw new Error(`IndexNode (${this.name}): Missing index tensor.`);
+        }
+
+        const inputShape = inputTensor.shape;
+        const indexData = indexTensor.getTypedArray();
+
+        if (indexData.length !== 1) {
+            throw new Error(`IndexNode (${this.name}): For simple indexing, index tensor must be a scalar (1 element). Got ${indexData.length} elements.`);
+        }
+        let index = indexData[0];
+
+        if (inputShape.length === 0) {
+            throw new Error(`IndexNode (${this.name}): Cannot index a 0D (scalar) tensor.`);
+        }
+
+        // Normalize index for the first dimension
+        if (index < 0) {
+            index = inputShape[0] + index;
+        }
+
+        if (index < 0 || index >= inputShape[0]) {
+            throw new Error(`IndexNode (${this.name}): Index ${indexData[0]} out of bounds for dimension 0 with size ${inputShape[0]}.`);
+        }
+
+        // Output shape is the input shape with the first dimension removed.
+        // If input is 1D, output is 0D (scalar).
+        const outputShape = inputShape.slice(1);
+        return outputShape; // Effectively [] for 1D input after slice(1)
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(IndexNode.INPUT);
+        const indexTensor = executionContext.cpu(IndexNode.INDEX);
+        return this._calculateOutputShape(inputTensor, indexTensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'index',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(IndexNode.INPUT);
+                const indexTensor = executionContext.cpu(IndexNode.INDEX);
+
+                if (!inputTensor || !indexTensor) {
+                    throw new Error(`IndexNode (${this.name}) kernel: Missing input or index tensor.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor, indexTensor);
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputData = inputTensor.getTypedArray();
+                
+                let index = indexTensor.getTypedArray()[0];
+                const inputShape = inputTensor.shape;
+                 if (index < 0) { // Normalize again, just in case (already done in _calculateOutputShape)
+                    index = inputShape[0] + index;
+                }
+
+                // Calculate the size of each slice along the first dimension
+                let sliceSize = 1;
+                for (let i = 1; i < inputShape.length; i++) {
+                    sliceSize *= inputShape[i];
+                }
+                if (inputShape.length === 0) sliceSize = 0; // Should have been caught
+                if (inputShape.length === 1) sliceSize = 1; // Element for 1D array
+
+                const offset = index * sliceSize;
+
+                if (outputView.length !== sliceSize && !(inputShape.length ===1 && outputView.length === 0) ) { // outputView.length is 0 for scalar
+                     // For 1D input, outputShape is [], outputView.length is typically 0 or 1 by convention of TypedArray(0) or TypedArray(1) for scalar.
+                     // If inputShape is 1D, sliceSize is 1. outputView.length for a scalar can be tricky.
+                     // CPUTensor.uninitialized([], dtype) will create buffer of 1 element for some dtypes.
+                     // Let's ensure logic for 1D to 0D (scalar) is robust.
+                     if (inputShape.length === 1 && outputShape.length === 0) {
+                        // This is indexing a 1D array to get a scalar.
+                        // sliceSize is 1. offset is the index itself.
+                        // outputView will be a TypedArray for the scalar value.
+                        if (outputView.constructor.BYTES_PER_ELEMENT > 0 && outputView.buffer.byteLength >= outputView.constructor.BYTES_PER_ELEMENT) {
+                           // It's a valid buffer for one element
+                        } else {
+                            throw new Error(`IndexNode (${this.name}) kernel: Output view for scalar has unexpected length/buffer for 1D->0D indexing.`);
+                        }
+                     } else {
+                        throw new Error(`IndexNode (${this.name}) kernel: Mismatch between output view length (${outputView.length}) and calculated slice size (${sliceSize}).`);
+                     }
+                }
+
+                if (inputShape.length === 1) { // Indexing a 1D array to get a scalar
+                    if (outputView.length === 1 || outputView.length === 0 && outputShape.length === 0) { // check for scalar case CPUTensor.uninitialized([], dtype) can make length 1 buffer
+                         outputView[0] = inputData[offset];
+                    } else {
+                        throw new Error(`IndexNode (${this.name}): Output view for scalar from 1D array has unexpected length.`);
+                    }
+                } else { // Indexing multi-dimensional array to get a slice
+                    for (let i = 0; i < sliceSize; i++) {
+                        outputView[i] = inputData[offset + i];
+                    }
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [IndexNode.INPUT, IndexNode.INDEX],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
 }
 
 /**
