@@ -438,7 +438,7 @@ class SoftmaxNode extends Node {
         const inputGPUTensor = executionContext.gpu(SoftmaxNode.INPUT);
 
         if (!inputGPUTensor || !inputGPUTensor.shape) {
-            throw new Error(`SoftmaxNode (${this.name}): Missing required input GPU tensor or shape for \'input\'.`);
+            throw new Error(`SoftmaxNode (${this.name}): Missing required input GPU tensor or shape for 'input'.`);
         }
         // Softmax output shape is the same as the input shape
         return [...inputGPUTensor.shape]; // Return a copy
@@ -1104,6 +1104,80 @@ class HadamardNode extends Node {
     get_inputs() { return [HadamardNode.A, HadamardNode.B]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    _calculateOutputShape(tensorA, tensorB) {
+        if (!tensorA || !tensorB) {
+            throw new Error(`HadamardNode (${this.name}): Missing required input tensors ('a' or 'b').`);
+        }
+        // For now, require identical shapes. Broadcasting could be added later.
+        if (tensorA.shape.length !== tensorB.shape.length || 
+            !tensorA.shape.every((dim, i) => dim === tensorB.shape[i])) {
+            throw new Error(`HadamardNode (${this.name}): Input shapes must be identical. Got ${tensorA.shape} and ${tensorB.shape}.`);
+        }
+        if (tensorA.dtype !== tensorB.dtype) {
+             // For element-wise ops, typically dtypes should match or be compatible (e.g. float32*float32 -> float32)
+             // For simplicity, let's assume they match and output dtype is the same.
+             // If they don't match, could default to higher precision or throw error.
+             console.warn(`HadamardNode (${this.name}): Input dtypes are different (${tensorA.dtype}, ${tensorB.dtype}). Output dtype will be ${tensorA.dtype}.`);
+        }
+        return [...tensorA.shape]; // Output shape is same as input shape
+    }
+
+    getOutputShape(executionContext) {
+        const tensorA = executionContext.cpu(HadamardNode.A) || executionContext.gpu(HadamardNode.A);
+        const tensorB = executionContext.cpu(HadamardNode.B) || executionContext.gpu(HadamardNode.B);
+        // For GPU kernels, shape calculation might need to access .gpu() if CPU tensors aren't always present
+        // However, getOutputShape is often called by CPU-side logic or pre-computation steps.
+        // For now, let's assume CPU versions or GPU versions with shape property are available.
+        // If only GPU tensors are available in EC for GPU ops, this needs adjustment or shape info passed differently.
+        const shapeA = tensorA ? tensorA.shape : null;
+        const shapeB = tensorB ? tensorB.shape : null;
+
+        if (!shapeA || !shapeB) {
+             throw new Error(`HadamardNode (${this.name}): Could not retrieve shapes for input tensors for getOutputShape.`);
+        }
+         // This re-uses the logic, assuming CPUTensor-like objects or objects with shape/dtype for inputs
+        return this._calculateOutputShape({shape: shapeA, dtype: tensorA.dtype}, {shape: shapeB, dtype: tensorB.dtype});
+    }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: 'hadamard',
+            shader: await fetch('kernels/hadamard.wgsl').then(r => r.text()),
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const tensorA = executionContext.gpu(HadamardNode.A);
+                    if (!tensorA) {
+                        throw new Error(`HadamardNode (${this.name}): Missing GPU tensor A for dimensionBuffer.`);
+                    }
+                    const num_elements = tensorA.shape.reduce((acc, val) => acc * val, 1);
+                    return new Uint32Array([num_elements]);
+                },
+                index: 3, // Assuming binding 0,1 for inputs, 2 for output
+            },
+            workgroupFunction: (executionContext) => {
+                const tensorA = executionContext.gpu(HadamardNode.A);
+                 if (!tensorA) {
+                    throw new Error(`HadamardNode (${this.name}): Missing GPU tensor A for workgroupFunction.`);
+                }
+                const num_elements = tensorA.shape.reduce((acc, val) => acc * val, 1);
+                const workgroupSizeX = 256; // Should match shader
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [
+                { name: HadamardNode.A, cpu: false, binding: {type: "read-only-storage", index: 0 } },
+                { name: HadamardNode.B, cpu: false, binding: {type: "read-only-storage", index: 1 } },
+            ],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: {type: "storage", index: 2 } },
+            ],
+        });
+    }
 }
 
 /**
