@@ -21,7 +21,7 @@ CHECK_WORK = True
 # model_cache = ModelCache()
 model_cache = None
 
-pipeline, g = tests.test_index_select()
+pipeline, g = tests.test_llama_model()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()
@@ -75,8 +75,10 @@ async def get_work(partition_name: PartitionName):
     Called by clients to request inference inputs
     """
     w = pipeline.get_partition_work(partition_name)
+    print("Done packing work")
     if CHECK_WORK:
         inflight_work[(partition_name, w.correlation_id)] = w
+    print("Done inflight work")
     return w
 
 @app.post("/work")

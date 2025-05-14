@@ -485,3 +485,74 @@ def test_index_select():
         }
     ))
     return pipeline, graph
+
+from transformers import AutoModelForCausalLM, LlamaForCausalLM, LlamaConfig
+from inference import ComputeGraphBuilder, ComputeGraph, ComputeGraphNode
+from inference.name_scope import NameScope
+import torch
+from models.utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights
+from inference.tensor import Tensor
+from inference.pipeline import ComputePipeline, PipelineInput
+from inference.simulator import simulate
+from inference.test_util import llama_1b_cache
+from models.llama import rotary_embed, llama_model
+
+torch.set_grad_enabled(False)
+MODEL_PATH = "meta-llama/Llama-3.2-1B"
+
+def test_llama_model():
+    g = ComputeGraphBuilder()
+    tokens = g.input("tokens")
+    position_ids = g.input("position_ids")
+
+    model = load_model(MODEL_PATH)
+    model.model = model.model.float()
+    model.model = model.model.cpu()
+
+    input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
+    position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
+    
+    b = ComputeGraphBuilder()
+    input_tokens_node = b.input("input_tokens")
+    pos_ids_node = b.input("position_ids")
+    with b.partition("p0"):
+      with NameScope.push_scope("statics"):
+        statics = prepare_llama_model_statics(model, b)
+        nodes = [statics]
+  
+        for layer_idx in range(1):
+          with NameScope.push_scope(f"layer{layer_idx}"):
+            layer_weights = package_llama_decoder_layer_weights(model.model.layers[layer_idx], b)
+            nodes.append(layer_weights)
+
+      # Calculate and print the total size of all fixed nodes in bytes
+      total_size_bytes = 0
+      
+      for n in nodes[1:]:
+          for k, v in n.items():
+              for k2, v2 in v.items():
+                  tensor = v2.tensor
+                  total_size_bytes += tensor.numel() * tensor.element_size()
+      print(f"Total size of all fixed nodes: {total_size_bytes} bytes ({total_size_bytes / (1024 * 1024):.2f} MB)")
+
+
+      our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)
+  
+    b.output("llama_out", our_out)
+
+    # Build graph
+    g = b.build()
+
+    input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
+    position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
+
+    # Create pipeline and enqueue inputs
+    pipeline = ComputePipeline(g)
+    inputs = {
+        "input_tokens": Tensor.from_torch(input_tokens),
+        "position_ids": Tensor.from_torch(position_ids)
+    }
+
+    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
+
+    return pipeline, g
