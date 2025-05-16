@@ -3114,7 +3114,6 @@ class SquaredNode extends Node {
     }
 
     async getGPUKernel() {
-        // console.warn(`SquaredNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
             name: 'squared',
             shader: await fetch('kernels/squared.wgsl').then(r => r.text()), 

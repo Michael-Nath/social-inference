@@ -16,12 +16,10 @@ import tests
 # Import test functions from tests.py
 import tests
 
-CHECK_WORK = True
+CHECK_WORK = False
 
-# model_cache = ModelCache()
-model_cache = None
-
-pipeline, g = tests.test_llama_model()
+model_cache = ModelCache()
+pipeline, g = tests.test_constant_node()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()

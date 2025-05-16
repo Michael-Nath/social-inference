@@ -556,3 +556,16 @@ def test_llama_model():
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
 
     return pipeline, g
+
+def test_fixed(shape):
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        fixed_node = g.fixed("fixed_node", torch.rand(shape, dtype=torch.float32))
+        y = g.add("add_node", x, fixed_node)
+    g.output("y", y)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+    pipeline.enqueue_input(
+        PipelineInput(correlation_id="test", inputs={"x": Tensor.from_torch(torch.rand(shape, dtype=torch.float32))}))
+    return pipeline, graph
