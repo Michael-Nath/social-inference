@@ -569,3 +569,12 @@ def test_fixed(shape):
     pipeline.enqueue_input(
         PipelineInput(correlation_id="test", inputs={"x": Tensor.from_torch(torch.rand(shape, dtype=torch.float32))}))
     return pipeline, graph
+
+def test_safetensor():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        constant_node = g.safetensor("constant_node", "test_model", "test_tensor")
+    g.output("y", constant_node)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)

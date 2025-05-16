@@ -176,7 +176,8 @@ class SafeTensorCache:
           dtype=v["dtype"],
           shape=v["shape"],
           data=None,
-          refcount=threading.Semaphore(value=0),
+          _refcount=0,
+          _refcount_lock=threading.Lock(),
           last_use=0.0
         )
 

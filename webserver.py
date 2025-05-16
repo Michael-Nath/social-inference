@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
@@ -58,14 +59,23 @@ async def get_output():
     """
     return pipeline.dequeue_output(blocking=False)
 
-@app.get("/constant/{model_name}/{tensor_name}", response_model=Tensor)
+@app.get("/constant/{model_name}/{tensor_name}", response_model=StreamingResponse)
 async def get_constant(model_name: str, tensor_name: str):
     """
     Called by clients to get a constant tensor
     """
     tensor_cache = model_cache.get_cache(model_name)
+
+    # Pretty print cache statistics
+    stats = tensor_cache.get_stats()
+    print(f"Cache Statistics for {model_name}:")
+    print(f"  Hits: {stats.hits} ({stats.hits_bytes / (1024 * 1024):.2f} MB)")
+    print(f"  Misses: {stats.misses} ({stats.misses_bytes / (1024 * 1024):.2f} MB)")
+    print(f"  Evictions: {stats.evictions} ({stats.evictions_bytes / (1024 * 1024):.2f} MB)")
+    print(f"  Present: {stats.present} ({stats.present_bytes / (1024 * 1024):.2f} MB)")
+
     with tensor_cache.get_tensor(tensor_name) as tensor:
-        return Tensor.from_torch(tensor)
+        return StreamingResponse(torch.tobytes(), media_type="application/octet-stream")
 
 @app.get("/work/{partition_name}", response_model=PartitionWork | None)
 async def get_work(partition_name: PartitionName):
@@ -73,10 +83,8 @@ async def get_work(partition_name: PartitionName):
     Called by clients to request inference inputs
     """
     w = pipeline.get_partition_work(partition_name)
-    print("Done packing work")
     if CHECK_WORK:
         inflight_work[(partition_name, w.correlation_id)] = w
-    print("Done inflight work")
     return w
 
 @app.post("/work")

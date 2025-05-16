@@ -9,15 +9,15 @@ from .graph import (
     SiluNode, CosNode, SinNode, IndexSelectNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
-from .cache import SafeTensorCache
+from .cache import SafeTensorCache, ModelCache 
 
-def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWorkResult:
+def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResult:
     """
     Simulates a worker.
 
     Args:
         work: The work to simulate
-        tensor_cache: The tensor cache to use for constant tensors
+        model_cache: The model cache to use for constant tensors
     """
     # Get the graph
     graph = work.graph
@@ -102,7 +102,8 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
 
         encoded_node = graph.nodes[node]
         try:
-            if encoded_node.type == "constant":
+            if encoded_node.type == "safetensor":
+                tensor_cache = model_cache.get_cache(encoded_node.model_name)
                 with tensor_cache.get_tensor(encoded_node.tensor_name) as tensor:   
                     output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
             elif encoded_node.type == "matmul":

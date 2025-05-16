@@ -520,3 +520,26 @@ def test_simulate_floor_ceil():
     assert ceil_output.output == DEFAULT_NODE_OUTPUT
     expected_ceil = torch.tensor([-1, 0, 1, 2], dtype=torch.long)
     assert torch.allclose(ceil_output.tensor.to_torch(), expected_ceil)
+
+def test_simulate_safetensor():
+    builder = ComputeGraphBuilder()
+    with builder.partition("p0"):
+        constant_node = builder.safetensor("constant_node", "meta-llama/Llama-3.2-1B", "model.layers.0.input_layernorm.weight")
+    g = builder.build()
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == constant_node.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    assert output.tensor.to_torch().shape == (2048)

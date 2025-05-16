@@ -19,7 +19,8 @@ def create_cq():
 
 def create_element(correlation_id: str, value: int) -> CorrelatedTensor:
     """Creates a PipelineElement with a single-element Tensor."""
-    return CorrelatedTensor(correlation_id=correlation_id, tensor=Tensor(elements=[value], shape=[1]))
+    t = np.ones((1))
+    return CorrelatedTensor(correlation_id=correlation_id, tensor=Tensor.from_numpy(t))
 
-def llama_1b_cache() -> SafeTensorCache:
-    return ModelCache().get_cache("meta-llama/Llama-3.2-1B")
+def llama_1b_cache() -> ModelCache:
+    return ModelCache()
