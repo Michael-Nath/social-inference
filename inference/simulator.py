@@ -41,6 +41,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
         if edge.src not in backward_edges:
             backward_edges[edge.src] = {}
         backward_edges[edge.src][edge.src_output] = edge
+
     
     # Also include all nodes with no forward edges (outputs)
     output_nodes: list[NodeName] = []
@@ -111,6 +112,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                         output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor.to(torch.float32)
                     else:
                         output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
+                return output_table[(node, DEFAULT_NODE_OUTPUT)]
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
@@ -326,7 +328,6 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
             raise e
 
 
-    print(output_nodes)
     for node in output_nodes:
         evaluate_output(node, DEFAULT_NODE_OUTPUT)
 

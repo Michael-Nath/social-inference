@@ -75,7 +75,6 @@ class SafetensorNodeEncoding(BaseModel):
     name: NodeName
     model_name: str
     tensor_name: str
-    should_transpose: bool 
 
 class MatmulNodeEncoding(BaseModel):
     """
@@ -366,16 +365,14 @@ class SafetensorNode(ComputeGraphNode):
     The name of the model that contains the safe tensor.
     """
     tensor_name: str
-    should_transpose: bool 
     """
     The name of the safe tensor.
     """
 
-    def __init__(self, name: NodeName, partition: PartitionName, model_name: str, tensor_name: str, should_transpose: bool):
+    def __init__(self, name: NodeName, partition: PartitionName, model_name: str, tensor_name: str):
         super().__init__(name, partition)
         self.model_name = model_name
         self.tensor_name = tensor_name
-        self.should_transpose = should_transpose
 
     def get_input_names(self) -> set[str]:
         return set()
@@ -819,10 +816,10 @@ class ComputeGraphBuilder:
         self._make_edge(x.name, DEFAULT_NODE_OUTPUT, name, OutputNode.INPUT)
         return self._nodes[name]
 
-    def safetensor(self, name: NodeName, model_name: str, tensor_name: str, should_transpose: bool) -> SafetensorNode:
+    def safetensor(self, name: NodeName, model_name: str, tensor_name: str, should_transpose: bool = False) -> SafetensorNode:
         name = NameScope.name(name)
         self._check_node(name)
-        self._nodes[name] = SafetensorNode(name=name, partition=self._active_partition, model_name=model_name, tensor_name=tensor_name, should_transpose=should_transpose)
+        self._nodes[name] = SafetensorNode(name=name, partition=self._active_partition, model_name=model_name, tensor_name=tensor_name)
         
         if should_transpose:
             name_t = name + ".T"
@@ -1267,7 +1264,7 @@ class ComputeGraph:
             if isinstance(node, MatmulNode):
                 nodes[node_name] = MatmulNodeEncoding(type="matmul", name=node_name)
             elif isinstance(node, SafetensorNode):
-                nodes[node_name] = SafetensorNodeEncoding(type="safetensor", name=node_name, model_name=node.model_name, tensor_name=node.tensor_name, should_transpose=node.should_transpose)
+                nodes[node_name] = SafetensorNodeEncoding(type="safetensor", name=node_name, model_name=node.model_name, tensor_name=node.tensor_name)
             elif isinstance(node, SliceNode):
                 nodes[node_name] = SliceNodeEncoding(type="slice", name=node_name)
             elif isinstance(node, UnsqueezeNode):
