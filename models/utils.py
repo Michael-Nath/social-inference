@@ -61,7 +61,7 @@ def prepare_llama_model_statics(model, b: ComputeGraphBuilder) -> dict:
     
     return all_statics
 
-def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder) -> dict:
+def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder, prefix: str) -> dict:
     """
     Extracts weights from a PyTorch LlamaDecoderLayer and packages them as graph nodes.
     """
@@ -79,8 +79,9 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
         data = param.data.clone()
         if len(data.shape) == 2:
             data = data.T
-        node = b.fixed(graph_node_name, data.detach())
-        all_param_nodes[name] = node
+        complete_name = prefix + name
+        node = b.fixed(complete_name, data.detach())
+        all_param_nodes[complete_name] = node
 
     # Handle input layernorm
     if "input_layernorm.weight" in all_param_nodes:

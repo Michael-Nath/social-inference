@@ -201,15 +201,14 @@ def layer_correct(model, idx: int):
     b = ComputeGraphBuilder()
     with b.partition("p0"):
         # Use the new utility function to package weights
-        packaged_layer_weights = package_llama_decoder_layer_weights(first_decoder_layer, b)
+        packaged_layer_weights = package_llama_decoder_layer_weights(first_decoder_layer, b, "")
         
         # Prepare the specific weight_dict for the current llama_fwd function
         weight_dict_for_llama_fwd = {
             "input_layernorm": packaged_layer_weights["input_layernorm"],
-            "attn": packaged_layer_weights["self_attn"],
-            # As llama_fwd expands, you'll add more here, e.g.:
+            "self_attn": packaged_layer_weights["self_attn"],
             "mlp": packaged_layer_weights["mlp"],
-            "post_layernorm": packaged_layer_weights["post_attention_layernorm"]
+            "post_layernorm": packaged_layer_weights["post_layernorm"]
         }
 
         # Create a graph node for the hidden_states input tensor
