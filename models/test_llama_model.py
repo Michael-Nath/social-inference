@@ -96,8 +96,8 @@ def test_llama_model():
   
       for layer_idx in range(16):
         with NameScope.push_scope(f"layer{layer_idx}"):
-          prefix = f"layers.{layer_idx}."
-          layer_weights = package_llama_decoder_layer_weights(model.model.layers[layer_idx], prefix)
+          prefix = f"{MODEL_PATH}/layers.{layer_idx}."
+          layer_weights = package_llama_decoder_layer_weights(model.model.layers[layer_idx], prefix, MODEL_PATH)
           nodes.append(layer_weights)
 
     our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)

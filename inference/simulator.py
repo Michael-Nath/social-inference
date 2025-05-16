@@ -106,6 +106,8 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 tensor_cache = model_cache.get_cache(encoded_node.model_name)
                 with tensor_cache.get_tensor(encoded_node.tensor_name) as tensor:   
                     output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
+                    tensor = tensor.float()
+                    return tensor
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
@@ -128,7 +130,6 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 # Resolve dim dynamically, ensure it's a 1-element tensor, and get the integer value
                 dim_tensor = resolve_input(node, UnsqueezeNode.DIM)
                 dim = check_shape(dim_tensor, [1]).item()
-
                 output = input_tensor.unsqueeze(dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output

@@ -61,7 +61,7 @@ def prepare_llama_model_statics(model, b: ComputeGraphBuilder) -> dict:
     
     return all_statics
 
-def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder, prefix: str) -> dict:
+def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder, prefix: str, model_name: str) -> dict:
     """
     Extracts weights from a PyTorch LlamaDecoderLayer and packages them as graph nodes.
     """
@@ -75,17 +75,18 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
 
     # Create graph nodes for all learnable parameters
     for name, param in layer.named_parameters():
-        graph_node_name = f"weights/{name.replace('.', '/')}"
         data = param.data.clone()
         if len(data.shape) == 2:
             data = data.T
-        complete_name = prefix + name
-        node = b.fixed(complete_name, data.detach())
-        all_param_nodes[complete_name] = node
+        tensor_name = prefix + name
+        complete_name = model_name + tensor_name
+        should_transpose = "proj" in name
+        node = b.safetensor(complete_name, model_name, tensor_name, should_transpose)
+        all_param_nodes[tensor_name] = node
 
     # Handle input layernorm
-    if "input_layernorm.weight" in all_param_nodes:
-        packaged_weights["input_layernorm"]["weight"] = all_param_nodes["input_layernorm.weight"]
+    if f"{prefix}input_layernorm.weight" in all_param_nodes:
+        packaged_weights["input_layernorm"]["weight"] = all_param_nodes[f"{prefix}input_layernorm.weight"]
     ln_eps_tensor = torch.tensor(layer.input_layernorm.variance_epsilon, dtype=torch.float32)
     packaged_weights["input_layernorm"]["eps"] = b.fixed("params/input_layernorm.eps", ln_eps_tensor.unsqueeze(0))
 
@@ -99,8 +100,9 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
         "o_weight": "self_attn.o_proj.weight",
     }
     for graph_key, hf_key in attn_key_map.items():
-        if hf_key in all_param_nodes:
-            packaged_weights["self_attn"][graph_key] = all_param_nodes[hf_key]
+        mod_hf_key = f"{prefix}{hf_key}"
+        if mod_hf_key in all_param_nodes:
+            packaged_weights["self_attn"][graph_key] = all_param_nodes[mod_hf_key]
 
     # Handle MLP weights
     mlp_key_map = {
@@ -109,13 +111,13 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
         "down_proj": "mlp.down_proj.weight",
     }
     for graph_key, hf_key in mlp_key_map.items():
-        if hf_key in all_param_nodes:
-            packaged_weights["mlp"][graph_key] = all_param_nodes[hf_key]
+        mod_hf_key = f"{prefix}{hf_key}"
+        if mod_hf_key in all_param_nodes:
+            packaged_weights["mlp"][graph_key] = all_param_nodes[mod_hf_key]
 
     # Handle post-attention layernorm
-    if "post_attention_layernorm.weight" in all_param_nodes:
-        packaged_weights["post_layernorm"]["weight"] = all_param_nodes["post_attention_layernorm.weight"]
+    if f"{prefix}post_attention_layernorm.weight" in all_param_nodes:
+        packaged_weights["post_layernorm"]["weight"] = all_param_nodes[f"{prefix}post_attention_layernorm.weight"]
     post_ln_eps_tensor = torch.tensor(layer.post_attention_layernorm.variance_epsilon, dtype=torch.float32)
     packaged_weights["post_layernorm"]["eps"] = b.fixed("params/post_attention_layernorm.eps", post_ln_eps_tensor.unsqueeze(0))
-
     return packaged_weights

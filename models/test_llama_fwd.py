@@ -182,7 +182,7 @@ def test_llama_attn():
     assert is_close, "Attention outputs don't match within tolerance"
 
 
-def layer_correct(model, idx: int):
+def layer_correct(model_name, model, idx: int):
     batch_size = 1
     seq_len = 1
     num_heads = model.config.num_attention_heads
@@ -201,7 +201,8 @@ def layer_correct(model, idx: int):
     b = ComputeGraphBuilder()
     with b.partition("p0"):
         # Use the new utility function to package weights
-        packaged_layer_weights = package_llama_decoder_layer_weights(first_decoder_layer, b, "")
+        prefix = f"model.layers.{idx}."
+        packaged_layer_weights = package_llama_decoder_layer_weights(first_decoder_layer, b, prefix, model_name)
         
         # Prepare the specific weight_dict for the current llama_fwd function
         weight_dict_for_llama_fwd = {
@@ -280,7 +281,7 @@ def test_llama_fwd():
     for idx in range(len(model.model.layers)):
         # layer_correct currently tests llama_fwd per layer and handles its own weight packaging.
         # If testing the full llama_model, scalar_static_params and global_static_nodes would be used here.
-        assert layer_correct(model, idx)
+        assert layer_correct(model_path, model, idx )
 
 if __name__ == "__main__":
     test_llama_attn()

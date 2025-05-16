@@ -206,6 +206,7 @@ class SafeTensorCache:
 
   @contextmanager
   def get_tensor(self, tensor: str):
+    entry = None
     try:
       self._lock.acquire()
       try:
@@ -260,9 +261,13 @@ class SafeTensorCache:
         entry.pin()
       finally:
         self._lock.release()
-      yield entry.data
+      if entry:
+        yield entry.data
+      else:
+        yield None
     finally:
-      entry.unpin()
+      if entry:
+        entry.unpin()
 
 class ModelCache:
   _caches: dict[str, SafeTensorCache]
