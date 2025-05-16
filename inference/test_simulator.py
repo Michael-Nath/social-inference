@@ -512,13 +512,13 @@ def test_simulate_floor_ceil():
     # Check floor output
     floor_output = next(o for o in result.outputs if o.node == floor_result.name)
     assert floor_output.output == DEFAULT_NODE_OUTPUT
-    expected_floor = torch.tensor([-2, -1, 0, 1], dtype=torch.long)
+    expected_floor = torch.tensor([-2, -1, 0, 1], dtype=torch.int)
     assert torch.allclose(floor_output.tensor.to_torch(), expected_floor)
     
     # Check ceil output
     ceil_output = next(o for o in result.outputs if o.node == ceil_result.name)
     assert ceil_output.output == DEFAULT_NODE_OUTPUT
-    expected_ceil = torch.tensor([-1, 0, 1, 2], dtype=torch.long)
+    expected_ceil = torch.tensor([-1, 0, 1, 2], dtype=torch.int)
     assert torch.allclose(ceil_output.tensor.to_torch(), expected_ceil)
 
 def test_simulate_safetensor():
@@ -542,4 +542,4 @@ def test_simulate_safetensor():
     output = result.outputs[0]
     assert output.node == constant_node.name
     assert output.output == DEFAULT_NODE_OUTPUT
-    assert output.tensor.to_torch().shape == (2048)
+    assert list(output.tensor.to_torch().shape) == [2048]
