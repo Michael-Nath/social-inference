@@ -67,11 +67,11 @@ class DebugNodeEncoding(BaseModel):
     type: Literal["debug"]
     name: NodeName
 
-class ConstantNodeEncoding(BaseModel):
+class SafetensorNodeEncoding(BaseModel):
     """
-    API-encoded constant node.
+    API-encoded Safetensor node.
     """
-    type: Literal["constant"]
+    type: Literal["safetensor"]
     name: NodeName
     tensor_name: str
 
@@ -287,7 +287,7 @@ class IndexSelectNodeEncoding(BaseModel):
 type NodeEncoding = Annotated[
     Union[
         MatmulNodeEncoding,
-        ConstantNodeEncoding,
+        SafetensorNode,
         SoftmaxNodeEncoding,
         SliceNodeEncoding,
         UnsqueezeNodeEncoding,
@@ -358,7 +358,7 @@ class OutputNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return set()
 
-class ConstantNode(ComputeGraphNode):
+class SafetensorNode(ComputeGraphNode):
     tensor_name: str
     """
     The name of the safe tensor.
@@ -811,11 +811,11 @@ class ComputeGraphBuilder:
         self._make_edge(x.name, DEFAULT_NODE_OUTPUT, name, OutputNode.INPUT)
         return self._nodes[name]
 
-    def constant(self, name: NodeName, tensor_name: str) -> ConstantNode:
+    def safetensor(self, name: NodeName, tensor_name: str) -> SafetensorNode:
         name = NameScope.name(name)
         self._check_node(name)
 
-        self._nodes[name] = ConstantNode(name=name, partition=self._active_partition, tensor_name=tensor_name)
+        self._nodes[name] = SafetensorNode(name=name, partition=self._active_partition, tensor_name=tensor_name)
         self._make_edge(name, DEFAULT_NODE_OUTPUT, name, InputNode.INPUT)
         return self._nodes[name]
     
@@ -1253,8 +1253,8 @@ class ComputeGraph:
         for node_name, node in self._nodes.items():
             if isinstance(node, MatmulNode):
                 nodes[node_name] = MatmulNodeEncoding(type="matmul", name=node_name)
-            elif isinstance(node, ConstantNode):
-                nodes[node_name] = ConstantNodeEncoding(type="constant", name=node_name, tensor_name=node.tensor_name)
+            elif isinstance(node, SafetensorNode):
+                nodes[node_name] = SafetensorNodeEncoding(type="constant", name=node_name, tensor_name=node.tensor_name)
             elif isinstance(node, SliceNode):
                 nodes[node_name] = SliceNodeEncoding(type="slice", name=node_name)
             elif isinstance(node, UnsqueezeNode):
