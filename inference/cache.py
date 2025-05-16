@@ -111,7 +111,15 @@ class CacheEntry:
       raw_array = torch.frombuffer(content_bytes, dtype=torch_dtype)
       
       # Reshape to the tensor's shape
-      self.data = raw_array.reshape(self.shape)
+      reshaped_array = raw_array.reshape(self.shape)
+
+      # By default we ALWAYS TRANSPOSE THE TENSOR
+      # pass in transpose=True to the safetensor operation to undo this (with another transpose!)
+      if reshaped_array.ndim == 2:
+        self.data = reshaped_array.T
+      else:
+        self.data = reshaped_array
+
       self.last_use = time.time()
     else:
       # Handle error case
