@@ -1,5 +1,6 @@
 import threading
 import struct
+from typing import Generator
 import requests
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -205,7 +206,7 @@ class SafeTensorCache:
       )
 
   @contextmanager
-  def get_tensor(self, tensor: str):
+  def get_tensor(self, tensor: str) -> Generator[torch.Tensor, None, None]:
     entry = None
     try:
       self._lock.acquire()
@@ -247,16 +248,16 @@ class SafeTensorCache:
                   self._stats.present -= 1
                   self._stats.present_bytes -= e.size()
           entry.fill()
+
+          # Update present
+          if entry.present():
+            self._stats.present += 1
+            self._stats.present_bytes += entry.size()
         else:
           # Cache hit
           self._stats.hits += 1
           self._stats.hits_bytes += entry.size()
           entry.last_use = time.time()
-        
-        # Update present
-        if entry.present():
-          self._stats.present += 1
-          self._stats.present_bytes += entry.size()
 
         entry.pin()
       finally:

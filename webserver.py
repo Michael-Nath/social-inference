@@ -1,3 +1,6 @@
+import base64
+import io
+import json
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
@@ -20,7 +23,7 @@ import tests
 CHECK_WORK = False
 
 model_cache = ModelCache()
-pipeline, g = tests.test_constant_node()
+pipeline, g = tests.test_safetensor()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()
@@ -59,11 +62,17 @@ async def get_output():
     """
     return pipeline.dequeue_output(blocking=False)
 
-@app.get("/constant/{model_name}/{tensor_name}", response_model=StreamingResponse)
-async def get_constant(model_name: str, tensor_name: str):
+class SafetensorHeader(BaseModel):
+    dtype: str
+    shape: list[int]
+
+@app.get("/safetensor/{model_name}/{tensor_name}")
+async def get_safetensor(model_name: str, tensor_name: str):
     """
     Called by clients to get a constant tensor
     """
+    # URL-decode the model_name and tensor_name as they may be URL-encoded
+    model_name = base64.b64decode(model_name).decode('utf-8')
     tensor_cache = model_cache.get_cache(model_name)
 
     # Pretty print cache statistics
@@ -75,7 +84,20 @@ async def get_constant(model_name: str, tensor_name: str):
     print(f"  Present: {stats.present} ({stats.present_bytes / (1024 * 1024):.2f} MB)")
 
     with tensor_cache.get_tensor(tensor_name) as tensor:
-        return StreamingResponse(torch.tobytes(), media_type="application/octet-stream")
+        # tensor is torch.Tensor
+        if tensor.dtype == torch.bfloat16:
+            tensor = tensor.to(torch.float32)
+        elif tensor.dtype == torch.float16:
+            tensor = tensor.to(torch.float32)
+        bytes = tensor.detach().cpu().numpy().tobytes()
+        header = SafetensorHeader(
+            dtype=str(tensor.dtype),
+            shape=list(tensor.shape),
+        )
+        # Convert to JSON then prefix byte array
+        header_bytes = header.model_dump_json().encode('utf-8')
+        header_size = len(header_bytes).to_bytes(4, byteorder='big')
+        return StreamingResponse(io.BytesIO(header_size + header_bytes + bytes), media_type="application/octet-stream")
 
 @app.get("/work/{partition_name}", response_model=PartitionWork | None)
 async def get_work(partition_name: PartitionName):
