@@ -23,7 +23,12 @@ class Tensor(BaseModel):
     
     @classmethod
     def from_torch(cls, torch_tensor):
-        np_array = torch_tensor.detach().cpu().numpy()
+        retyped = torch_tensor
+        if retyped.dtype == torch.bfloat16:
+            retyped = retyped.to(torch.float32)
+        elif retyped.dtype == torch.float16:
+            retyped = retyped.to(torch.float32)
+        np_array = retyped.detach().cpu().numpy()
         return cls(
             elements=base64.b64encode(np_array.tobytes()).decode('ascii'),
             shape=list(np_array.shape),
