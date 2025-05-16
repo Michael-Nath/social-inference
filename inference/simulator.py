@@ -103,7 +103,8 @@ def simulate(work: PartitionWork, tensor_cache: SafeTensorCache) -> PartitionWor
         encoded_node = graph.nodes[node]
         try:
             if encoded_node.type == "constant":
-                raise NotImplementedError("Constants are not implemented")
+                with tensor_cache.get_tensor(encoded_node.tensor_name) as tensor:   
+                    output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)

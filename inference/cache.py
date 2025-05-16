@@ -56,10 +56,13 @@ class CacheEntry:
 
   data: torch.Tensor | None
 
-  refcount: threading.Semaphore
+  _refcount: int
+  _refcount_lock: threading.Lock
 
   def pinned(self) -> bool:
-    return self.refcount.locked()
+    # Return true if refcount > 0
+    with self._refcount_lock:
+      return self._refcount > 0
 
   def size(self) -> int:
     return self.end - self.begin
@@ -68,10 +71,14 @@ class CacheEntry:
     return self.data is not None
 
   def pin(self) -> bool:
-    self.refcount.acquire()
+    # Increment refcount
+    with self._refcount_lock:
+      self._refcount += 1
 
   def unpin(self) -> bool:
-    self.refcount.release()
+    # Decrement refcount
+    with self._refcount_lock:
+      self._refcount -= 1
 
   def fill(self):
     """
@@ -249,13 +256,12 @@ class SafeTensorCache:
           self._stats.present += 1
           self._stats.present_bytes += entry.size()
 
-        #entry.pin()
+        entry.pin()
       finally:
         self._lock.release()
       yield entry.data
     finally:
-      pass
-      #entry.unpin()
+      entry.unpin()
 
 class ModelCache:
   _caches: dict[str, SafeTensorCache]
