@@ -2,6 +2,7 @@
 import { SessionGraph, GPUSession, CPUSession, ComputeSession, KernelCompiler } from './compiler.js';
 import { PartitionWork, ExecutionContext } from './worker.js';
 import { GPUTensor, CPUTensor } from './kernel.js';
+import { SafeTensorCache } from './tensorcache.js';
 import { ALL_SCOPES, popErrorScopes, pushErrorScopes } from './common.js';
 
 /** @typedef {import('./kernel.js').Tensor} Tensor */
@@ -36,6 +37,9 @@ export class SessionExecutor {
     /** @type {Map<DataKey, GPUTensor>} */
     gpuOutputs; // outputs from nodes, keyed by output
 
+    /** @type {SafeTensorCache} */
+    safetensorCache;
+
     /**
      * @param {GPUDevice} device - The WebGPU device instance.
      * @param {SessionGraph} sessionGraph - The compiled and annotated session graph.
@@ -56,6 +60,8 @@ export class SessionExecutor {
         this.gpuInputs = new Map();
         this.cpuOutputs = new Map();
         this.gpuOutputs = new Map();
+
+        this.safetensorCache = new SafeTensorCache();
     }
 
     /**
@@ -640,7 +646,7 @@ export class SessionExecutor {
             }
 
             // Create ExecutionContext for CPU kernel
-            const executionContext = new ExecutionContext(inputCPUTensors, new Map()); // No GPU inputs expected
+            const executionContext = new ExecutionContext(inputCPUTensors, new Map(), this.safetensorCache); // No GPU inputs expected
 
             console.log(`Invoking kernel ${kernel.name} for node ${node.name} with context:`, executionContext);
             const outputs = await kernel.execute(executionContext); // Pass ExecutionContext

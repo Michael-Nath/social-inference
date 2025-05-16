@@ -20,7 +20,7 @@ import tests
 # Import test functions from tests.py
 import tests
 
-CHECK_WORK = False
+CHECK_WORK = True
 
 model_cache = ModelCache()
 pipeline, g = tests.test_safetensor()
@@ -90,8 +90,11 @@ async def get_safetensor(model_name: str, tensor_name: str):
         elif tensor.dtype == torch.float16:
             tensor = tensor.to(torch.float32)
         bytes = tensor.detach().cpu().numpy().tobytes()
+        dtype_str = str(tensor.dtype)
+        if dtype_str.startswith('torch.'):
+            dtype_str = dtype_str[6:]  # Remove 'torch.' prefix
         header = SafetensorHeader(
-            dtype=str(tensor.dtype),
+            dtype=dtype_str,
             shape=list(tensor.shape),
         )
         # Convert to JSON then prefix byte array

@@ -3,6 +3,7 @@
  */
 
 import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
+import { SafeTensorCache } from "./tensorcache.js";
 
 /*
  * Kernels
@@ -212,10 +213,12 @@ export class ExecutionContext {
     /**
      * @param {Map<string, CPUTensor>} cpuInputs
      * @param {Map<string, GPUTensor>} gpuInputs
+     * @param {Map<string, SafetensorCache>} safetensorCache
      */
-    constructor(cpuInputs, gpuInputs) {
+    constructor(cpuInputs, gpuInputs, safetensorCache) {
         this.cpuInputs = cpuInputs || new Map();
         this.gpuInputs = gpuInputs || new Map();
+        this.safetensorCache = safetensorCache || new SafeTensorCache();
     }
 
     /**
@@ -232,6 +235,13 @@ export class ExecutionContext {
      */ 
     gpu(name) {
         return this.gpuInputs.get(name) || null;
+    }
+
+    /**
+     * @returns {SafeTensorCache}
+     */
+    cache() {
+        return this.safetensorCache;
     }
 }
 
@@ -399,32 +409,54 @@ class MatmulNode extends Node {
 }
 
 /**
- * @class ConstantNode
- * @classdesc Represents a node that outputs a constant tensor.
+ * @class SafetensorNode
+ * @classdesc Represents a node that outputs a safetensor.
  * @extends Node
  */
-class ConstantNode extends Node {
+class SafetensorNode extends Node {
     /**
-     * @param {Object} api_response - API response for ConstantNode.
+     * @param {Object} api_response - API response for SafetensorNode.
      * @param {string} api_response.tensor_name - Name of the tensor.
+     * @param {string} api_response.model_name - Name of the model.
      */
     constructor(api_response) {
         super(api_response);
         /** @type {string} */
         this.tensor_name = api_response.tensor_name;
+        /** @type {string} */
+        this.model_name = api_response.model_name;
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
     }
 
     estimateWeight(inputsMap) {
-        // Placeholder: ConstantNode cannot determine its actual size from inputsMap
+        // Placeholder: SafetensorNode cannot determine its actual size from inputsMap
         // and doesn't store its shape/tensor directly.
         // This should ideally be seeded by _computeWeights if shape info is available
-        // or ConstantNode should store its shape.
+        // or SafetensorNode should store its shape.
         return 1;
     }
 
     get_inputs() { return []; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'safetensor',
+            func: async (executionContext) => {
+                const cache = executionContext.cache();
+                const tensor = await cache.getTensor(this.model_name, this.tensor_name);
+                if (!tensor) {
+                    throw new Error(`SafetensorNode (${this.name}): Tensor not found in cache.`);
+                }
+                return {
+                    [DEFAULT_NODE_OUTPUT]: tensor,
+                };
+            },
+            inputs: [], // Specify input names
+            outputs: [DEFAULT_NODE_OUTPUT], // Specify output name
+        });
+    }
 }
 
 /**
@@ -2116,8 +2148,8 @@ export class Graph {
             // Create the appropriate node type based on the value.type
             if (value.type === "matmul") {
                 this.nodes[key] = new MatmulNode(value);
-            } else if (value.type === "constant") {
-                this.nodes[key] = new ConstantNode(value);
+            } else if (value.type === "safetensor") {
+                this.nodes[key] = new SafetensorNode(value);
             } else if (value.type === "softmax") {
                 this.nodes[key] = new SoftmaxNode(value);
             } else if (value.type === "slice") {

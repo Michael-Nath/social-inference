@@ -105,9 +105,12 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
             if encoded_node.type == "safetensor":
                 tensor_cache = model_cache.get_cache(encoded_node.model_name)
                 with tensor_cache.get_tensor(encoded_node.tensor_name) as tensor:   
-                    output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
-                    tensor = tensor.float()
-                    return tensor
+                    if tensor.dtype == torch.bfloat16:
+                        output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor.to(torch.float32)
+                    elif tensor.dtype == torch.float16:
+                        output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor.to(torch.float32)
+                    else:
+                        output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
             elif encoded_node.type == "matmul":
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
