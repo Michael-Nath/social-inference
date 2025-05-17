@@ -253,6 +253,8 @@ def layernorm(
     hidden_states_pow_2 = b.square("hidden_states_pow_2", hidden_states)
     variance_no_keepdim = b.reduce_mean("variance_no_keepdim", hidden_states_pow_2, fixed_neg_one)
     variance = b.unsqueeze("variance_keepdim", variance_no_keepdim, fixed_neg_one) # Shape: [B, S, 1]
+    eps = b.debug("debug_eps", eps)
+    weight = b.debug("debug_weight", weight)
 
     # Prepare eps (scalar) for addition with variance ([B, S, 1])
     with NameScope.push_scope("eps_prep_for_add"):
@@ -309,6 +311,7 @@ def llama_fwd(
 ):
     with NameScope.push_scope("layernorm"):
         layernormed = layernorm(b, hidden_states, **weight_dict["input_layernorm"])
+    return layernormed
     with NameScope.push_scope('attention'):
         attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["self_attn"])
     

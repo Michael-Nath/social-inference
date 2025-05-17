@@ -197,7 +197,7 @@ def layer_correct(model_name, model, idx: int):
     sin = torch.randn(1, seq_len, head_dim)
 
     # Extract the first decoder layer
-    first_decoder_layer: LlamaDecoderLayer = model.model.layers[idx].cpu()
+    first_decoder_layer: LlamaDecoderLayer = model.model.layers[idx].cpu().float()
     b = ComputeGraphBuilder()
     with b.partition("p0"):
         # Use the new utility function to package weights
@@ -255,6 +255,7 @@ def layer_correct(model_name, model, idx: int):
 
 def test_llama_fwd():
     
+    torch.set_grad_enabled(False)
     model_path = "meta-llama/Llama-3.2-1B"
     # Load the model
     model = load_model(model_path)

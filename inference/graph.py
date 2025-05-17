@@ -816,19 +816,11 @@ class ComputeGraphBuilder:
         self._make_edge(x.name, DEFAULT_NODE_OUTPUT, name, OutputNode.INPUT)
         return self._nodes[name]
 
-    def safetensor(self, name: NodeName, model_name: str, tensor_name: str, should_transpose: bool = False) -> SafetensorNode:
+    def safetensor(self, name: NodeName, model_name: str, tensor_name: str) -> SafetensorNode:
         name = NameScope.name(name)
         self._check_node(name)
         self._nodes[name] = SafetensorNode(name=name, partition=self._active_partition, model_name=model_name, tensor_name=tensor_name)
-        
-        if should_transpose:
-            name_t = name + ".T"
-            self._check_node(name_t)
-            self._nodes[name_t] = TransposeNode(name=name_t, partition=self._active_partition, dim0=0, dim1=1)
-            self._make_edge(name, DEFAULT_NODE_OUTPUT, name_t, TransposeNode.INPUT)
-            return self._nodes[name_t]
-        else:
-            return self._nodes[name]
+        return self._nodes[name]
     
     def matmul(self, name: NodeName, lhs: ComputeGraphNode, rhs: ComputeGraphNode) -> MatmulNode:
         name = NameScope.name(name)

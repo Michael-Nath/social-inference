@@ -6,7 +6,7 @@ from inference import ComputeGraphBuilder
 def load_model(path: str):
   model = AutoModelForCausalLM.from_pretrained(
     path,
-    torch_dtype=torch.float16,
+    torch_dtype=torch.float32,
     device_map="auto"
   )
   return model
@@ -80,8 +80,9 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
             data = data.T
         tensor_name = prefix + name
         complete_name = model_name + tensor_name
-        should_transpose = "proj" in name
+        should_transpose = "proj" in name and False
         node = b.safetensor(complete_name, model_name, tensor_name, should_transpose)
+        # node = b.fixed(tensor_name, param.data.detach())
         all_param_nodes[tensor_name] = node
 
     # Handle input layernorm
