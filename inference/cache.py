@@ -175,7 +175,7 @@ class SafeTensorCache:
           raise ValueError(f"Expected 8 bytes for header length, got {len(r.content)}")
       length_of_header = struct.unpack('<Q', r.content)[0]
       header = _get_range(url, metadata_offset, length_of_header).json()
-      metadata_offset += header
+      metadata_offset += length_of_header 
       # Parse header
       for k, v in header.items():
         if k == "__metadata__":
@@ -183,8 +183,8 @@ class SafeTensorCache:
         self._cache[k] = CacheEntry(
           file=url,
           tensor=k,
-          begin= metadata_offset + length_of_header + v["data_offsets"][0],
-          end= metadata_offset + length_of_header + v["data_offsets"][1],
+          begin= metadata_offset + v["data_offsets"][0],
+          end= metadata_offset + v["data_offsets"][1],
           dtype=v["dtype"],
           shape=v["shape"],
           data=None,

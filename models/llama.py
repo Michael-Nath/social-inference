@@ -311,7 +311,6 @@ def llama_fwd(
 ):
     with NameScope.push_scope("layernorm"):
         layernormed = layernorm(b, hidden_states, **weight_dict["input_layernorm"])
-    return layernormed
     with NameScope.push_scope('attention'):
         attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["self_attn"])
     

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNorm, LlamaDecoderLayer, LlamaRotaryEmbedding
+from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNorm, LlamaDecoderLayer
 from transformers.models.llama.configuration_llama import LlamaConfig
 from .llama import llama_attn, layernorm, llama_fwd
 from .utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights

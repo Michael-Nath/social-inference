@@ -11,7 +11,13 @@ def test_matchup():
   
   tensor_cache = model_cache.get_cache(MODEL_PATH)
   for name, param in model.named_parameters():
+    param = param.cpu()
     if name == "model.embed_tokens.weight":
       continue
     with tensor_cache.get_tensor(name) as tensor:
-      print("something")
+      tensor = tensor.float().cpu()
+      if len(tensor.shape) == 2:
+        assert torch.allclose(tensor.T, param), breakpoint()
+      else:
+        assert torch.allclose(tensor, param), breakpoint()
+    print(f"{name} matchup completed!")

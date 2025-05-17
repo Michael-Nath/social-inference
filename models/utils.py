@@ -80,8 +80,7 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
             data = data.T
         tensor_name = prefix + name
         complete_name = model_name + tensor_name
-        should_transpose = "proj" in name and False
-        node = b.safetensor(complete_name, model_name, tensor_name, should_transpose)
+        node = b.safetensor(complete_name, model_name, tensor_name)
         # node = b.fixed(tensor_name, param.data.detach())
         all_param_nodes[tensor_name] = node
 

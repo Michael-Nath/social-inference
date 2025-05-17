@@ -1,5 +1,5 @@
-from transformers import AutoModelForCausalLM, LlamaForCausalLM, LlamaConfig
-from inference import ComputeGraphBuilder, ComputeGraph, ComputeGraphNode
+from transformers import LlamaConfig
+from inference import ComputeGraphBuilder
 from inference.name_scope import NameScope
 import torch
 from .utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights
@@ -96,8 +96,8 @@ def test_llama_model():
   
       for layer_idx in range(16):
         with NameScope.push_scope(f"layer{layer_idx}"):
-          prefix = f"{MODEL_PATH}/layers.{layer_idx}."
-          layer_weights = package_llama_decoder_layer_weights(model.model.layers[layer_idx], prefix, MODEL_PATH)
+          prefix = f"model.layers.{layer_idx}."
+          layer_weights = package_llama_decoder_layer_weights(model.model.layers[layer_idx], b, prefix, MODEL_PATH)
           nodes.append(layer_weights)
 
     our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)
