@@ -248,13 +248,12 @@ def layernorm(
     # Get shape information for broadcasting
     hidden_states_shape = b.shape("hidden_states_shape_for_ln", hidden_states)
     batch_size_node = b.index("ln_batch_size", hidden_states_shape, fixed_zero)
+    hidden_dim_node = b.index("ln_hid_dim", hidden_states_shape, fixed_two)
     seq_len_node = b.index("ln_seq_len", hidden_states_shape, fixed_one)
 
     hidden_states_pow_2 = b.square("hidden_states_pow_2", hidden_states)
     variance_no_keepdim = b.reduce_mean("variance_no_keepdim", hidden_states_pow_2, fixed_neg_one)
     variance = b.unsqueeze("variance_keepdim", variance_no_keepdim, fixed_neg_one) # Shape: [B, S, 1]
-    eps = b.debug("debug_eps", eps)
-    weight = b.debug("debug_weight", weight)
 
     # Prepare eps (scalar) for addition with variance ([B, S, 1])
     with NameScope.push_scope("eps_prep_for_add"):
@@ -267,8 +266,9 @@ def layernorm(
     variance_plus_eps = b.add("variance_plus_eps", variance, eps_broadcasted)
 
     rsqrt_variance_plus_eps = b.rsqrt("rsqrt_variance_plus_eps", variance_plus_eps)
+    bcasted_rsqrt = b.broadcast("bcasted_sqrt", rsqrt_variance_plus_eps, fixed_neg_one, hidden_dim_node)
 
-    hidden_states_normalized = b.hadamard("hidden_states_normalized", hidden_states, rsqrt_variance_plus_eps)
+    hidden_states_normalized = b.hadamard("hidden_states_normalized", hidden_states, bcasted_rsqrt)
 
     # Prepare weight ([H]) for Hadamard with hidden_states_normalized ([B, S, H])
     with NameScope.push_scope("weight_prep_for_scale"):

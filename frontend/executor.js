@@ -136,10 +136,11 @@ export class SessionExecutor {
         }
 
         for (const session of this.sessionGraph.sessions) {
-            promises.push(sessionTask(session));
+            // promises.push(sessionTask(session));
+            await sessionTask(session);
         }
 
-        await Promise.all(promises);
+        // await Promise.all(promises);
 
         return this._gatherFinalOutputs();
 
@@ -604,6 +605,8 @@ export class SessionExecutor {
      */
     async _executeCPUSession(session) {
         // Assume in topo order
+        const sessionIndex = this.sessionGraph.sessions.indexOf(session);
+        console.group(`Executing CPUSession ${sessionIndex}...`)
         for(const node of session.nodes) {
             const kernel = await node.getCPUKernel(); // Ensure kernel is awaited if getKernel is async
             console.log(`Executing CPU node ${node.name}, kernel:`, kernel);
@@ -682,6 +685,7 @@ export class SessionExecutor {
         }
         // Annotate session.resourcePlan usage here later
         await new Promise(r => setTimeout(r, 10));
+        console.groupEnd();
     }
     /** 
      * @private

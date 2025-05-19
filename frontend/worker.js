@@ -391,9 +391,9 @@ class MatmulNode extends Node {
         }
 
         if (shapeA.length !== 2 || shapeB.length !== 2) {
-            // TODO: Handle batch dimensions if necessary (e.g., [Batch, M, K])
             throw new Error(`MatmulNode (${this.name}): Currently only supports 2D matrices. Got shapes ${shapeA} and ${shapeB}.`);
         }
+
 
         const M = shapeA[0];
         const K_A = shapeA[1];
@@ -1459,6 +1459,9 @@ class IndexNode extends Node {
         // Output shape is the input shape with the first dimension removed.
         // If input is 1D, output is 0D (scalar).
         const outputShape = inputShape.slice(1);
+        if (outputShape.length == 0) {
+            return [1]
+        }
         return outputShape; // Effectively [] for 1D input after slice(1)
     }
 

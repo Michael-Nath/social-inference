@@ -361,6 +361,7 @@ export class SessionGraph {
                 }
             }
 
+
             if (shouldStartNewSession) {
                 let chosenDevice;
                 if (targetDeviceName === "gpu") {
