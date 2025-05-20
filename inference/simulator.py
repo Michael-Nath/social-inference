@@ -117,8 +117,15 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
                 # check_shapes_match(lhs, rhs)
-                assert lhs.shape[-1] == rhs.shape[-2], breakpoint()
+                # All but the last two dimensions must match
+                if lhs.shape[:-2] != rhs.shape[:-2]:
+                    raise ValueError(f"Matmul lhs shape {lhs.shape} does not match rhs shape {rhs.shape}")
+                # Last two must be compatible
+                if lhs.shape[-1] != rhs.shape[-2]:
+                    raise ValueError(f"Matmul lhs shape {lhs.shape} does not match rhs shape {rhs.shape}")
+                # Perform the matmul
                 output = lhs @ rhs
+                # print("matmul", lhs.shape, rhs.shape, output.shape)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "slice":
@@ -240,7 +247,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                         indexing.append(idx)
                 
                 output = input_tensor[tuple(indexing)]
-                print(f"{input_tensor}[{index_tensor}] => {output}")
+                # print(f"{input_tensor}[{index_tensor}] => {output}")
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "shape":
@@ -251,6 +258,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
             elif encoded_node.type == "reshape":
                 input_tensor = resolve_input(node, ReshapeNode.INPUT)
                 shape = resolve_input(node, ReshapeNode.DIMS).int()
+                # print(f"{node}: reshape {input_tensor.shape} -> {tuple(shape.tolist())}")
                 output = torch.reshape(input_tensor, tuple(shape.tolist()))
                 output_table[((node, DEFAULT_NODE_OUTPUT))] = output
                 return output

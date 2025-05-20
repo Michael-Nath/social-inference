@@ -601,7 +601,7 @@ def test_llama_layernorm():
 def test_llama_attn():
     g = ComputeGraphBuilder()
     x = g.input("x")
-    head_dim = 64
+    head_dim = 128
     with g.partition("p0"):        
         w_q = g.safetensor("w_q", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.q_proj.weight")
         w_k = g.safetensor("w_k", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.k_proj.weight")

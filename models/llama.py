@@ -171,7 +171,8 @@ def llama_attn(
         hidden_shape = b.cat("bsz+seq_len+nheads", bsz_cat_seqlen, nhead_node_q, zero_node)
         hidden_shape = b.cat("bsz+seq_len+nheads+head_dim", hidden_shape, head_dim_node, zero_node)
 
-        q_proj = b.matmul("q_proj", hidden_states, q_weight) # (bsz, seq_len, hidden_dim)
+        q_weight_unsqueezed = b.unsqueeze("q_weight_unsqueezed", q_weight, zero_node)
+        q_proj = b.matmul("q_proj", hidden_states, q_weight_unsqueezed) # (bsz, seq_len, hidden_dim)
         q_proj = b.reshape("reshaped", q_proj, hidden_shape) # (bsz, seq_len, nheads_q, head_dim)
         query_states = b.transpose("transposed<1,2>", q_proj, 1, 2) # (bsz, nheads_q, seq_len, head_dim)
 
@@ -179,7 +180,8 @@ def llama_attn(
     hidden_shape = b.cat("bsz+seq_len+nheads+head_dim", hidden_shape, head_dim_node, zero_node)
     
     with NameScope.push_scope("key_states"):
-        k_proj = b.matmul("k_proj", hidden_states, k_weight) # (bsz, seq_len, hidden_dim)
+        k_weight_unsqueezed = b.unsqueeze("k_weight_unsqueezed", k_weight, zero_node) # (1, hidden_dim, head_dim)
+        k_proj = b.matmul("k_proj", hidden_states, k_weight_unsqueezed) # (bsz, seq_len, hidden_dim)
         k_proj = b.reshape("reshaped", k_proj, hidden_shape) # (bsz, seq_len, nheads_kv, head_dim)
         key_states = b.transpose("transposed<1,2>", k_proj, 1, 2) # (bsz, nheads_kv, seq_len, head_dim)
 
@@ -200,7 +202,8 @@ def llama_attn(
         key_states = b.reshape("grouped", key_states, reshape_shape) # (bsz, nheads_q, seq_len, head_dim)
     
     with NameScope.push_scope("value_states"):
-        v_proj = b.matmul("v_proj", hidden_states, v_weight)
+        v_weight_unsqueezed = b.unsqueeze("v_weight_unsqueezed", v_weight, zero_node)
+        v_proj = b.matmul("v_proj", hidden_states, v_weight_unsqueezed)
         v_proj = b.reshape("reshaped", v_proj, hidden_shape)
         value_states = b.transpose("transposed<1,2>", v_proj, 1, 2)
         
@@ -230,7 +233,8 @@ def llama_attn(
         attn_out = b.transpose("transposed<1,2>", attn_out, 1, 2)
         attn_out = b.reshape("reshaped", attn_out, input_shape)
     with NameScope.push_scope("output_states"):
-        attn_out = b.matmul("matmul", attn_out, o_weight)
+        o_weight_unsqueezed = b.unsqueeze("o_weight_unsqueezed", o_weight, zero_node)
+        attn_out = b.matmul("matmul", attn_out, o_weight_unsqueezed)
     return attn_out
 
 
