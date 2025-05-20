@@ -104,6 +104,7 @@ def apply_llama_rope(b: ComputeGraphBuilder, q: ComputeGraphNode, k: ComputeGrap
         neg_one_broadcast = b.broadcast("neg_one_broadcast", neg_one_unsqueeze, fixed_zero, num_heads_node)
         neg_one_broadcast = b.broadcast("neg_one_broadcast2", neg_one_broadcast, fixed_one, seq_len_node)
         neg_one_broadcast = b.broadcast("neg_one_broadcast3", neg_one_broadcast, fixed_two, dim_half_node)
+        neg_one_broadcast = b.unsqueeze("neg_one_broadcast4", neg_one_broadcast, fixed_zero)
         
         # Negate the second half (x2)
         neg_x2 = b.hadamard("neg_x2", x2, neg_one_broadcast)
@@ -168,7 +169,7 @@ def llama_attn(
     
     # perform qkv projection
     with NameScope.push_scope("query_states"):
-        hidden_shape = b.cat("bsz+seq_len+nheads", bsz_cat_seqlen, nhead_node_q, zero_node)
+        hidden_shape = b.cat("bsz+seq_len+nheads", bsz_cat_seqlen, b.cast("cast_nhead_node_q", nhead_node_q, "int32"), zero_node)
         hidden_shape = b.cat("bsz+seq_len+nheads+head_dim", hidden_shape, head_dim_node, zero_node)
 
         q_weight_unsqueezed = b.unsqueeze("q_weight_unsqueezed", q_weight, zero_node)
@@ -195,7 +196,7 @@ def llama_attn(
         nheads_q_shape = b.hadamard("nheads_q_shape", nhead_node_kv, ngroups_node) # nheads_q = nheads_kv * ngroups
 
         batch_size_node = b.index("batch_size", input_shape, zero_node)
-        reshape_shape = b.cat("reshape_shape_start", batch_size_node, nheads_q_shape, zero_node)
+        reshape_shape = b.cat("reshape_shape_start", batch_size_node, b.cast("cast_nheads_q", nheads_q_shape, "int32"), zero_node)
         reshape_shape = b.cat("reshape_shape_with_seq", reshape_shape, seq_len, zero_node)
         reshape_shape = b.cat("final_reshape_shape", reshape_shape, head_dim_node, zero_node)
 
@@ -214,7 +215,7 @@ def llama_attn(
         nheads_q_shape = b.hadamard("nheads_q_shape", nhead_node_kv, ngroups_node) # nheads_q = nheads_kv * ngroups
         
         batch_size_node = b.index("batch_size", input_shape, zero_node)
-        reshape_shape = b.cat("reshape_shape_start", batch_size_node, nheads_q_shape, zero_node)
+        reshape_shape = b.cat("reshape_shape_start", batch_size_node, b.cast("cast_nheads_q", nheads_q_shape, "int32"), zero_node)
         reshape_shape = b.cat("reshape_shape_with_seq", reshape_shape, seq_len, zero_node)
         reshape_shape = b.cat("final_reshape_shape", reshape_shape, head_dim_node, zero_node)
 

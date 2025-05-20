@@ -2,7 +2,7 @@ import torch
 
 from inference.tensor import Tensor
 from .graph import (
-    ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, IndexNode,
+    CastNode, ComputeGraphBuilder, ComputeGraph, DEFAULT_NODE_OUTPUT, IndexNode,
     MatmulNode, SliceNode, UnsqueezeNode, BroadcastNode,
     CatNode, HadamardNode, ShapeNode, SoftmaxNode, TransposeNode, ReshapeNode,
     FixedNode, HadamardNode, ShapeNode, SoftmaxNode, DivNode,
@@ -520,6 +520,35 @@ def test_simulate_floor_ceil():
     assert ceil_output.output == DEFAULT_NODE_OUTPUT
     expected_ceil = torch.tensor([-1, 0, 1, 2], dtype=torch.int)
     assert torch.allclose(ceil_output.tensor.to_torch(), expected_ceil)
+
+def test_simulate_cast():
+    builder = ComputeGraphBuilder()
+    x = builder.input("x")
+    with builder.partition("p0"):
+        z = builder.cast("z", x, "int32")
+    o = builder.output("o", z)
+    g = builder.build()
+
+    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+
+    input_tensor = Tensor.from_torch(torch.tensor([1.5, 2.5, 3.5], dtype=torch.float32))
+    work = PartitionWork(
+        correlation_id="1",
+        partition="p0",
+        graph=ge,
+        inputs=[InputAssignment(node=z.name, input=CastNode.INPUT, tensor=input_tensor)]
+    )
+
+    cache = llama_1b_cache()
+    result = simulate(work, cache)
+    
+    assert result.correlation_id == work.correlation_id
+    assert len(result.outputs) == 1
+    output = result.outputs[0]
+    assert output.node == z.name
+    assert output.output == DEFAULT_NODE_OUTPUT
+    expected = input_tensor.to_torch().to(torch.int32)
+    assert torch.allclose(output.tensor.to_torch(), expected)
 
 def test_simulate_safetensor():
     builder = ComputeGraphBuilder()

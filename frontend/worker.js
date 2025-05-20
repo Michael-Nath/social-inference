@@ -345,23 +345,73 @@ class MatmulNode extends Node {
                     if (!lhsTensor || !rhsTensor) {
                         throw new Error(`MatmulNode (${this.name}): Missing GPU tensors for dimensionBuffer calculation.`);
                     }
-                    return new Uint32Array([
-                        lhsTensor.shape[0],
-                        lhsTensor.shape[1],
-                        rhsTensor.shape[1],
-                    ]);
+                    const lhsShape = lhsTensor.shape;
+                    const rhsShape = rhsTensor.shape;
+                    let B, M, K, N;
+
+                    if (lhsShape.length === 2 && rhsShape.length === 2) { // 2D case
+                        B = 1;
+                        M = lhsShape[0];
+                        K = lhsShape[1];
+                        N = rhsShape[1];
+                    } else if (
+                        lhsShape.length > 2 && // more than 2D
+                        lhsShape.length === rhsShape.length && // equal ranks
+                        lhsShape.slice(0, -2).every((dim, i) => dim === rhsShape.slice(0, -2)[i]) // equal batch dimensions
+                    ) { 
+                        B = lhsShape.slice(0, -2).reduce((a, b) => a * b, 1);
+                        M = lhsShape[lhsShape.length - 2];
+                        K = lhsShape[lhsShape.length - 1];
+                        N = rhsShape[rhsShape.length - 1];
+                    } else {
+                        throw new Error(`MatmulNode (${this.name}): Incompatible input tensor dimensions for dimensionBuffer. Both must be 2D or both ND with matching batch dimensions. Got ${lhsShape} and ${rhsShape}`);
+                    }
+                    return new Uint32Array([B, M, K, N]);
                 },
                 index: 0,
             },
             workgroupFunction: (executionContext) => {
                 const lhsTensor = executionContext.gpu(MatmulNode.LHS);
-                if (!lhsTensor) {
-                    throw new Error(`MatmulNode (${this.name}): Missing LHS GPU tensor for workgroupFunction.`);
+                const rhsTensor = executionContext.gpu(MatmulNode.RHS);
+
+                if (!lhsTensor || !rhsTensor) {
+                    throw new Error(`MatmulNode (${this.name}): Missing GPU tensors for workgroupFunction.`);
                 }
+
+                const lhsShape = lhsTensor.shape;
+                const rhsShape = rhsTensor.shape;
+                let M_dim, N_dim, B_dim;
+
+                if (lhsShape.length === 2 && rhsShape.length === 2) { // 2D case
+                    M_dim = lhsShape[0];
+                    N_dim = rhsShape[1];
+                    B_dim = 1;
+                } else if (
+                    lhsShape.length > 2 &&
+                    lhsShape.length === rhsShape.length &&
+                    lhsShape.slice(0, -2).every((dim, i) => dim === rhsShape.slice(0, -2)[i])
+                ) { // N-D case
+                    B_dim = lhsShape.slice(0, -2).reduce((a, b) => a * b, 1);
+                    M_dim = lhsShape[lhsShape.length - 2];
+                    N_dim = rhsShape[rhsShape.length - 1];
+                } else {
+                    throw new Error(`MatmulNode (${this.name}): Incompatible input tensor dimensions for workgroupFunction. Both must be 2D or both ND with matching batch dimensions. Got ${lhsShape} and ${rhsShape}`);
+                }
+
+                const TILE_DIM = 4; // Corresponds to TILE_M, TILE_N in WGSL shader
+                const WORKGROUP_XY_DIM = 16; // Corresponds to BLOCKSIZE in WGSL @workgroup_size(BLOCKSIZE, BLOCKSIZE, 1)
+
+                const num_tiles_m = Math.ceil(M_dim / TILE_DIM);
+                const num_tiles_n = Math.ceil(N_dim / TILE_DIM);
+
+                const workgroupsX = Math.ceil(num_tiles_n / WORKGROUP_XY_DIM);
+                const workgroupsY = Math.ceil(num_tiles_m / WORKGROUP_XY_DIM);
+                const workgroupsZ = B_dim;
+                
                 return {
-                    x: Math.ceil(lhsTensor.shape[0] / 16),
-                    y: Math.ceil(lhsTensor.shape[1] / 16),
-                    z: 1,
+                    x: workgroupsX,
+                    y: workgroupsY,
+                    z: workgroupsZ,
                 };
             },
             entryPoint: "main",
@@ -383,28 +433,46 @@ class MatmulNode extends Node {
      * @throws {Error} If input shapes are missing, invalid, or incompatible.
      */
     getOutputShape(executionContext) {
-        const shapeA = executionContext.gpu(MatmulNode.LHS)?.shape;
-        const shapeB = executionContext.gpu(MatmulNode.RHS)?.shape;
+        const shapeA = executionContext.gpu(MatmulNode.LHS)?.shape || executionContext.cpu(MatmulNode.LHS)?.shape;
+        const shapeB = executionContext.gpu(MatmulNode.RHS)?.shape || executionContext.cpu(MatmulNode.RHS)?.shape;
 
         if (!shapeA || !shapeB) {
-            throw new Error(`MatmulNode (${this.name}): Missing required input shapes ('input' or 'weight').`);
+            throw new Error(`MatmulNode (${this.name}): Missing required input shapes for LHS or RHS.`);
         }
 
-        if (shapeA.length !== 2 || shapeB.length !== 2) {
-            throw new Error(`MatmulNode (${this.name}): Currently only supports 2D matrices. Got shapes ${shapeA} and ${shapeB}.`);
+        const rankA = shapeA.length;
+        const rankB = shapeB.length;
+
+        if (rankA === 2 && rankB === 2) {
+            const M = shapeA[0];
+            const K_A = shapeA[1];
+            const K_B = shapeB[0];
+            const N = shapeB[1];
+
+            if (K_A !== K_B) {
+                throw new Error(`MatmulNode (${this.name}): Inner dimensions for 2D matmul do not match. LHS K=${K_A}, RHS K=${K_B}. Shapes: ${shapeA} and ${shapeB}.`);
+            }
+            return [M, N];
+        } else if (rankA > 2 && rankA === rankB) {
+            const batchDimsA = shapeA.slice(0, -2);
+            const batchDimsB = shapeB.slice(0, -2);
+
+            if (!batchDimsA.every((dim, i) => dim === batchDimsB[i])) {
+                throw new Error(`MatmulNode (${this.name}): Batch dimensions for ND matmul do not match. LHS Batch: ${batchDimsA}, RHS Batch: ${batchDimsB}. Shapes: ${shapeA} and ${shapeB}.`);
+            }
+
+            const M = shapeA[rankA - 2];
+            const K_A = shapeA[rankA - 1];
+            const K_B = shapeB[rankB - 2];
+            const N = shapeB[rankB - 1];
+
+            if (K_A !== K_B) {
+                throw new Error(`MatmulNode (${this.name}): Inner dimensions for ND matmul do not match. LHS K=${K_A}, RHS K=${K_B}. Shapes: ${shapeA} and ${shapeB}.`);
+            }
+            return [...batchDimsA, M, N];
+        } else {
+            throw new Error(`MatmulNode (${this.name}): Inputs must both be 2D or both be ND tensors of the same rank with matching batch dimensions. Got shapes A: ${shapeA} (rank ${rankA}) and B: ${shapeB} (rank ${rankB}).`);
         }
-
-
-        const M = shapeA[0];
-        const K_A = shapeA[1];
-        const K_B = shapeB[0];
-        const N = shapeB[1];
-
-        if (K_A !== K_B) {
-            throw new Error(`MatmulNode (${this.name}): Incompatible shapes for matrix multiplication. Inner dimensions do not match: ${shapeA} and ${shapeB}.`);
-        }
-
-        return [M, N];
     }
 }
 
@@ -687,6 +755,142 @@ class SliceNode extends Node {
         // Estimate: output elements are same as input (overestimate if not full slice).
         // A more accurate estimate would need slice parameters (start, end, dim sizes).
         return inputsMap.get(SliceNode.INPUT) || 0;
+    }
+
+    _calculateOutputShape(inputTensor, dimTensor, startTensor, endTensor) {
+        if (!inputTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing input tensor.`);
+        }
+        if (!dimTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing dim tensor.`);
+        }
+        if (!startTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing start tensor.`);
+        }
+        if (!endTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing end tensor.`);
+        }
+
+        const inputShape = inputTensor.shape;
+        const rank = inputShape.length;
+
+        if (dimTensor.shape.length !== 1 || dimTensor.shape[0] !== 1) {
+            throw new Error(`SliceNode (${this.name}): Dimension ('dim') must be a scalar tensor. Got shape ${dimTensor.shape}`);
+        }
+        let dim = dimTensor.getTypedArray()[0];
+        if (dim < 0) {
+            dim = rank + dim;
+        }
+        if (dim < 0 || dim >= rank) {
+            throw new Error(`SliceNode (${this.name}): Dimension out of range. Got dim ${dimTensor.getTypedArray()[0]} for input rank ${rank}`);
+        }
+
+        if (startTensor.shape.length !== 1 || startTensor.shape[0] !== 1) {
+            throw new Error(`SliceNode (${this.name}): Start index ('start') must be a scalar tensor. Got shape ${startTensor.shape}`);
+        }
+        let start = startTensor.getTypedArray()[0];
+
+        if (endTensor.shape.length !== 1 || endTensor.shape[0] !== 1) {
+            throw new Error(`SliceNode (${this.name}): End index ('end') must be a scalar tensor. Got shape ${endTensor.shape}`);
+        }
+        let end = endTensor.getTypedArray()[0];
+
+        const dimSize = inputShape[dim];
+
+        // Normalize start and end
+        if (start < 0) {
+            start = dimSize + start;
+        }
+        if (end < 0) {
+            end = dimSize + end;
+        }
+
+        // Clamp start and end to valid range
+        start = Math.max(0, Math.min(start, dimSize));
+        end = Math.max(0, Math.min(end, dimSize));
+
+        if (end < start) {
+            end = start; // Produces an empty slice along this dimension
+        }
+
+        const outputShape = [...inputShape];
+        outputShape[dim] = end - start;
+        return outputShape;
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(SliceNode.INPUT);
+        const dimTensor = executionContext.cpu(SliceNode.DIM);
+        const startTensor = executionContext.cpu(SliceNode.START);
+        const endTensor = executionContext.cpu(SliceNode.END);
+        return this._calculateOutputShape(inputTensor, dimTensor, startTensor, endTensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'slice',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(SliceNode.INPUT);
+                const dimTensor = executionContext.cpu(SliceNode.DIM);
+                const startTensor = executionContext.cpu(SliceNode.START);
+                const endTensor = executionContext.cpu(SliceNode.END);
+
+                if (!inputTensor || !dimTensor || !startTensor || !endTensor) {
+                    throw new Error(`SliceNode (${this.name}) kernel: Missing one or more input tensors.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor, dimTensor, startTensor, endTensor);
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputView = inputTensor.getTypedArray();
+
+                const inputShape = inputTensor.shape;
+                const rank = inputShape.length;
+                let sliceDim = dimTensor.getTypedArray()[0];
+                if (sliceDim < 0) {
+                    sliceDim = rank + sliceDim;
+                }
+                let sliceStart = startTensor.getTypedArray()[0];
+                let sliceEnd = endTensor.getTypedArray()[0];
+                
+                const dimSize = inputShape[sliceDim];
+                if (sliceStart < 0) sliceStart = dimSize + sliceStart;
+                if (sliceEnd < 0) sliceEnd = dimSize + sliceEnd;
+                sliceStart = Math.max(0, Math.min(sliceStart, dimSize));
+                sliceEnd = Math.max(0, Math.min(sliceEnd, dimSize));
+                if (sliceEnd < sliceStart) sliceEnd = sliceStart;
+
+
+                const inputStrides = calculateStrides(inputShape);
+                const outputStrides = calculateStrides(outputShape);
+                
+                let outputFlatIndex = 0;
+                const totalOutputElements = outputShape.reduce((acc, val) => acc * val, 1);
+
+                for (outputFlatIndex = 0; outputFlatIndex < totalOutputElements; outputFlatIndex++) {
+                    let inputFlatIndex = 0;
+                    let currentOutputFlatIndex = outputFlatIndex;
+                    
+                    for (let d = 0; d < rank; d++) {
+                        const outputCoord = Math.floor(currentOutputFlatIndex / outputStrides[d]) % outputShape[d];
+                        currentOutputFlatIndex %= outputStrides[d];
+
+                        let inputCoord = outputCoord;
+                        if (d === sliceDim) {
+                            inputCoord += sliceStart;
+                        }
+                        inputFlatIndex += inputCoord * inputStrides[d];
+                    }
+                    outputView[outputFlatIndex] = inputView[inputFlatIndex];
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
     }
 
     get_inputs() { return [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END]; }
@@ -1598,6 +1802,56 @@ class ShapeNode extends Node {
 }
 
 /**
+ * @class CastNode
+ * @classdesc Represents a tensor cast operation node.
+ * @extends Node
+ */
+class CastNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+    
+    constructor(api_response) {
+        super(api_response);
+        this.dtype = api_response.dtype;
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    get_inputs() { return [CastNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(CastNode.INPUT);
+        if (!inputTensor) {
+            throw new Error(`CastNode (${this.name}): Missing input tensor.`);
+        }
+        return inputTensor.shape;
+    }
+    
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'cast',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(CastNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`CastNode (${this.name}) kernel: Missing input tensor.`);
+                }
+                console.debug(`CastNode (${this.name}) kernel: inputTensor.shape: ${inputTensor.shape}, dtype: ${inputTensor.dtype}, casting to: ${this.dtype}`);
+                const outputTensor = CPUTensor.uninitialized(inputTensor.shape, this.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputView = inputTensor.getTypedArray();
+                for (let i = 0; i < inputView.length; i++) {
+                    outputView[i] = inputView[i];
+                }
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            },
+            inputs: [CastNode.INPUT],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+}
+
+/**
  * @class TransposeNode
  * @classdesc Represents a tensor transpose operation node.
  * @extends Node
@@ -1904,9 +2158,17 @@ class DivNode extends Node {
                     throw new Error(`DivNode (${this.name}) kernel: Missing input tensors.`);
                 }
 
+                // Figure out output dtype
+                let outputDtype;
+                if(tensorA.dtype === 'int32' || tensorB.dtype === 'int32') {
+                    outputDtype = 'int32';
+                } else {
+                    outputDtype = 'float32';
+                }
+
                 const outputShape = this._calculateOutputShape(tensorA, tensorB);
                 // Division output is set to float32 to handle mixed types and general expectations.
-                const outputTensor = CPUTensor.uninitialized(outputShape, 'float32');
+                const outputTensor = CPUTensor.uninitialized(outputShape, outputDtype);
                 const outputView = outputTensor.getTypedArray(); // This will be a Float32Array
 
                 const dataA = tensorA.getTypedArray();
@@ -2165,6 +2427,8 @@ export class Graph {
                 this.nodes[key] = new BroadcastNode(value);
             } else if (value.type === "cat") {
                 this.nodes[key] = new CatNode(value);
+            } else if (value.type === "cast") {
+                this.nodes[key] = new CastNode(value);
             } else if (value.type === "fixed") {
                 this.nodes[key] = new FixedNode(value);
             } else if (value.type === "hadamard") {
@@ -3182,3 +3446,4 @@ class SquaredNode extends Node {
         });
     }
 }
+

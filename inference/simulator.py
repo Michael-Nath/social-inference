@@ -2,7 +2,7 @@ import torch
 
 from .tensor import Tensor
 from .graph import (
-    EdgeEncoding, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
+    CastNode, EdgeEncoding, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
     HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
     FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode, SquaredNode, ReduceMeanNode, RsqrtNode,
@@ -71,12 +71,10 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
             If shape[i] = -1, it means "don't care" about that dimension.
             """
             if len(tensor.shape) != len(shape):
-                breakpoint()
                 raise ValueError(f"Tensor rank {len(tensor.shape)} does not match expected rank {len(shape)}")
             
             for i, (actual, expected) in enumerate(zip(tensor.shape, shape)):
                 if expected != -1 and actual != expected:
-                    breakpoint()
                     raise ValueError(f"Tensor shape {tensor.shape} does not match expected shape {shape} (mismatch at dimension {i})")
             return tensor
         
@@ -128,6 +126,24 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 # print("matmul", lhs.shape, rhs.shape, output.shape)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
+            elif encoded_node.type == "cast":
+                input_tensor = resolve_input(node, CastNode.INPUT)
+
+                # Decode dtype
+                if encoded_node.dtype == "int32":
+                    dtype = torch.int32
+                elif encoded_node.dtype == "int64":
+                    dtype = torch.int64
+                elif encoded_node.dtype == "float32":
+                    dtype = torch.float32
+                elif encoded_node.dtype == "float64":
+                    dtype = torch.float64
+                else:
+                    raise ValueError(f"Unknown dtype: {encoded_node.dtype}. You probably have to add it to simulator.simulate.evaluate_output")
+
+                output = input_tensor.to(dtype=dtype)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
             elif encoded_node.type == "slice":
                 input_tensor = resolve_input(node, SliceNode.INPUT)
                 dim = check_shape(resolve_input(node, SliceNode.DIM), [1]).item()
@@ -165,6 +181,10 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 dim_tensor = resolve_input(node, CatNode.DIM)
                 dim = check_shape(dim_tensor, [1]).item()
                 check_shapes_match(a, b, except_dim=dim)
+
+                # Check dtypes
+                if a.dtype != b.dtype:
+                    raise ValueError(f"CatNode {node}: a.dtype {a.dtype} does not match b.dtype {b.dtype}")
                 
                 output = torch.cat([a, b], dim=dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
@@ -176,7 +196,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
             elif encoded_node.type == "hadamard":
                 a = resolve_input(node, HadamardNode.A)
                 b = resolve_input(node, HadamardNode.B)
-                # check_shapes_match(a,b)
+                check_shapes_match(a,b)
                 try:
                     output = a * b
                 except:
@@ -252,7 +272,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 return output
             elif encoded_node.type == "shape":
                 input_tensor = resolve_input(node, ShapeNode.INPUT)
-                output = torch.tensor(input_tensor.shape, dtype=torch.long)
+                output = torch.tensor(input_tensor.shape, dtype=torch.int32)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "reshape":

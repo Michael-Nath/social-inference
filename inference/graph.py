@@ -67,6 +67,14 @@ class DebugNodeEncoding(BaseModel):
     type: Literal["debug"]
     name: NodeName
 
+class CastNodeEncoding(BaseModel):
+    """
+    API-encoded cast node.
+    """
+    type: Literal["cast"]
+    name: NodeName
+    dtype: str
+
 class SafetensorNodeEncoding(BaseModel):
     """
     API-encoded Safetensor node.
@@ -175,6 +183,24 @@ class DebugNode(ComputeGraphNode):
     
     def get_output_names(self) -> set[str]:
         return { DEFAULT_NODE_OUTPUT }
+    
+class CastNode(ComputeGraphNode):
+    """
+    Cast a tensor to a different dtype.
+    """
+    INPUT: NodeInput = "input"
+    dtype: str
+
+    def __init__(self, name: NodeName, partition: PartitionName, dtype: str):
+        super().__init__(name, partition)
+        self.dtype = dtype
+
+    def get_input_names(self) -> set[str]:
+        return {CastNode.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 
 class AddNode(ComputeGraphNode):
     """
@@ -311,7 +337,8 @@ type NodeEncoding = Annotated[
         SiluNodeEncoding,
         CosNodeEncoding,
         SinNodeEncoding,
-        IndexSelectNodeEncoding
+        IndexSelectNodeEncoding,
+        CastNodeEncoding
     ],
     Field(discriminator="type")
 ]
@@ -885,10 +912,25 @@ class ComputeGraphBuilder:
         self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, CatNode.B)
         self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, CatNode.DIM)
         return self._nodes[name]
+    
+    def cast(self, name: NodeName, input: ComputeGraphNode, dtype: str) -> CastNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = CastNode(name=name, partition=self._active_partition, dtype=dtype)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, CastNode.INPUT)
+        return self._nodes[name]
 
     def fixed(self, name: NodeName, tensor: torch.Tensor) -> FixedNode:
         name = NameScope.name(name)
         self._check_node(name)
+
+        # Massage the dtype to something we can use in JavaScript, which does
+        # not give us 64 bits!
+        if tensor.dtype == torch.int64:
+            tensor = tensor.to(torch.int32)
+        elif tensor.dtype == torch.float64:
+            tensor = tensor.to(torch.float32)
     
         self._nodes[name] = FixedNode(name=name, partition=self._active_partition, tensor=tensor)
         return self._nodes[name]
@@ -1303,6 +1345,8 @@ class ComputeGraph:
                 nodes[node_name] = SinNodeEncoding(type="sin", name=node_name)
             elif isinstance(node, IndexSelectNode):
                 nodes[node_name] = IndexSelectNodeEncoding(type="index_select", name=node_name)
+            elif isinstance(node, CastNode):
+                nodes[node_name] = CastNodeEncoding(type="cast", name=node_name, dtype=node.dtype)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
