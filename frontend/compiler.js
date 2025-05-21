@@ -123,6 +123,7 @@ export class ComputeSession {
     */
     constructor(device, index) {
         this.index = index;
+        this.id = index;
         this.device = device;
         this.inputs = new Map();
         this.nodes = [];
