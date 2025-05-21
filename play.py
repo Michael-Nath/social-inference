@@ -619,4 +619,7 @@ def test_llama_attn():
     return pipeline, graph
 
 pipeline, graph = test_llama_attn()
-s = simulator.simulate(pipeline.get_partition_work("p0"), ModelCache())
+# s = simulator.simulate(pipeline.get_partition_work("p0"), ModelCache())
+# print(graph.dot())
+graph.split_partition("p0")
+print(graph.dot())

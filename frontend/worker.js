@@ -2,6 +2,10 @@
  * Library to handle interfacing with coordination server
  */
 
+import { 
+    readBEInt, sizeEncodedString, readEncodedString, 
+    writeBEInt, writeEncodedString 
+} from "./encoding.js";
 import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
 import { SafeTensorCache } from "./tensorcache.js";
 
@@ -141,21 +145,35 @@ class APITensor {
  */
 class Edge {
     /**
-     * @param {Object} api_response
-     * @param {string} api_response.src
-     * @param {string} api_response.src_output
-     * @param {string} api_response.dst
-     * @param {string} api_response.dst_input
+     * @param {Object} options
+     * @param {string} options.src
+     * @param {string} options.src_output
+     * @param {string} options.dst
+     * @param {string} options.dst_input
      */
-    constructor(api_response) {
+    constructor(options) {
         /** @type {string} */
-	this.src = api_response.src;
+	this.src = options.src;
         /** @type {string} */
-	this.src_output = api_response.src_output;
+	this.src_output = options.src_output;
         /** @type {string} */
-	this.dst = api_response.dst;
+	this.dst = options.dst;
         /** @type {string} */
-	this.dst_input = api_response.dst_input;
+	this.dst_input = options.dst_input;
+    }
+
+    /**
+     * @param {DataView} view
+     * @param {number} offset
+     * @returns {[Edge, number]}
+     */
+    static decode(view, offset) {
+        let src, src_output, dst, dst_input;
+        [src, offset] = readEncodedString(view, offset);
+        [src_output, offset] = readEncodedString(view, offset);
+        [dst, offset] = readEncodedString(view, offset);
+        [dst_input, offset] = readEncodedString(view, offset);
+        return [new Edge({ src, src_output, dst, dst_input }), offset];
     }
 }
 
@@ -165,27 +183,25 @@ class Edge {
  */
 export class Node {
     /** 
-     * @param {Object} api_response - Node response from server
-     * @param {string} api_response.type - Type of node
-     * @param {string} api_response.name - Name of node
-     * @property {Device} device - the device in which this node should be executed on
+     * @param {Object} options - Parameters for Node.
+     * @param {string} options.type - Type of node
+     * @param {string} options.name - Name of node
      */
-    constructor(api_response) {
+    constructor(options) {
         /** @type {string} */
-        this.type = api_response.type;
+        this.type = options.type;
         /** @type {string} */
-        this.name = api_response.name;
-        /** @type {DevicePreference | null} */
-        this.devicePreference = null;
+        this.name = options.name;
         
-        // Copy any additional properties from the API response
-        for (const [key, value] of Object.entries(api_response)) {
+        // Copy any additional properties from the options
+        for (const [key, value] of Object.entries(options)) {
             if (key !== "type" && key !== "name") {
                 this[key] = value;
             }
         }
     }
 
+    
     /**
      * Estimates the weight of the node, typically the number of elements it produces.
      * @param {Map<string, number>} inputsMap - A map of input names to their weights.
@@ -308,10 +324,13 @@ class MatmulNode extends Node {
     static RHS = "rhs";
     
     /**
-     * @param {Object} api_response - API response for MatmulNode.
+     * @param {Object} options - Options for MatmulNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
     }
 
@@ -327,6 +346,11 @@ class MatmulNode extends Node {
     get_inputs() { return [MatmulNode.LHS, MatmulNode.RHS]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    static decode(view, offset, name, partition, type) {
+        return [new MatmulNode({ name, partition, type }), offset];
+    }
+
 
     /**
      * @returns {Promise<GPUKernel>}
@@ -483,17 +507,25 @@ class MatmulNode extends Node {
  */
 class SafetensorNode extends Node {
     /**
-     * @param {Object} api_response - API response for SafetensorNode.
-     * @param {string} api_response.tensor_name - Name of the tensor.
-     * @param {string} api_response.model_name - Name of the model.
+     * @param {Object} options - Options for SafetensorNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
+     * @param {string} options.tensor_name - Name of the tensor.
+     * @param {string} options.model_name - Name of the model.
      */
-    constructor(api_response) {
-        super(api_response);
-        /** @type {string} */
-        this.tensor_name = api_response.tensor_name;
-        /** @type {string} */
-        this.model_name = api_response.model_name;
+    constructor(options) {
+        super(options);
+        this.tensor_name = options.tensor_name;
+        this.model_name = options.model_name;
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let tensor_name, model_name;
+        [model_name, offset] = readEncodedString(view, offset);
+        [tensor_name, offset] = readEncodedString(view, offset);
+        return [new SafetensorNode({ name, partition, type, tensor_name, model_name }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -553,11 +585,18 @@ class SoftmaxNode extends Node {
     static DIM = "dim"; // Name for the input tensor that will hold the dimension scalar
     
     /**
-     * @param {Object} api_response - API response for SoftmaxNode.
+     * @param {Object} options - Options for SoftmaxNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SoftmaxNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -744,11 +783,18 @@ class SliceNode extends Node {
     static END = "end";
     
     /**
-     * @param {Object} api_response - API response for SliceNode.
+     * @param {Object} options - Options for SliceNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SliceNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -910,11 +956,18 @@ class ReshapeNode extends Node {
     static DIMS = "dims";
     
     /**
-     * @param {Object} api_response - API response for ReshapeNode.
+     * @param {Object} options - Options for ReshapeNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new ReshapeNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1043,11 +1096,18 @@ class UnsqueezeNode extends Node {
     static DIM = "dim";
     
     /**
-     * @param {Object} api_response - API response for UnsqueezeNode.
+     * @param {Object} options - Options for UnsqueezeNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new UnsqueezeNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1146,11 +1206,18 @@ class BroadcastNode extends Node {
     static N = "n";
     
     /**
-     * @param {Object} api_response - API response for BroadcastNode.
+     * @param {Object} options - Options for BroadcastNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new BroadcastNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1298,11 +1365,18 @@ class CatNode extends Node {
     static DIM = "dim";
     
     /**
-     * @param {Object} api_response - API response for CatNode.
+     * @param {Object} options - Options for CatNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new CatNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1457,14 +1531,29 @@ class CatNode extends Node {
  */
 class FixedNode extends Node {
     /**
-     * @param {Object} api_response - API response for FixedNode.
-     * @param {APITensor} api_response.tensor - The fixed tensor.
+     * @param {Object} params - Parameters for FixedNode.
+     * @param {CPUTensor} params.tensor - The fixed tensor.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(params) {
+        super(params);
         /** @type {CPUTensor} */
-        this.tensor = (new APITensor(api_response.tensor)).toCPU();
+        this.tensor = params.tensor;
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    /**
+     * Decodes a FixedNode from a DataView.
+     * @param {DataView} view - The DataView to decode from.
+     * @param {number} offset - The offset to start decoding from.
+     * @param {string} name - The name of the node.
+     * @param {string} partition - The partition of the node.
+     * @param {string} type - The type of the node.
+     * @returns {[FixedNode, number]} A tuple containing the decoded FixedNode and the new offset.
+     */
+    static decode(view, offset, name, partition, type) {
+        let tensor;
+        [tensor, offset] = CPUTensor.decode(view, offset);
+        return [new FixedNode({ name, partition, type, tensor }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1509,11 +1598,18 @@ class HadamardNode extends Node {
     static B = "b";
     
     /**
-     * @param {Object} api_response - API response for HadamardNode.
+     * @param {Object} options - Options for HadamardNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new HadamardNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1612,11 +1708,18 @@ class IndexNode extends Node {
     static INDEX = "index";
     
     /**
-     * @param {Object} api_response - API response for IndexNode.
+     * @param {Object} options - Options for IndexNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new IndexNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1758,11 +1861,18 @@ class ShapeNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for ShapeNode.
+     * @param {Object} options - Options for ShapeNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new ShapeNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1810,10 +1920,16 @@ class CastNode extends Node {
     /** @type {string} */
     static INPUT = "input";
     
-    constructor(api_response) {
-        super(api_response);
-        this.dtype = api_response.dtype;
+    constructor(options) {
+        super(options);
+        this.dtype = options.dtype;
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let dtype;
+        [dtype, offset] = readEncodedString(view, offset);
+        return [new CastNode({ name, partition, type, dtype }), offset];
     }
 
     get_inputs() { return [CastNode.INPUT]; }
@@ -1859,19 +1975,31 @@ class CastNode extends Node {
 class TransposeNode extends Node {
     /** @type {string} */
     static INPUT = "input";
+
+    /** @type {number} */
+    dim0;
+    /** @type {number} */
+    dim1;
     
     /**
-     * @param {Object} api_response - API response for TransposeNode.
-     * @param {number} api_response.dim0 - First dimension to transpose.
-     * @param {number} api_response.dim1 - Second dimension to transpose.
+     * @param {Object} options - Options for TransposeNode.
+     * @param {number} options.dim0 - First dimension to transpose.
+     * @param {number} options.dim1 - Second dimension to transpose.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         /** @type {number} */
-        this.dim0 = api_response.dim0;
+        this.dim0 = options.dim0;
         /** @type {number} */
-        this.dim1 = api_response.dim1;
+        this.dim1 = options.dim1;
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let dim0, dim1;
+        [dim0, offset] = readBEInt(view, offset);
+        [dim1, offset] = readBEInt(view, offset);
+        return [new TransposeNode({ name, partition, type, dim0, dim1 }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1997,15 +2125,15 @@ class AddNode extends Node {
     static B = "b";
     
     /**
-     * @param {Object} api_response - API response for AddNode.
+     * @param {Object} options - Options for AddNode.
      */
-    constructor(api_response) {
-        super(api_response);
-        // Add nodes typically run on CPU by default unless specified otherwise
-        // Or they could be fused into GPU kernels. Let's assume CPU for now.
-        if (!this.devicePreference) {
-             this.devicePreference = new DevicePreferences({ supportsGPU: true });
-        } 
+    constructor(options) {
+        super(options);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new AddNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2104,11 +2232,15 @@ class DivNode extends Node {
     static B = "b";
     
     /**
-     * @param {Object} api_response - API response for DivNode.
+     * @param {Object} options - Options for DivNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new DivNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2247,11 +2379,15 @@ class FloorNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for FloorNode.
+     * @param {Object} options - Options for FloorNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new FloorNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2314,11 +2450,15 @@ class CeilNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for CeilNode.
+     * @param {Object} options - Options for CeilNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new CeilNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2380,10 +2520,14 @@ class DebugNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for DebugNode.
+     * @param {Object} options - Options for DebugNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new DebugNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2401,75 +2545,14 @@ class DebugNode extends Node {
  * @classdesc Represents a computation graph.
  */
 export class Graph {
-    /*
-     * @param {Object} api_response
-     * @param {Object.<string, Object>} api_response.nodes - A map of node names to node API responses.
-     * @param {Array<Object>} api_response.edges - An array of edge API responses.
+    /**
+     * @param {Object} options
+     * @param {Object.<string, Object>} options.nodes - A map of node names to node API responses.
+     * @param {Array<Object>} options.edges - An array of edge API responses.
      */
-    constructor(api_response) {
-        /** @type {Object.<string, Node>} */
-        this.nodes = {};
-        for (const [key, value] of Object.entries(api_response.nodes)) {
-            // Create the appropriate node type based on the value.type
-            if (value.type === "matmul") {
-                this.nodes[key] = new MatmulNode(value);
-            } else if (value.type === "safetensor") {
-                this.nodes[key] = new SafetensorNode(value);
-            } else if (value.type === "softmax") {
-                this.nodes[key] = new SoftmaxNode(value);
-            } else if (value.type === "slice") {
-                this.nodes[key] = new SliceNode(value);
-            } else if (value.type === "reshape") {
-                this.nodes[key] = new ReshapeNode(value);
-            } else if (value.type === "unsqueeze") {
-                this.nodes[key] = new UnsqueezeNode(value);
-            } else if (value.type === "broadcast") {
-                this.nodes[key] = new BroadcastNode(value);
-            } else if (value.type === "cat") {
-                this.nodes[key] = new CatNode(value);
-            } else if (value.type === "cast") {
-                this.nodes[key] = new CastNode(value);
-            } else if (value.type === "fixed") {
-                this.nodes[key] = new FixedNode(value);
-            } else if (value.type === "hadamard") {
-                this.nodes[key] = new HadamardNode(value);
-            } else if (value.type === "index") {
-                this.nodes[key] = new IndexNode(value);
-            } else if (value.type === "shape") {
-                this.nodes[key] = new ShapeNode(value);
-            } else if (value.type === "transpose") {
-                this.nodes[key] = new TransposeNode(value);
-            } else if (value.type === "add") {
-                this.nodes[key] = new AddNode(value);
-            } else if (value.type === "div") {
-                this.nodes[key] = new DivNode(value);
-            } else if (value.type === "floor") {
-                this.nodes[key] = new FloorNode(value);
-            } else if (value.type === "ceil") {
-                this.nodes[key] = new CeilNode(value);
-            } else if (value.type === "cos") {
-                this.nodes[key] = new CosNode(value);
-            } else if (value.type === "debug") {
-                this.nodes[key] = new DebugNode(value);            
-            } else if (value.type === "index_select") {
-                this.nodes[key] = new IndexSelectNode(value);
-            } else if (value.type === "reduce_mean") {
-                this.nodes[key] = new ReduceMeanNode(value);
-            } else if (value.type === "rsqrt") {
-                this.nodes[key] = new RsqrtNode(value);
-            } else if (value.type === "silu") {
-                this.nodes[key] = new SiluNode(value);
-            } else if (value.type === "sin") {
-                this.nodes[key] = new SinNode(value);
-            } else if (value.type === "squared") {
-                this.nodes[key] = new SquaredNode(value);
-            } else {
-                // Throw error for unknown node types
-                throw new Error(`Unknown node type: ${value.type}`);
-            }
-        }
-        /** @type {Edge[]} */
-        this.edges = api_response.edges.map((e) => new Edge(e));
+    constructor(options) {
+        this.nodes = options.nodes;
+        this.edges = options.edges;
     }
 
     /*
@@ -2529,6 +2612,94 @@ export class Graph {
 
         return result;
     }
+
+    static decodeNode(view, offset) {
+        let nodeName, nodePartition, nodeType;
+        [nodeName, offset] = readEncodedString(view, offset);
+        [nodePartition, offset] = readEncodedString(view, offset);
+        [nodeType, offset] = readEncodedString(view, offset);
+        if (nodeType === "matmul") {
+            return MatmulNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "safetensor") {
+            return SafetensorNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "softmax") {
+            return SoftmaxNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "slice") {
+            return SliceNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "reshape") {
+            return ReshapeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "unsqueeze") {
+            return UnsqueezeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "broadcast") {
+            return BroadcastNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "cat") {
+            return CatNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "cast") {
+            return CastNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "fixed") {
+            return FixedNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "hadamard") {
+            return HadamardNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "index") {
+            return IndexNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "shape") {
+            return ShapeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "transpose") {
+            return TransposeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "add") {
+            return AddNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "div") {
+            return DivNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "floor") {
+            return FloorNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "ceil") {
+            return CeilNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "cos") {
+            return CosNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "debug") {
+            return DebugNode.decode(view, offset, nodeName, nodePartition, nodeType);            
+        } else if (nodeType === "index_select") {
+            return IndexSelectNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "reduce_mean") {
+            return ReduceMeanNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "rsqrt") {
+            return RsqrtNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "silu") {
+            return SiluNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "sin") {
+            return SinNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "squared") {
+            return SquaredNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else {
+            // Throw error for unknown node types
+            throw new Error(`Unknown node type: ${nodeType}`);
+        }
+    }
+
+    /**
+     * Decodes a graph from a DataView
+     * @param {DataView} view - The DataView to decode from
+     * @param {number} offset - The offset to start decoding from
+     * @returns {[Graph, number]} A tuple containing the decoded graph and the new offset
+     */
+    static decode(view, offset) {
+        let numNodes, numEdges;
+        [numNodes, offset] = readBEInt(view, offset);
+        let nodes = {};
+        for (let i = 0; i < numNodes; i++) {
+            let node;
+            [node, offset] = Graph.decodeNode(view, offset);
+            nodes[node.name] = node;
+        }
+        [numEdges, offset] = readBEInt(view, offset);
+        let edges = [];
+        for (let i = 0; i < numEdges; i++) {
+            let edge;
+            [edge, offset] = Edge.decode(view, offset);
+            edges.push(edge);
+        }
+        return [new Graph({ nodes, edges }), offset];
+    }
 }
 
 /**
@@ -2544,17 +2715,31 @@ class InputAssignment {
     tensor;
 
     /**
-     * @param {Object} api_response - Input assignment response from server
-     * @param {string} api_response.node - Node to assign input to
-     * @param {string} api_response.input - Input to assign
-     * @param {APITensor} api_response.tensor - Tensor to assign
+     * @param {Object} options - Input assignment options
+     * @param {string} options.node - Node to assign input to
+     * @param {string} options.input - Input to assign
+     * @param {CPUTensor} options.tensor - Tensor to assign
      */
-    constructor(api_response) {
-        this.node = api_response.node;
-        this.input = api_response.input;
+    constructor(options) {
+        this.node = options.node;
+        this.input = options.input;
         // Directly create CPUTensor from the raw tensor data in the API response
-        this.tensor = (new APITensor(api_response.tensor)).toCPU();
+        this.tensor = options.tensor;
         console.log("constructed", this)
+    }
+
+    /**
+     * Reads an input assignment from the DataView.
+     * @param {DataView} view The DataView to read from.
+     * @param {number} offset The offset to start reading at.
+     * @returns {[InputAssignment, number]} A tuple containing the decoded input assignment and new offset.
+     */
+    static decode(view, offset) {
+        let node, inputName, tensorData;
+        [node, offset] = readEncodedString(view, offset);
+        [inputName, offset] = readEncodedString(view, offset);
+        [tensorData, offset] = CPUTensor.decode(view, offset);
+        return [new InputAssignment({ node, input: inputName, tensor: tensorData }), offset];
     }
 }
 
@@ -2582,12 +2767,27 @@ export class OutputAssignment {
         this.tensor = options.tensor;
     }
 
-    toAPI() {
-        return {
-            node: this.node,
-            output: this.output,
-            tensor: APITensor.fromCPU(this.tensor),
-        };
+    /**
+     * Calculates the size of an encoded output assignment.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        return sizeEncodedString(this.node) +
+               sizeEncodedString(this.output) +
+               this.tensor.encodedSize();
+    }
+
+    /**
+     * Writes an output assignment to the DataView.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.node);
+        offset = writeEncodedString(view, offset, this.output);
+        offset = this.tensor.encode(view, offset);
+        return offset;
     }
 }
 
@@ -2606,17 +2806,43 @@ export class PartitionWork {
     inputs;
 
     /**
-     * @param {Object} api_response - Partition work response from server
-     * @param {string} api_response.correlation_id - Correlation ID of the work
-     * @param {string} api_response.partition - Partition to get work for
-     * @param {Object} api_response.graph - Graph to execute
-     * @param {Array<Object>} api_response.inputs - Inputs to the graph, as API responses.
+     * @param {Object} options - Partition work options
+     * @param {string} options.correlation_id - Correlation ID of the work
+     * @param {string} options.partition - Partition to get work for
+     * @param {Graph} options.graph - Graph to execute
+     * @param {Array<InputAssignment>} options.inputs - Inputs to the graph.
      */
-    constructor(api_response) {
-        this.correlation_id = api_response.correlation_id;
-        this.partition = api_response.partition;
-        this.graph = new Graph(api_response.graph);
-        this.inputs = api_response.inputs.map(ia => new InputAssignment(ia));
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.partition = options.partition;
+        this.graph = options.graph;
+        this.inputs = options.inputs;
+    }
+
+    /**
+     * Reads a PartitionWork object from the DataView.
+     * @param {DataView} view The DataView to read from.
+     * @param {number} offset The offset to start reading at.
+     * @returns {[PartitionWork, number]} A tuple containing the decoded PartitionWork and new offset.
+     */
+    static decode(view, offset) {
+        let correlation_id, partition, graph, inputsLength;
+        const inputs = [];
+        [correlation_id, offset] = readEncodedString(view, offset);
+        console.debug("correlation_id", correlation_id);
+        [partition, offset] = readEncodedString(view, offset);
+        console.debug("partition", partition);
+        [graph, offset] = Graph.decode(view, offset);
+        console.debug("graph", graph);
+        [inputsLength, offset] = readBEInt(view, offset);
+        console.debug("inputsLength", inputsLength);
+        for (let i = 0; i < inputsLength; i++) {
+            let inputAssignment;
+            [inputAssignment, offset] = InputAssignment.decode(view, offset);
+            console.debug("inputAssignment", inputAssignment);
+            inputs.push(inputAssignment);
+        }
+        return [new PartitionWork({ correlation_id, partition, graph, inputs }), offset];
     }
 }
 
@@ -2644,12 +2870,35 @@ export class PartitionWorkResult {
         this.outputs = options.outputs;
     }
 
-    toAPI() {
-        return {
-            correlation_id: this.correlation_id,
-            partition: this.partition,
-            outputs: this.outputs.map((m) => m.toAPI()),
-        };
+    /**
+     * Calculates the size of an encoded PartitionWorkResult.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        let size = sizeEncodedString(this.correlation_id);
+        size += sizeEncodedString(this.partition);
+        size += 4; // outputs_length
+        for (const output of this.outputs) {
+            size += output.encodedSize();
+        }
+        return size;
+    }
+
+    /**
+     * Writes a PartitionWorkResult object to the DataView.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @param {PartitionWorkResult} result The PartitionWorkResult object.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.correlation_id);
+        offset = writeEncodedString(view, offset, this.partition);
+        offset = writeBEInt(view, offset, this.outputs.length);
+        for (const output of this.outputs) {
+            offset = output.encode(view, offset);
+        }
+        return offset;
     }
 }
 
@@ -2682,11 +2931,18 @@ export class Coordinator {
     /**
      * Gets the next partition work from the coordination server
      * @param {string} partition_name - Partition to get work for
-     * @returns {PartitionWork | null} - Partition work from server, or null if no work is available
+     * @returns {Promise<PartitionWork | null>} - Partition work from server, or null if no work is available
      */
     async get_work(partition_name) {
         const response = await fetch(`${this.url}/work/${partition_name}`);
-        return new PartitionWork(await response.json());
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength === 0) {
+            return null;
+        }
+        console.debug("got work", buffer);
+        const view = new DataView(buffer);
+        const [work] = PartitionWork.decode(view, 0);
+        return work;
     }
 
     /**
@@ -2695,23 +2951,19 @@ export class Coordinator {
      * @returns {Promise<void>}
      */
     async submit_work(work) {
-	await fetch(`${this.url}/work`, {
-	    method: "POST",
-	    body: JSON.stringify(work.toAPI()),
-        headers: {
-            ["Content-Type"]: 'application/json'
-        }
-	});
+        const size = work.encodedSize();
+        const buffer = new ArrayBuffer(size);
+        const view = new DataView(buffer);
+        work.encode(view, 0);
+        
+        await fetch(`${this.url}/work`, {
+            method: "POST",
+            body: buffer,
+            headers: {
+                ["Content-Type"]: 'application/octet-stream'
+            }
+        });
     }
-}
-
-/**
- * @class PreparedGraph
- * @classdesc Represents a graph that has been prepared for execution.
- *  (Currently a placeholder)
- */
-class PreparedGraph {
-
 }
 
 /**
@@ -2786,9 +3038,13 @@ class CosNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new CosNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2853,9 +3109,13 @@ class IndexSelectNode extends Node {
     /** @type {string} */
     static INDEX = "index";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new IndexSelectNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2987,9 +3247,13 @@ class ReduceMeanNode extends Node {
     /** @type {string} */
     static DIM = "dim"; // This will be a CPUTensor containing the dimension(s) to reduce
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 }); 
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new ReduceMeanNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3176,9 +3440,13 @@ class RsqrtNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new RsqrtNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3239,9 +3507,13 @@ class SiluNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SiluNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3302,9 +3574,13 @@ class SinNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SinNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3365,9 +3641,13 @@ class SquaredNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, supportsCPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SquaredNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {

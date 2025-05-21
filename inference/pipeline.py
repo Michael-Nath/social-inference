@@ -1,52 +1,57 @@
 from __future__ import annotations
 
-from queue import Queue, Empty
-import threading
-from typing import Annotated, Literal, Union
-from pydantic import BaseModel, Field
-from collections import defaultdict, deque
+from dataclasses import dataclass
 
-from .graph import ComputeGraph, ComputeGraphEdge, GraphEncoding, NodeName, PartitionName, PARTITION_INPUT, PARTITION_OUTPUT
-from .tensor import Tensor
+from inference.encoding import read_be_int, read_encoded_string, size_encoded_string, write_be_int, write_encoded_string
+
+from .graph import ComputeGraph, ComputeGraphEdge, NodeName, PartitionName, PARTITION_INPUT, PARTITION_OUTPUT
+from .tensor import Tensor, read_encoded_tensor, size_encoded_tensor, write_encoded_tensor
 from .queue import CorrelatedQueue, CorrelatedTensor
 
 import torch
 
-class PipelineInput(BaseModel):
+@dataclass
+class PipelineInput:
     """
     Input to the pipeline
     """
     correlation_id: str
     inputs: dict[NodeName, Tensor]
 
-class PipelineOutput(BaseModel):
+@dataclass
+class PipelineOutput:
     """
     Output from the pipeline
     """
     correlation_id: str
     outputs: dict[NodeName, Tensor]
 
-
-class InputAssignment(BaseModel):
+@dataclass
+class InputAssignment:
     node: NodeName
     input: str
     tensor: Tensor
 
-class OutputAssignment(BaseModel):
+@dataclass
+class OutputAssignment:
     node: NodeName
     output: str
     tensor: Tensor
 
-class PartitionWork(BaseModel):
+
+@dataclass
+class PartitionWork:
     """
     Work to be done for a partition
     """
     correlation_id: str
     partition: PartitionName
-    graph: GraphEncoding
+    graph: ComputeGraph
     inputs: list[InputAssignment]
 
-class PartitionWorkResult(BaseModel):
+
+@dataclass
+class PartitionWorkResult:
     """
     Result of partition work
     """
@@ -73,6 +78,8 @@ class PartitionWorkResult(BaseModel):
                 raise ValueError(f"Output {o.node}.{o.output} dtype mismatch: {o.tensor.dtype} != {our_tensor.dtype}")
             if not torch.allclose(o.tensor.to_torch(), our_outputs[(o.node, o.output)].tensor.to_torch()):
                 raise ValueError(f"Output {o}={o.tensor.to_torch()} does not match our output {our_outputs[(o.node, o.output)]}={our_outputs[(o.node, o.output)].tensor.to_torch()}")
+
+
 class ComputePipeline:
     """
     A compute pipeline stores the execution state of a compute graph.
@@ -173,7 +180,7 @@ class ComputePipeline:
         return PartitionWork(
             correlation_id=correlation_id,
             partition=partition,
-            graph=self.graph.extract_partition(partition, include_cut_edges=False).encode(),
+            graph=self.graph.extract_partition(partition, include_cut_edges=False),
             inputs=input_assignments
         )
 
@@ -202,3 +209,104 @@ class ComputePipeline:
 
         # Return the output
         return PipelineOutput(correlation_id=element.correlation_id, outputs=outputs)
+
+
+def read_encoded_pipeline_input(offset: int, data: bytes) -> tuple[PipelineInput, int]:
+    correlation_id, offset = read_encoded_string(offset, data)
+    inputs_length, offset = read_be_int(offset, data)
+    inputs = {}
+    for _ in range(inputs_length):
+        node, offset = read_encoded_string(offset, data)
+        tensor, offset = read_encoded_tensor(offset, data)
+        inputs[node] = tensor
+    return PipelineInput(correlation_id=correlation_id, inputs=inputs), offset
+
+def write_encoded_pipeline_input(data: bytearray, offset: int, pipeline_input: PipelineInput) -> int:
+    offset = write_encoded_string(data, offset, pipeline_input.correlation_id)
+    offset = write_be_int(data, offset, len(pipeline_input.inputs))
+    for node, tensor in pipeline_input.inputs.items():
+        offset = write_encoded_string(data, offset, node)
+        offset = write_encoded_tensor(data, offset, tensor)
+    return offset
+
+def size_encoded_pipeline_input(pipeline_input: PipelineInput) -> int:
+    size = size_encoded_string(pipeline_input.correlation_id)
+    size += 4 # for the inputs length
+    for node, tensor in pipeline_input.inputs.items():
+        size += size_encoded_string(node)
+        size += size_encoded_tensor(tensor)
+    return size
+
+def read_encoded_input_assignment(offset: int, data: bytes) -> tuple[InputAssignment, int]:
+    node, offset = read_encoded_string(offset, data)
+    input, offset = read_encoded_string(offset, data)
+    tensor, offset = read_encoded_tensor(offset, data)
+    return InputAssignment(node=node, input=input, tensor=tensor), offset
+
+def write_encoded_input_assignment(data: bytearray, offset: int, input_assignment: InputAssignment) -> int:
+    offset = write_encoded_string(data, offset, input_assignment.node)
+    offset = write_encoded_string(data, offset, input_assignment.input)
+    offset = write_encoded_tensor(data, offset, input_assignment.tensor)
+    return offset
+
+def size_encoded_input_assignment(input_assignment: InputAssignment) -> int:
+    return size_encoded_string(input_assignment.node) + size_encoded_string(input_assignment.input) + size_encoded_tensor(input_assignment.tensor)
+
+def read_encoded_output_assignment(offset: int, data: bytes) -> tuple[OutputAssignment, int]:
+    node, offset = read_encoded_string(offset, data)
+    output, offset = read_encoded_string(offset, data)
+    tensor, offset = read_encoded_tensor(offset, data)
+    return OutputAssignment(node=node, output=output, tensor=tensor), offset
+
+def write_encoded_output_assignment(data: bytearray, offset: int, output_assignment: OutputAssignment) -> int:
+    offset = write_encoded_string(data, offset, output_assignment.node)
+    offset = write_encoded_string(data, offset, output_assignment.output)
+    offset = write_encoded_tensor(data, offset, output_assignment.tensor)
+    return offset
+
+def size_encoded_output_assignment(output_assignment: OutputAssignment) -> int:
+    return size_encoded_string(output_assignment.node) + size_encoded_string(output_assignment.output) + size_encoded_tensor(output_assignment.tensor)
+
+def write_encoded_partition_work(data: bytearray, offset: int, partition_work: PartitionWork) -> int:
+    offset = write_encoded_string(data, offset, partition_work.correlation_id)
+    offset = write_encoded_string(data, offset, partition_work.partition)
+    offset = partition_work.graph.encode_binary(offset, data)
+    offset = write_be_int(data, offset, len(partition_work.inputs))
+    for input in partition_work.inputs:
+        offset = write_encoded_input_assignment(data, offset, input)
+    return offset
+
+def size_encoded_partition_work(partition_work: PartitionWork) -> int:
+    size = size_encoded_string(partition_work.correlation_id)
+    size += size_encoded_string(partition_work.partition)
+    size += partition_work.graph.size_binary()
+    size += 4 # for the inputs length
+    for input in partition_work.inputs:
+        size += size_encoded_input_assignment(input)
+    return size
+
+def read_encoded_partition_work_result(offset: int, data: bytes) -> tuple[PartitionWorkResult, int]:
+    correlation_id, offset = read_encoded_string(offset, data)
+    partition, offset = read_encoded_string(offset, data)
+    outputs_length, offset = read_be_int(offset, data)
+    outputs = []
+    for _ in range(outputs_length):
+        output, offset = read_encoded_output_assignment(offset, data)
+        outputs.append(output)
+    return PartitionWorkResult(correlation_id=correlation_id, partition=partition, outputs=outputs), offset
+
+def write_encoded_partition_work_result(data: bytearray, offset: int, partition_work_result: PartitionWorkResult) -> int:
+    offset = write_encoded_string(data, offset, partition_work_result.correlation_id)
+    offset = write_encoded_string(data, offset, partition_work_result.partition)
+    offset = write_be_int(data, offset, len(partition_work_result.outputs))
+    for output in partition_work_result.outputs:
+        offset = write_encoded_output_assignment(data, offset, output)
+    return offset
+
+def size_encoded_partition_work_result(partition_work_result: PartitionWorkResult) -> int:
+    size = size_encoded_string(partition_work_result.correlation_id)
+    size += size_encoded_string(partition_work_result.partition)
+    size += 4 # for the outputs length
+    for output in partition_work_result.outputs:
+        size += size_encoded_output_assignment(output)
+    return size

@@ -3,108 +3,6 @@ import { Node, Graph, Device, GPUDevice, CPUDevice } from "./worker.js";
 // For now, let's stub it if it's not imported, or assume KernelBuilder provides it.
 import { GPUKernel } from "./kernel.js";
 
-// --- Utilities ---
-
-/**
- * Calculates the number of bytes required for a tensor.
- * @param {number[]} shape - The tensor shape.
- * @param {string} dtype - The data type (e.g., "float32", "int32").
- * @returns {number} The required byte size.
- * @throws {Error} If the dtype is unsupported.
- */
-function getByteSize(shape, dtype) {
-    const numElements = shape.reduce((a, b) => a * b, 1);
-    let bytesPerElement;
-    switch (dtype) {
-        case "float32":
-            bytesPerElement = 4;
-            break;
-        case "int32":
-        case "uint32":
-            bytesPerElement = 4;
-            break;
-        case "float16": // Note: Check JS/WebGPU handling for f16 data preparation
-            bytesPerElement = 2;
-            break;
-        case "int16":
-        case "uint16":
-            bytesPerElement = 2;
-            break;
-        case "int8":
-        case "uint8":
-            bytesPerElement = 1;
-            break;
-        default:
-            throw new Error(`Unsupported dtype for byte size calculation: ${dtype}`);
-    }
-    return numElements * bytesPerElement;
-}
-
-// --- Kernels --- 
-// Define reusable kernels used by the compiler/executor
-
-/** @type {GPUKernel} */
-const matmulKernel = new GPUKernel({
-    name: "matmul",
-    shaderPath: "kernels/matmul.wgsl",
-    entryPoint: "main",
-    workGroupSize: { x: 16, y: 16, z: 1 },
-    bindingConfig: [
-        {
-            name: "dimensions", // M, K, N
-            isPersistent: false,
-            isOutput: false,
-            type: "uniform",
-        },
-        {
-            name: "input", // Matrix A (M x K)
-            isPersistent: false,
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "weight", // Matrix B (K x N)
-            isPersistent: true, // Example: weights might persist across runs
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "result", // Matrix C (M x N)
-            isPersistent: false,
-            isOutput: true,
-            type: "storage"
-        }
-    ],
-});
-
-/** @type {GPUKernel} */
-const addKernel = new GPUKernel({
-    name: "add",
-    shaderPath: "kernels/add.wgsl",
-    entryPoint: "main",
-    workGroupSize: { x: 64, y: 1, z: 1 }, // Matches shader
-    bindingConfig: [
-        {
-            name: "inputA",
-            isPersistent: false,
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "inputB",
-            isPersistent: false,
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "result",
-            isPersistent: false,
-            isOutput: true,
-            type: "storage"
-        }
-    ],
-});
-
 // Base class for a computation session (a sequence of nodes on one device)
 export class ComputeSession {
     /** @type {number} */
@@ -214,11 +112,15 @@ export class SessionGraph {
     /** @type {Map<string, Set<string>>} - Maps final output nodes to final outputs. node => output is only present if node:output is a final output */
     _finalOutputs;
 
+    /** @type {boolean} */
+    testMode;
+
     /**
      * @param {ComputeSession[]} sessions - List of compute sessions
      */
-    constructor(sessions) {
+    constructor(sessions, testMode = false) {
         this.sessions = sessions;
+        this.testMode = testMode;
         this._nodeToSession = new Map();
         this._outputDependencies = new Map();
         this._sessionEdges = new Map();

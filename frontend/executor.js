@@ -44,12 +44,17 @@ export class SessionExecutor {
     /** @type {import('./uiManager.js').UIManager} */
     uiManager;
 
+    /** @type {boolean} */
+    testMode;
+
     /**
      * @param {GPUDevice} device - The WebGPU device instance.
      * @param {SessionGraph} sessionGraph - The compiled and annotated session graph.
      * @param {import('./uiManager.js').UIManager} uiManager - The UI manager instance.
+     * @param {SafeTensorCache | null} safetensorCache - The safetensor cache.
+     * @param {boolean} testMode - Whether to run in test mode.
      */
-    constructor(device, sessionGraph, uiManager) {
+    constructor(device, sessionGraph, uiManager, safetensorCache = null, testMode = false) {
         if (!device || !sessionGraph) {
             throw new Error("SessionExecutor requires a GPUDevice and a SessionGraph.");
         }
@@ -67,7 +72,9 @@ export class SessionExecutor {
         this.cpuOutputs = new Map();
         this.gpuOutputs = new Map();
 
-        this.safetensorCache = new SafeTensorCache();
+        this.safetensorCache = safetensorCache || new SafeTensorCache();
+
+        this.testMode = testMode;
     }
 
     /**
@@ -105,12 +112,6 @@ export class SessionExecutor {
     async execute(partitionWork) {
         console.log("SessionExecutor: Starting execution...");
         await this._initializeState(partitionWork);
-        // Initial ready sessions are found within _initializeState
-
-        // Main execution loop (simplified view)
-        let runningTasks = 0;
-        const maxConcurrency = navigator.hardwareConcurrency || 4; // Limit concurrent tasks somewhat
-
 
         const promises = [];
         const sessionTask = (session) => {
@@ -152,64 +153,7 @@ export class SessionExecutor {
         }
 
         for (const session of this.sessionGraph.sessions) {
-            // promises.push(sessionTask(session));
             await sessionTask(session);
-        }
-
-        // await Promise.all(promises);
-
-        return this._gatherFinalOutputs();
-
-        const processQueue = async () => {
-            while (this.readyQueue.length > 0 && runningTasks < maxConcurrency) {
-                runningTasks++;
-                const sessionToRun = this.readyQueue.shift();
-                this.sessionStatus.set(sessionToRun, 'running');
-                console.log(`SessionExecutor: Starting session ${this.sessionGraph.sessions.indexOf(sessionToRun)} (${sessionToRun.constructor.name})`);
-
-                const taskPromise = (async () => {
-                    try {
-                        if (sessionToRun instanceof GPUSession) {
-                            await this._executeGPUSession(sessionToRun);
-                        } else if (sessionToRun instanceof CPUSession) {
-                            await this._executeCPUSession(sessionToRun); // Could be sync or async
-                        } else {
-                            throw new Error("Unknown session type encountered.");
-                        }
-
-                        // Mark as complete and update dependents
-                        this.sessionStatus.set(sessionToRun, 'complete');
-                        console.log(`SessionExecutor: Completed session ${this.sessionGraph.sessions.indexOf(sessionToRun)}`);
-                        this._updateReadyQueue(sessionToRun);
-
-                    } catch (error) {
-                        console.error(`Error executing session ${this.sessionGraph.sessions.indexOf(sessionToRun)}:`, error);
-                        // Handle error: Mark as failed? Stop execution?
-                        this.sessionStatus.set(sessionToRun, 'failed'); // Mark as failed
-                        throw error; // Re-throw to be caught by Promise.all
-                    } finally {
-                        runningTasks--;
-                        // Check if more tasks can be started
-                        // Use setImmediate/setTimeout to avoid blocking the event loop excessively
-                        setTimeout(processQueue, 0);
-                    }
-                })();
-                promises.push(taskPromise);
-            }
-        };
-
-        processQueue(); // Start processing
-
-        // Wait for all initiated tasks to complete or fail
-        await Promise.all(promises);
-
-        // Check if all sessions completed successfully
-        const allComplete = [...this.sessionStatus.values()].every(status => status === 'complete');
-        if (!allComplete) {
-            console.error("SessionExecutor: Execution finished with errors.");
-            throw new Error("One or more sessions failed during execution.");
-        } else {
-            console.log("SessionExecutor: Execution finished successfully.");
         }
 
         return this._gatherFinalOutputs();
@@ -222,8 +166,11 @@ export class SessionExecutor {
      */
     async _initializeState(partitionWork) {
         console.group("Initialization");
-        this.sessionStatus.clear();
         this.buffers.clear();
+
+
+        /*
+        this.sessionStatus.clear();
         this.readyQueue = [];
         this.sessionInDegree.clear();
 
@@ -249,6 +196,7 @@ export class SessionExecutor {
                 console.log(`Session ${sessions.indexOf(s)} added to initial ready queue (in-degree 0).`);
             }
         });
+        */
 
         // --- Store Initial Inputs --- 
         console.group("Loading Inputs");
