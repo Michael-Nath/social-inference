@@ -1,8 +1,6 @@
 from collections import defaultdict, deque
 import threading
 
-from pydantic import BaseModel
-
 from .graph import ComputeGraphEdge
 from .tensor import CorrelatedTensor
 

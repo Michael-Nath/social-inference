@@ -21,7 +21,7 @@ def test_simulate_simple_matmul():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     lhs = random_correlated_2d_tensor("1", (5, 5)).tensor
     rhs = random_correlated_2d_tensor("1", (5, 5)).tensor
@@ -55,7 +55,7 @@ def test_simulate_slice():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input_tensor = random_correlated_2d_tensor("1", (5, 5)).tensor
     work = PartitionWork(
@@ -88,7 +88,7 @@ def test_simulate_unsqueeze():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input_tensor = random_correlated_2d_tensor("1", (5, 5)).tensor
     work = PartitionWork(
@@ -122,7 +122,7 @@ def test_simulate_broadcast():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input_tensor = random_correlated_2d_tensor("1", (5, 1)).tensor
     work = PartitionWork(
@@ -156,7 +156,7 @@ def test_simulate_cat():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input1 = random_correlated_2d_tensor("1", (5, 3)).tensor
     input2 = random_correlated_2d_tensor("2", (5, 2)).tensor
@@ -191,7 +191,7 @@ def test_simulate_fixed():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     work = PartitionWork(
         correlation_id="1",
@@ -220,7 +220,7 @@ def test_simulate_hadamard():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input1 = random_correlated_2d_tensor("1", (5, 5)).tensor
     input2 = random_correlated_2d_tensor("2", (5, 5)).tensor
@@ -256,7 +256,7 @@ def test_simulate_softmax():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input_tensor = random_correlated_2d_tensor("1", (5, 5)).tensor
     work = PartitionWork(
@@ -288,7 +288,7 @@ def test_simulate_index():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     # Create a 3D tensor for testing
     input_tensor = Tensor.from_torch(torch.randn(5,4,3))
@@ -328,7 +328,7 @@ def test_simulate_shape():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     # Create a 3D tensor for testing
     input_tensor = Tensor.from_torch(torch.randn(5,4,3))
@@ -350,7 +350,7 @@ def test_simulate_shape():
     assert output.output == DEFAULT_NODE_OUTPUT
     
     # Expected result is the shape of the input tensor as a 1D tensor
-    expected = torch.tensor(input_tensor.to_torch().shape, dtype=torch.long)
+    expected = torch.tensor(input_tensor.to_torch().shape, dtype=torch.int32)
     assert torch.allclose(output.tensor.to_torch(), expected)
 
 def test_simulate_transpose():
@@ -362,7 +362,7 @@ def test_simulate_transpose():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input_tensor = random_correlated_2d_tensor("1", (5, 3)).tensor
     work = PartitionWork(
@@ -395,7 +395,7 @@ def test_simulate_reshape():
         z = builder.reshape("z", x, shape_node)
     o = builder.output("o", z)
     g = builder.build()
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
     input_tensor = random_correlated_2d_tensor("1", (4, 5)).tensor
     work = PartitionWork(
         correlation_id="1",
@@ -423,7 +423,7 @@ def test_simulate_shape_index_unsqueeze():
         dim0_unsqueezed = builder.unsqueeze("dim0_unsqueezed", dim0, builder.fixed("zero_dim", torch.tensor([0])))
     o = builder.output("o", dim0_unsqueezed)
     g = builder.build()
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
     # Create a 3D tensor for testing
     input_tensor = Tensor.from_torch(torch.randn(5,4,3))
     
@@ -452,7 +452,7 @@ def test_simulate_div():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input1 = random_correlated_2d_tensor("1", (5, 5)).tensor
     input2 = random_correlated_2d_tensor("2", (5, 5)).tensor
@@ -488,7 +488,7 @@ def test_simulate_floor_ceil():
     builder.output("ceil_out", ceil_result)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     # Create input tensor with floating point values
     input_tensor = Tensor.from_torch(torch.tensor([-1.5, -0.5, 0.5, 1.5], dtype=torch.float32))
@@ -529,7 +529,7 @@ def test_simulate_cast():
     o = builder.output("o", z)
     g = builder.build()
 
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     input_tensor = Tensor.from_torch(torch.tensor([1.5, 2.5, 3.5], dtype=torch.float32))
     work = PartitionWork(
@@ -555,7 +555,7 @@ def test_simulate_safetensor():
     with builder.partition("p0"):
         constant_node = builder.safetensor("constant_node", "meta-llama/Llama-3.2-1B", "model.layers.0.input_layernorm.weight")
     g = builder.build()
-    ge = g.extract_partition("p0", include_cut_edges=False).encode()
+    ge = g.extract_partition("p0", include_cut_edges=False)
 
     work = PartitionWork(
         correlation_id="1",

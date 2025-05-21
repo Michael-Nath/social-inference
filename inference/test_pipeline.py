@@ -1,4 +1,4 @@
-from .graph import ComputeGraphBuilder, ComputeGraph
+from .graph import ComputeGraphBuilder, ComputeGraph, MatmulNode
 from .pipeline import ComputePipeline, PipelineInput, PipelineOutput
 from .simulator import simulate
 from .test_util import random_2d_tensor, llama_1b_cache
@@ -31,10 +31,10 @@ def test_simple_pipeline():
     work = pipeline.get_partition_work(partition_name)
     assert work is not None
     assert work.partition == partition_name
-    assert len(work.graph.nodes) == 2  # Fixed: We have two matmul operations
-    assert len(work.graph.edges) == 0  # No edges since they're internal to the partition
-    assert work.graph.nodes[matmul0.name].type == "matmul"
-    assert work.graph.nodes[matmul1.name].type == "matmul"
+    assert len(work.graph.list_nodes()) == 2  # Fixed: We have two matmul operations
+    assert len(work.graph.get_edges()) == 0  # No edges since they're internal to the partition
+    assert isinstance(work.graph.get_node(matmul0.name), MatmulNode)
+    assert isinstance(work.graph.get_node(matmul1.name), MatmulNode)
     result = simulate(work, llama_1b_cache())
     pipeline.submit_partition_work(result)
 

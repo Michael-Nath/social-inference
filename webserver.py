@@ -1,7 +1,7 @@
 import base64
 import io
 import json
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,8 +11,8 @@ import torch
 from inference import (
     ModelCache, Registration, ComputePipeline, WorkerManager, 
     PartitionWork, PartitionWorkResult, PartitionName, SingleStepChunk,
-    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder,
-    simulator
+    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
+    read_encoded_partition_work_result, simulator
 )
 
 import tests
@@ -89,39 +89,45 @@ async def get_safetensor(model_name: str, tensor_name: str):
             tensor = tensor.to(torch.float32)
         elif tensor.dtype == torch.float16:
             tensor = tensor.to(torch.float32)
-        bytes = tensor.detach().cpu().numpy().tobytes()
-        dtype_str = str(tensor.dtype)
-        if dtype_str.startswith('torch.'):
-            dtype_str = dtype_str[6:]  # Remove 'torch.' prefix
-        header = SafetensorHeader(
-            dtype=dtype_str,
-            shape=list(tensor.shape),
-        )
-        # Convert to JSON then prefix byte array
-        header_bytes = header.model_dump_json().encode('utf-8')
-        header_size = len(header_bytes).to_bytes(4, byteorder='big')
-        return StreamingResponse(io.BytesIO(header_size + header_bytes + bytes), media_type="application/octet-stream")
+        tensor = Tensor.from_torch(tensor)
+        bytes = bytearray(size_encoded_tensor(tensor))
+        write_encoded_tensor(bytes, 0, tensor)
+        return StreamingResponse(io.BytesIO(bytes), media_type="application/octet-stream")
 
-@app.get("/work/{partition_name}", response_model=PartitionWork | None)
+@app.get("/work/{partition_name}")
 async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs
     """
     w = pipeline.get_partition_work(partition_name)
-    if CHECK_WORK:
-        inflight_work[(partition_name, w.correlation_id)] = w
-    return w
+    if w is not None:
+        inflight_work[(w.partition, w.correlation_id)] = w
+        bytes = bytearray(size_encoded_partition_work(w))
+        write_encoded_partition_work(bytes, 0, w)
+        return StreamingResponse(io.BytesIO(bytes), media_type="application/octet-stream")
+    return StreamingResponse(io.BytesIO(b""), status_code=404, media_type="application/octet-stream")
 
 @app.post("/work")
-async def submit_work(work: PartitionWorkResult):
+async def submit_work(req: Request):
     """
     Called by clients to submit inference results
     """
-    
+    body = b""
+    async for chunk in req.stream():
+        body += chunk 
+    # Parse JSON
+    work, _ = read_encoded_partition_work_result(0, body)
     return pipeline.submit_partition_work(work)
 
 @app.post("/check-work")
-async def check_work(work: SingleStepChunk):
+async def check_work(req: Request):
+
+    body = b""
+    async for chunk in req.stream():
+        body += chunk 
+    
+    work, _ = SingleStepChunk.decode(0, body)
+    
     if (work.partition, work.correlation_id) not in sim_results:
         gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache, True)
         sim_results[(work.partition, work.correlation_id)] = gt

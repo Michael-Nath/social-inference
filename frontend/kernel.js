@@ -1,3 +1,8 @@
+import { 
+  readBEInt, sizeEncodedString, readEncodedString, 
+  writeBEInt, writeEncodedString 
+} from "./encoding.js";
+
 export class Tensor {
   /**
    * @param {Object} options - Tensor options
@@ -209,6 +214,59 @@ export class CPUTensor extends Tensor {
       shape: shape,
       dtype: dtype,
     });
+  }
+
+  /**
+  * Reads a tensor from the DataView.
+  * @param {DataView} view The DataView to read from.
+  * @param {number} offset The offset to start reading at.
+  * @returns {[CPUTensor, number]} A tuple containing the tensor data and the new offset.
+  */
+  static decode(view, offset) {
+    let shapesLength;
+    [shapesLength, offset] = readBEInt(view, offset);
+    const shapes = [];
+    for (let i = 0; i < shapesLength; i++) {
+      let shapeVal;
+      [shapeVal, offset] = readBEInt(view, offset);
+      shapes.push(shapeVal);
+    }
+    let dtype;
+    [dtype, offset] = readEncodedString(view, offset);
+    let dataLength;
+    [dataLength, offset] = readBEInt(view, offset);
+    const data = view.buffer.slice(view.byteOffset + offset, view.byteOffset + offset + dataLength);
+    return [new CPUTensor({ shape: shapes, dtype, data }), offset + dataLength];
+  }
+
+  /**
+   * Calculates the size of an encoded tensor.
+   * @returns {number} The size in bytes of the encoded tensor.
+   */
+  encodedSize() {
+    let size = 4; // shapes_length
+    size += this.shape.length * 4; // each shape
+    size += sizeEncodedString(this.dtype);
+    size += 4; // data_length
+    size += this.data.byteLength;
+    return size;
+  }
+
+  /**
+   * Writes a tensor to the DataView.
+   * @param {DataView} view The DataView to write to.
+   * @param {number} offset The offset to start writing at.
+   * @returns {number} The new offset after writing.
+   */
+  encode(view, offset) {
+    offset = writeBEInt(view, offset, this.shape.length);
+    for (const shapeVal of this.shape) {
+        offset = writeBEInt(view, offset, shapeVal);
+    }
+    offset = writeEncodedString(view, offset, this.dtype);
+    offset = writeBEInt(view, offset, this.data.byteLength);
+    new Uint8Array(view.buffer, view.byteOffset + offset, this.data.byteLength).set(new Uint8Array(this.data));
+    return offset + this.data.byteLength;
   }
 }
 
