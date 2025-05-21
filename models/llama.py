@@ -268,10 +268,10 @@ def layernorm(
         eps_unsq_final = b.unsqueeze("eps_unsq_to_rank3", eps_unsq1, fixed_two) # eps_unsq1 (shape [1,1]) -> eps_unsq_final (shape [1,1,1])
         eps_bcast_bsz = b.broadcast("bcast_bsz", eps_unsq_final, fixed_zero, batch_size_node) # Shape: [B, 1, 1]
         eps_broadcasted = b.broadcast("bcast_seq", eps_bcast_bsz, fixed_one, seq_len_node)   # Shape: [B, S, 1]
-    variance_plus_eps = b.add("variance_plus_eps", variance, eps_broadcasted)
+    variance_plus_eps = b.add("variance_plus_eps", variance, eps_broadcasted) # [B, S, 1]
 
-    rsqrt_variance_plus_eps = b.rsqrt("rsqrt_variance_plus_eps", variance_plus_eps)
-    bcasted_rsqrt = b.broadcast("bcasted_sqrt", rsqrt_variance_plus_eps, fixed_neg_one, hidden_dim_node)
+    rsqrt_variance_plus_eps = b.rsqrt("rsqrt_variance_plus_eps", variance_plus_eps) # [B, S, 1]
+    bcasted_rsqrt = b.broadcast("bcasted_sqrt", rsqrt_variance_plus_eps, fixed_neg_one, hidden_dim_node) # [B, S, H]
 
     hidden_states_normalized = b.hadamard("hidden_states_normalized", hidden_states, bcasted_rsqrt)
 

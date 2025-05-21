@@ -171,7 +171,10 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 n = check_shape(n_tensor, [1]).item() # n is the new dimension size
                 assert int(n) == n, "bruh"
 
-                output = input_tensor.expand(*[int(n) if i == dim else -1 for i in range(input_tensor.dim())])
+                # Create a new shape list with the target size at the broadcast dimension
+                new_shape = list(input_tensor.shape)
+                new_shape[dim] = int(n)
+                output = input_tensor.expand(new_shape)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif encoded_node.type == "cat":
@@ -371,6 +374,6 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
     result = PartitionWorkResult(
         correlation_id=work.correlation_id,
         partition=work.partition,
-        outputs=output_assignments
+        outputs=output_assignments,
     )
     return result
