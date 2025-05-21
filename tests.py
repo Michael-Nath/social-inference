@@ -610,8 +610,17 @@ def test_llama_attn():
         cos = g.fixed("cos", torch.randn(1, 1, head_dim))
         sin = g.fixed("sin", torch.randn(1, 1, head_dim))
         attn_out = llama_attn(g, x, head_dim, 4, w_q, w_k, w_v, w_o, (cos, sin)) 
+    with g.partition("p1"):        
+        w_q = g.safetensor("w_q", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.q_proj.weight")
+        w_k = g.safetensor("w_k", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.k_proj.weight")
+        w_v = g.safetensor("w_v", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.v_proj.weight")
+        w_o = g.safetensor("w_o", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.o_proj.weight")
+        cos = g.fixed("cos", torch.randn(1, 1, head_dim))
+        sin = g.fixed("sin", torch.randn(1, 1, head_dim))
+        attn_out = llama_attn(g, attn_out, head_dim, 4, w_q, w_k, w_v, w_o, (cos, sin)) 
     g.output("attn_output", attn_out)
     graph = g.build()
     pipeline = ComputePipeline(graph)
-    pipeline.enqueue_input(PipelineInput(correlation_id="test_0", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))}))
+    for i in range(10):
+        pipeline.enqueue_input(PipelineInput(correlation_id=f"test_{i}", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))}))
     return pipeline, graph
