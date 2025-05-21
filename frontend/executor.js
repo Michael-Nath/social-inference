@@ -68,6 +68,7 @@ export class SessionExecutor {
         this.gpuOutputs = new Map();
 
         this.safetensorCache = new SafeTensorCache();
+        this.singleStepping = true;
     }
 
     /**
@@ -722,7 +723,6 @@ export class SessionExecutor {
                         this.cpuOutputs.set(outputKey, outputTensor);
                     } else if (outputTensor instanceof GPUTensor) {
                          console.warn(`CPU Kernel ${kernel.name} produced a GPUTensor for output ${outputName}. Ensure this is intended.`);
-                         // TODO: Need CPU->GPU transfer? Or is this an error?
                          this.gpuOutputs.set(outputKey, outputTensor);
                     } else {
                         throw new Error(`Kernel ${kernel.name} produced invalid output type for ${outputName}: ${typeof outputTensor}`);
@@ -730,6 +730,7 @@ export class SessionExecutor {
                 }
                 // Annotate session.resourcePlan usage here later
                 await new Promise(r => setTimeout(r, 10));
+                success = true;
             } catch (e) {
                 console.error(`Error during CPU kernel execution for node ${node.name} in session ${session.index}:`, e);
                 success = false;
@@ -748,20 +749,27 @@ export class SessionExecutor {
     }
     /** 
      * @private
-     * @returns {Map<NodeName, Map<string, CPUTensor>>} 
+     * @returns {Map<NodeName, Map<string, CPUTensor>>}
      */
     _gatherFinalOutputs() {
-        const finalOutputs = this.sessionGraph._finalOutputs;
-
         const m = new Map();
-        for(const [outputNode, outputs] of finalOutputs.entries()) {
-            m.set(outputNode, new Map());
-            for(const output of outputs) {
-                const outputKey = `${outputNode}:${output}`;
-                m.get(outputNode).set(output, this.cpuOutputs.get(outputKey));
+        if (this.singleStepping) {
+            for(const [outputKey, tensor] of this.cpuOutputs.entries()) {
+                const [nodeName, outputName] = outputKey.split(':');
+                m.set(nodeName, new Map());
+                m.get(nodeName).set(outputName, tensor);
+            }            
+        } else {
+            const finalOutputs = this.sessionGraph._finalOutputs;
+            for(const [outputNode, outputs] of finalOutputs.entries()) {
+                m.set(outputNode, new Map());
+                for(const output of outputs) {
+                    const outputKey = `${outputNode}:${output}`;
+                    m.get(outputNode).set(output, this.cpuOutputs.get(outputKey));
+                }
             }
         }
-
+        console.log(m);
         return m;
     }
 } 

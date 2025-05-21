@@ -2160,11 +2160,12 @@ class DivNode extends Node {
 
                 // Figure out output dtype
                 let outputDtype;
-                if(tensorA.dtype === 'int32' || tensorB.dtype === 'int32') {
-                    outputDtype = 'int32';
-                } else {
-                    outputDtype = 'float32';
-                }
+                outputDtype = 'float32';
+                // if(tensorA.dtype === 'int32' || tensorB.dtype === 'int32') {
+                //     outputDtype = 'int32';
+                // } else {
+                //     outputDtype = 'float32';
+                // }
 
                 const outputShape = this._calculateOutputShape(tensorA, tensorB);
                 // Division output is set to float32 to handle mixed types and general expectations.
@@ -2621,6 +2622,48 @@ export class PartitionWork {
 }
 
 /**
+ * @class SingleStepChunk
+ * @classdesc Represents a chunk of output assignments for single-step debugging.
+ */
+export class SingleStepChunk {
+    /** @type {string} */
+    correlation_id;
+    /** @type {string} */ // PartitionName is a string
+    partition;
+    /** @type {Array<OutputAssignment>} */
+    outputs;
+    /** @type {boolean} */
+    last_chunk
+
+
+    /**
+     * @param {Object} options
+     * @param {string} options.correlation_id
+     * @param {string} options.partition
+     * @param {Array<OutputAssignment>} options.outputs - Array of OutputAssignment instances.
+     * * @param {boolean} options.last_chunk - whetehr this is the last result chunk of its partition
+     */
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.partition = options.partition;
+        this.outputs = options.outputs;
+        this.last_chunk = options.last_chunk;
+    }
+
+    /**
+     * @returns {Object} An API-ready representation of the chunk.
+     */
+    toAPI() {
+        return {
+            correlation_id: this.correlation_id,
+            partition: this.partition,
+            outputs: this.outputs.map((oa) => oa.toAPI()),
+            last_chunk: this.last_chunk
+        };
+    }
+}
+
+/**
  * @class PartitionWorkResult
  * @classdesc Represents the result of executing partition work.
  */
@@ -2688,6 +2731,21 @@ export class Coordinator {
         const response = await fetch(`${this.url}/work/${partition_name}`);
         return new PartitionWork(await response.json());
     }
+
+    /**
+     * Submits some work to the coordination server to be checked
+     * @param {SingleStepChunk} work - Partition chunk to submit.
+     * @returns {Promise<void>}
+     */
+    async check_work(work) {
+        await fetch(`${this.url}/check-work`, {
+            method: "POST",
+            body: JSON.stringify(work.toAPI()),
+            headers: {
+                ["Content-Type"]: 'application/json'
+            }
+        });
+        }
 
     /**
      * Submits the partition work to the coordination server

@@ -11,7 +11,7 @@ from .graph import (
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache, ModelCache 
 
-def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResult:
+def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) -> PartitionWorkResult:
     """
     Simulates a worker.
 
@@ -362,14 +362,22 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
     for node in output_nodes:
         evaluate_output(node, DEFAULT_NODE_OUTPUT)
 
-    # Build result
     output_assignments: list[OutputAssignment] = []
-    for node in output_nodes:
-        output_assignments.append(OutputAssignment(
-            node=node,
-            output=DEFAULT_NODE_OUTPUT,
-                tensor=Tensor.from_torch(output_table[(node, DEFAULT_NODE_OUTPUT)])
+    if single_step:
+        # build the result from the entire output table
+        for (node, output), tensor in output_table.items():
+            output_assignments.append(OutputAssignment(
+                node = node,
+                output = output,
+                tensor = Tensor.from_torch(tensor)
             ))
+    else:
+        for node in output_nodes:
+            output_assignments.append(OutputAssignment(
+                node=node,
+                output=DEFAULT_NODE_OUTPUT,
+                    tensor=Tensor.from_torch(output_table[(node, DEFAULT_NODE_OUTPUT)])
+                ))
     
     result = PartitionWorkResult(
         correlation_id=work.correlation_id,

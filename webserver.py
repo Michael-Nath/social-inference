@@ -10,7 +10,7 @@ import torch
 
 from inference import (
     ModelCache, Registration, ComputePipeline, WorkerManager, 
-    PartitionWork, PartitionWorkResult, PartitionName, 
+    PartitionWork, PartitionWorkResult, PartitionName, SingleStepChunk,
     PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder,
     simulator
 )
@@ -37,6 +37,7 @@ app = FastAPI()
 # )
 
 inflight_work = {}
+sim_results = {}
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
 
@@ -116,13 +117,19 @@ async def submit_work(work: PartitionWorkResult):
     """
     Called by clients to submit inference results
     """
-    # Check work
-    if CHECK_WORK:
-        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache)
-        gt.close_to(work)
+    
     return pipeline.submit_partition_work(work)
 
-
+@app.post("/check-work")
+async def check_work(work: SingleStepChunk):
+    if (work.partition, work.correlation_id) not in sim_results:
+        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache, True)
+        sim_results[(work.partition, work.correlation_id)] = gt
+        
+    gt = sim_results[(work.partition, work.correlation_id)]
+    work.consistent_with(gt)
+    if work.last_chunk:
+        print("All chunks have been verified :)")
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

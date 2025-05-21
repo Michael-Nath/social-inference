@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from queue import Queue, Empty
 import threading
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal, Union, Optional
 from pydantic import BaseModel, Field
 from collections import defaultdict, deque
 
@@ -46,6 +46,37 @@ class PartitionWork(BaseModel):
     graph: GraphEncoding
     inputs: list[InputAssignment]
 
+class SingleStepChunk(BaseModel):
+    correlation_id: str
+    partition: PartitionName
+    outputs: list[OutputAssignment]
+    last_chunk: bool
+
+    def consistent_with(self, other: PartitionWorkResult):
+        if other.correlation_id != self.correlation_id:
+            raise ValueError(f"Correlation {self.correlation_id} != {other.correlation_id}")
+        if other.partition != self.partition:
+            raise ValueError(f"Partition {self.partition} != {other.partition}")
+        our_outputs = {}
+        for our in self.outputs:
+            our_outputs[(our.node, our.output)] = our
+            other_node = None
+            for _other_node in other.outputs:
+                if _other_node.node == our.node and _other_node.output == our.output:
+                    other_node = _other_node
+                    break
+            if other_node is None:
+                breakpoint()
+                raise ValueError(f"Extraneous output {our}")
+
+            # Check if tensor dtypes match
+            if our.tensor.dtype != other_node.tensor.dtype:
+                breakpoint()
+                raise ValueError(f"Output {other_node.node}.{other_node.output} dtype mismatch: {other_node.tensor.dtype} != {our.tensor.dtype}")
+            if not torch.allclose(other_node.tensor.to_torch(), our.tensor.to_torch(), atol=1e-4):
+                breakpoint()
+                raise ValueError(f"Output {other_node}={other.node.tensor.to_torch()} does not match our output {our}={our.tensor.to_torch()}")
+
 class PartitionWorkResult(BaseModel):
     """
     Result of partition work
@@ -70,8 +101,10 @@ class PartitionWorkResult(BaseModel):
             # Check if tensor dtypes match
             our_tensor = our_outputs[(o.node, o.output)].tensor
             if o.tensor.dtype != our_tensor.dtype:
+                breakpoint()
                 raise ValueError(f"Output {o.node}.{o.output} dtype mismatch: {o.tensor.dtype} != {our_tensor.dtype}")
             if not torch.allclose(o.tensor.to_torch(), our_outputs[(o.node, o.output)].tensor.to_torch()):
+                breakpoint()
                 raise ValueError(f"Output {o}={o.tensor.to_torch()} does not match our output {our_outputs[(o.node, o.output)]}={our_outputs[(o.node, o.output)].tensor.to_torch()}")
 class ComputePipeline:
     """

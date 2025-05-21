@@ -166,6 +166,8 @@ export class UIManager {
     }
 
     onNodeEnd(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession, success) {
+        console.log("success")
+        console.log(success)
         const elId = DomHighlighter.getNodeElementId(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession);
         DomHighlighter.updateElementClass(elId, 'node-executing', false);
         DomHighlighter.updateElementClass(elId, success ? 'node-completed' : 'node-failed', true);

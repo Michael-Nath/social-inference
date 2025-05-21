@@ -186,6 +186,13 @@ export class GPUSession extends ComputeSession {
     // GPU-specific methods might go here
 }
 
+
+export class SessionGraphResult {
+    constructor(node, should_check) {
+        this.node 
+    }
+}
+
 /** 
  * @typedef {import("./worker.js").Shape} Shape 
  */
@@ -213,11 +220,13 @@ export class SessionGraph {
     _sessionPredecessorEdges;
     /** @type {Map<string, Set<string>>} - Maps final output nodes to final outputs. node => output is only present if node:output is a final output */
     _finalOutputs;
+    /** @type {boolean} */
+    single_step;
 
     /**
      * @param {ComputeSession[]} sessions - List of compute sessions
      */
-    constructor(sessions) {
+    constructor(sessions, single_step) {
         this.sessions = sessions;
         this._nodeToSession = new Map();
         this._outputDependencies = new Map();
@@ -226,6 +235,7 @@ export class SessionGraph {
         this._finalOutputs = new Map();
         // Initialize edge maps for all provided sessions
         sessions.forEach(session => this._initializeSessionEdges(session));
+        this.single_step = single_step;
     }
 
     /**
@@ -379,7 +389,7 @@ export class SessionGraph {
         }
 
         // Now that sessions are created and nodes assigned, instantiate the SessionGraph
-        const sessionGraphInstance = new SessionGraph(initialSessions);
+        const sessionGraphInstance = new SessionGraph(initialSessions, true);
         sessionGraphInstance._nodeToSession = nodeToSessionAssignment; // Assign the populated map
 
         // Build session DAG edges (_sessionEdges and _sessionPredecessorEdges)
@@ -607,8 +617,9 @@ export class KernelCompiler {
 
                         // Readback if this output is a final output
                         if(
-                            sessionGraph._finalOutputs.has(node.name) &&
-                            sessionGraph._finalOutputs.get(node.name).has(outputName)
+                            (sessionGraph._finalOutputs.has(node.name) &&
+                            sessionGraph._finalOutputs.get(node.name).has(outputName)) ||
+                            sessionGraph.single_step
                         ) {
                             readback = true;
                         }

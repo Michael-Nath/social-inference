@@ -1,5 +1,5 @@
 // frontend/appController.js
-import { Coordinator, PartitionWorkResult, OutputAssignment } from "./worker.js"; // Assuming worker.js path
+import { Coordinator, PartitionWorkResult, OutputAssignment, SingleStepChunk } from "./worker.js"; // Assuming worker.js path
 import { KernelCompiler } from "./compiler.js"; // Assuming compiler.js path
 import { SessionExecutor } from "./executor.js"; // Assuming executor.js path
 
@@ -71,12 +71,27 @@ export class AppController {
                 console.warn("AppController: No final outputs were gathered by the executor or finalOutputs is empty.");
             }
             
+            console.log("AppController: Checking work...")
+            
             console.log("AppController: Submitting work results...");
-            await this.coordinator.submit_work(new PartitionWorkResult({
-                partition: work.partition,
-                correlation_id: work.correlation_id,
-                outputs: outputAssignments
-            }));
+            const CHUNK_SIZE = 8;
+            const totalAssignments = outputAssignments.length;
+            for (let i = 0; i < totalAssignments; i += CHUNK_SIZE) {
+                const chunk = outputAssignments.slice(i, i + CHUNK_SIZE);
+                console.log(`AppController: Checking work chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(totalAssignments / CHUNK_SIZE)}`);
+                await this.coordinator.check_work(new SingleStepChunk({
+                    partition: work.partition,
+                    correlation_id: work.correlation_id,
+                    outputs: chunk,
+                    last_chunk: i + CHUNK_SIZE >= totalAssignments 
+                }));
+            }
+
+            // await this.coordinator.submit_work(new PartitionWorkResult({
+            //     partition: work.partition,
+            //     correlation_id: work.correlation_id,
+            //     outputs: outputAssignments,
+            // }));
             console.log("AppController: Work results submitted successfully.");
             // Optionally display a success message via UIManager
 

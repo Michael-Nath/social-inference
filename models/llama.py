@@ -10,8 +10,11 @@ from typing import Tuple
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 
-def just(b: ComputeGraphBuilder, x: int):
-    return b.fixed(f"just_{x}", torch.Tensor([x]).int())
+def just(b: ComputeGraphBuilder, x: int | float):
+    if isinstance(x, int):
+        return b.fixed(f"just_{x}", torch.Tensor([x]).int())
+    else:
+        return b.fixed(f"just_{x}", torch.Tensor([x]).float())
 
 def rotary_embed(b: ComputeGraphBuilder, position_ids_node: ComputeGraphNode, inv_freq_node: ComputeGraphNode, attention_scaling_node: ComputeGraphNode) -> tuple[ComputeGraphNode, ComputeGraphNode]:
     """
@@ -166,6 +169,7 @@ def llama_attn(
     nhead_node_q  = b.div("nheads_q", hidden_dim, head_dim_node)
     nhead_node_kv = just(b, n_kv_heads)
     ngroups_node  = b.div("n_kv_groups", nhead_node_q, nhead_node_kv)
+    # return ngroups_node
     
     # perform qkv projection
     with NameScope.push_scope("query_states"):
