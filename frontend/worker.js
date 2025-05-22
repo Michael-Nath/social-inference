@@ -5,7 +5,8 @@
 import { 
     readBEInt, sizeEncodedString, readEncodedString, 
     writeBEInt, writeEncodedString, 
-    writeBool
+    writeBool,
+    readBool
 } from "./encoding.js";
 import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
 import { SafeTensorCache } from "./tensorcache.js";
@@ -2883,6 +2884,8 @@ export class PartitionWork {
     graph;
     /** @type {InputAssignment[]} */
     inputs;
+    /** @type {boolean} */
+    shouldTrace;
 
     /**
      * @param {Object} options - Partition work options
@@ -2890,12 +2893,14 @@ export class PartitionWork {
      * @param {string} options.partition - Partition to get work for
      * @param {Graph} options.graph - Graph to execute
      * @param {Array<InputAssignment>} options.inputs - Inputs to the graph.
+     * @param {boolean} options.shouldTrace - Whether to trace the execution of the graph.
      */
     constructor(options) {
         this.correlation_id = options.correlation_id;
         this.partition = options.partition;
         this.graph = options.graph;
         this.inputs = options.inputs;
+        this.shouldTrace = options.shouldTrace;
     }
 
     /**
@@ -2905,23 +2910,19 @@ export class PartitionWork {
      * @returns {[PartitionWork, number]} A tuple containing the decoded PartitionWork and new offset.
      */
     static decode(view, offset) {
-        let correlation_id, partition, graph, inputsLength;
+        let correlation_id, partition, graph, inputsLength, shouldTrace;
         const inputs = [];
         [correlation_id, offset] = readEncodedString(view, offset);
-        console.debug("correlation_id", correlation_id);
         [partition, offset] = readEncodedString(view, offset);
-        console.debug("partition", partition);
         [graph, offset] = Graph.decode(view, offset);
-        console.debug("graph", graph);
+        [shouldTrace, offset] = readBool(view, offset);
         [inputsLength, offset] = readBEInt(view, offset);
-        console.debug("inputsLength", inputsLength);
         for (let i = 0; i < inputsLength; i++) {
             let inputAssignment;
             [inputAssignment, offset] = InputAssignment.decode(view, offset);
-            console.debug("inputAssignment", inputAssignment);
             inputs.push(inputAssignment);
         }
-        return [new PartitionWork({ correlation_id, partition, graph, inputs }), offset];
+        return [new PartitionWork({ correlation_id, partition, graph, inputs, shouldTrace }), offset];
     }
 }
 

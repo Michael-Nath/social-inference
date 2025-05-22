@@ -1,6 +1,6 @@
 // executor.js
 import { SessionGraph, GPUSession, CPUSession, ComputeSession, KernelCompiler } from './compiler.js';
-import { PartitionWork, ExecutionContext } from './worker.js';
+import { PartitionWork, ExecutionContext, OutputAssignment } from './worker.js';
 import { GPUTensor, CPUTensor } from './kernel.js';
 import { SafeTensorCache } from './tensorcache.js';
 import { ALL_SCOPES, popErrorScopes, pushErrorScopes } from './common.js';
@@ -14,6 +14,60 @@ import { UIManager } from './uiManager.js';
  * @typedef {string} DataKey - A key nodename:outputname identifying a piece of data, e.g., "nodeName:outputName" 
  */
 
+export class SessionExecutionTrace {
+    /** @type {OutputAssignment[]} */
+    outputs;
+
+    constructor(cpuOutputs) {
+        this.outputs = [];
+        for (const [dataKey, tensor] of cpuOutputs.entries()) {
+            this.outputs.push({
+                node: dataKey.split(':')[0],
+                output: dataKey.split(':')[1],
+                tensor: tensor
+            });
+        }
+    }
+
+    getChunks(approximateChunkSizeBytes)  {
+        let currentChunk = [];
+        let currentSize = 0;
+        const chunks = [];
+
+        for (const output of this.outputs) {
+            const outputSize = output.encodedSize();
+            
+            // If adding this output would exceed the limit and we already have outputs,
+            // create a new chunk with the current outputs
+            if (currentSize + outputSize > approximateChunkSizeBytes && currentChunk.length > 0) {
+                chunks.push(new SingleStepChunk({
+                    correlation_id: this.correlation_id,
+                    partition: this.partition,
+                    outputs: [...currentChunk],
+                    last_chunk: false
+                }));
+                currentChunk = [];
+                currentSize = 0;
+            }
+            
+            // Add the output to the current chunk
+            currentChunk.push(output);
+            currentSize += outputSize;
+        }
+
+        // Add the final chunk if there are any remaining outputs
+        if (currentChunk.length > 0) {
+            chunks.push(new SingleStepChunk({
+                correlation_id: this.correlation_id,
+                partition: this.partition,
+                outputs: currentChunk,
+                last_chunk: true
+            }));
+        }
+
+        return chunks;
+    }
+}
 
 export class SessionExecutor {
     /** @type {GPUDevice} */
@@ -52,9 +106,9 @@ export class SessionExecutor {
      * @param {SessionGraph} sessionGraph - The compiled and annotated session graph.
      * @param {import('./uiManager.js').UIManager} uiManager - The UI manager instance.
      * @param {SafeTensorCache | null} safetensorCache - The safetensor cache.
-     * @param {boolean} testMode - Whether to run in test mode.
+     * @param {boolean} tracing - Whether to run in tracing mode.
      */
-    constructor(device, sessionGraph, uiManager, safetensorCache = null, testMode = false) {
+    constructor(device, sessionGraph, uiManager, safetensorCache = null, tracing = false) {
         if (!device || !sessionGraph) {
             throw new Error("SessionExecutor requires a GPUDevice and a SessionGraph.");
         }
@@ -74,6 +128,7 @@ export class SessionExecutor {
 
         this.singleStepping = true;
         this.safetensorCache = safetensorCache || new SafeTensorCache();
+        this.tracing = tracing;
     }
 
     /**
@@ -155,7 +210,9 @@ export class SessionExecutor {
             await sessionTask(session);
         }
 
-        return this._gatherFinalOutputs();
+        const finalOutputs = this._gatherFinalOutputs();
+        const trace = this.tracing ? new SessionExecutionTrace(this.cpuOutputs) : null;
+        return { finalOutputs, trace };
     }
 
     /** 
@@ -699,23 +756,14 @@ export class SessionExecutor {
      */
     _gatherFinalOutputs() {
         const m = new Map();
-        if (this.singleStepping) {
-            for(const [outputKey, tensor] of this.cpuOutputs.entries()) {
-                const [nodeName, outputName] = outputKey.split(':');
-                m.set(nodeName, new Map());
-                m.get(nodeName).set(outputName, tensor);
-            }            
-        } else {
-            const finalOutputs = this.sessionGraph._finalOutputs;
-            for(const [outputNode, outputs] of finalOutputs.entries()) {
-                m.set(outputNode, new Map());
-                for(const output of outputs) {
-                    const outputKey = `${outputNode}:${output}`;
-                    m.get(outputNode).set(output, this.cpuOutputs.get(outputKey));
-                }
+        const finalOutputs = this.sessionGraph._finalOutputs;
+        for(const [outputNode, outputs] of finalOutputs.entries()) {
+            m.set(outputNode, new Map());
+            for(const output of outputs) {
+                const outputKey = `${outputNode}:${output}`;
+                m.get(outputNode).set(output, this.cpuOutputs.get(outputKey));
             }
         }
-        console.log(m);
         return m;
     }
 } 

@@ -84,13 +84,6 @@ export class GPUSession extends ComputeSession {
     // GPU-specific methods might go here
 }
 
-
-export class SessionGraphResult {
-    constructor(node, should_check) {
-        this.node 
-    }
-}
-
 /** 
  * @typedef {import("./worker.js").Shape} Shape 
  */

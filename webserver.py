@@ -121,6 +121,7 @@ async def get_work(partition_name: PartitionName):
     """
     w = pipeline.get_partition_work(partition_name)
     if w is not None:
+        w.shouldTrace = True
         inflight_work[(w.partition, w.correlation_id)] = w
         bytes = bytearray(size_encoded_partition_work(w))
         write_encoded_partition_work(bytes, 0, w)

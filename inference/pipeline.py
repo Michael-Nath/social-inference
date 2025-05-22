@@ -48,6 +48,7 @@ class PartitionWork:
     partition: PartitionName
     graph: ComputeGraph
     inputs: list[InputAssignment]
+    should_trace: bool = False
 
 @dataclass
 class SingleStepChunk:
@@ -335,6 +336,7 @@ def write_encoded_partition_work(data: bytearray, offset: int, partition_work: P
     offset = write_encoded_string(data, offset, partition_work.correlation_id)
     offset = write_encoded_string(data, offset, partition_work.partition)
     offset = partition_work.graph.encode_binary(offset, data)
+    offset = write_encoded_bool(data, offset, partition_work.should_trace)
     offset = write_be_int(data, offset, len(partition_work.inputs))
     for input in partition_work.inputs:
         offset = write_encoded_input_assignment(data, offset, input)
@@ -344,6 +346,7 @@ def size_encoded_partition_work(partition_work: PartitionWork) -> int:
     size = size_encoded_string(partition_work.correlation_id)
     size += size_encoded_string(partition_work.partition)
     size += partition_work.graph.size_binary()
+    size += 1
     size += 4 # for the inputs length
     for input in partition_work.inputs:
         size += size_encoded_input_assignment(input)

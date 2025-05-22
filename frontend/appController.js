@@ -54,8 +54,8 @@ export class AppController {
                 this.uiManager.renderSessionGraph(sessionGraph);
 
                 console.log("AppController: Starting execution...");
-                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache);
-                const finalOutputs = await this.executor.execute(work); // Pass work for initial inputs
+                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache, work.shouldTrace);
+                const { finalOutputs, trace } = await this.executor.execute(work); // Pass work for initial inputs
                 console.log("AppController: Execution complete. Final outputs:", finalOutputs);
 
                 // Collect and submit outputs
@@ -76,30 +76,27 @@ export class AppController {
                 } else {
                     console.warn("AppController: No final outputs were gathered by the executor or finalOutputs is empty.");
                 }
-                
-                console.log("AppController: Checking work...")
-                
-                console.log("AppController: Submitting work results...");
-                const CHUNK_SIZE = 8;
-                const totalAssignments = outputAssignments.length;
-                for (let i = 0; i < totalAssignments; i += CHUNK_SIZE) {
-                    const chunk = outputAssignments.slice(i, i + CHUNK_SIZE);
-                    console.log(`AppController: Checking work chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(totalAssignments / CHUNK_SIZE)}`);
-                    console.log(`AppController: chunk contents:`);
-                    console.log(chunk);
-                    await this.coordinator.check_work(new SingleStepChunk({
-                        partition: work.partition,
-                        correlation_id: work.correlation_id,
-                        outputs: chunk,
-                        last_chunk: i + CHUNK_SIZE >= totalAssignments 
-                    }));
+               
+                if(work.shouldTrace) {
+                    console.log("AppController: Checking work...")
+                    const chunks = trace.getChunks(1024 * 200);
+                    for(let i = 0; i < chunks.length; i++) {
+                        console.log("AppController: Checking work chunk", chunks[i]);
+                        await this.coordinator.check_work(new SingleStepChunk({
+                            partition: work.partition,
+                            correlation_id: work.correlation_id,
+                            outputs: chunks[i],
+                            last_chunk: i == chunks.length - 1
+                        }));
+                    }
+                    console.log("AppController: Submitting work results...");
                 }
 
-                // await this.coordinator.submit_work(new PartitionWorkResult({
-                //     partition: work.partition,
-                //     correlation_id: work.correlation_id,
-                //     outputs: outputAssignments,
-                // }));
+                await this.coordinator.submit_work(new PartitionWorkResult({
+                    partition: work.partition,
+                    correlation_id: work.correlation_id,
+                    outputs: outputAssignments,
+                }));
                 console.log("AppController: Work results submitted successfully.");
                 // Optionally display a success message via UIManager
             }
