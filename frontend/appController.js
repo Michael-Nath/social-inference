@@ -2,6 +2,7 @@
 import { Coordinator, PartitionWorkResult, OutputAssignment, SingleStepChunk } from "./worker.js"; // Assuming worker.js path
 import { KernelCompiler } from "./compiler.js"; // Assuming compiler.js path
 import { SessionExecutor } from "./executor.js"; // Assuming executor.js path
+import { SafeTensorCache } from "./tensorcache.js";
 
 export class AppController {
     device;
@@ -25,6 +26,8 @@ export class AppController {
             const registration = await this.coordinator.register();
             console.log("AppController: Registered for partition:", registration.partition);
             this.uiManager.displayCurrentPartition(registration.partition);
+
+            const cache = new SafeTensorCache();
 
             while (true) {
                 console.log("AppController: Getting work for partition:", registration.partition);
@@ -51,7 +54,7 @@ export class AppController {
                 this.uiManager.renderSessionGraph(sessionGraph);
 
                 console.log("AppController: Starting execution...");
-                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager);
+                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache);
                 const finalOutputs = await this.executor.execute(work); // Pass work for initial inputs
                 console.log("AppController: Execution complete. Final outputs:", finalOutputs);
 
