@@ -22,7 +22,7 @@ CHECK_WORK = True
 model_cache = ModelCache()
 # pipeline, g = tests.test_safetensor()
 # pipeline, g = tests.test_llama_layernorm()
-pipeline, g = tests.test_llama_attn()
+pipeline, g = tests.test_pipelining()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()
