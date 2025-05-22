@@ -613,10 +613,11 @@ def test_llama_layer(layer, model_name, idx):
 
     # Create pipeline and enqueue inputs
     pipeline = ComputePipeline(g)
-    inputs = {
-        "hidden_states": Tensor.from_torch(hidden_states),
-    }
-    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs)) 
+    
+    for i in range(100):
+        pipeline.enqueue_input(PipelineInput(correlation_id=f"test_{i}", inputs={
+            "hidden_states": Tensor.from_torch(hidden_states),
+        })) 
     return pipeline, g
 
 def test_llama_model():
