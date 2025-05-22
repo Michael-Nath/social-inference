@@ -346,22 +346,20 @@ def llama_model(
     # weights[0] houses all statics
     # compute the embeddings of the input tokens
 
-    dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.long))    
+    dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
     embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
+    return embed_tokens
     cos_node, sin_node = rotary_embed(
         b, position_ids, weights[0]["inv_freq"], weights[0]["attn_scaling"]
     )
 
     layer_out = embed_tokens
-    layer_out = b.debug("debug_hidden_0", layer_out)
     for layer_idx in range(1, len(weights)):
         with NameScope.push_scope(f"layer{layer_idx}"):
             layer_out = llama_fwd(
                 b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
                 weights[layer_idx], (cos_node, sin_node)
             )
-            layer_out = b.debug(f"debug_hidden_{layer_idx}", layer_out)
     
     layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight"], weights[0]["final_norm_eps"])
-    layer_out = b.debug("final_out", layer_out)
     return layer_out

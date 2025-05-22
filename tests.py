@@ -489,10 +489,11 @@ def test_index_select():
 from inference import ComputeGraphBuilder
 from inference.name_scope import NameScope
 import torch
-from models.utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights
+from models.utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights, layer_params
 from inference.tensor import Tensor
 from inference.pipeline import ComputePipeline, PipelineInput
 from models.llama import rotary_embed, llama_model, llama_fwd
+from transformers import AutoConfig
 
 torch.set_grad_enabled(False)
 MODEL_PATH = "meta-llama/Llama-3.2-1B"
@@ -502,9 +503,6 @@ def test_llama_model():
     tokens = g.input("tokens")
     position_ids = g.input("position_ids")
 
-    model = load_model(MODEL_PATH)
-    model.model = model.model.float()
-    model.model = model.model.cpu()
 
     input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
     position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
@@ -514,12 +512,12 @@ def test_llama_model():
     pos_ids_node = b.input("position_ids")
     with b.partition("p0"):
       with NameScope.push_scope("statics"):
-        statics = prepare_llama_model_statics(model, b)
+        statics = prepare_llama_model_statics(config, b)
         nodes = [statics]
   
         for layer_idx in range(1):
           with NameScope.push_scope(f"layer{layer_idx}"):
-            layer_weights = package_llama_decoder_layer_weights(model.model.layers[layer_idx], b)
+            layer_weights = package_llama_decoder_layer_weights(model_params[layer_idx], b)
             nodes.append(layer_weights)
 
       # Calculate and print the total size of all fixed nodes in bytes
@@ -663,6 +661,44 @@ def test_llama_layer(layer, model_name, idx):
     }
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs)) 
     return pipeline, g
+
+def test_llama_model():
+    b = ComputeGraphBuilder()
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-1B")
+    input_tokens_node = b.input("input_tokens")
+    pos_ids_node = b.input("position_ids")
+    input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
+    position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
+
+    with b.partition("p0"):
+        with NameScope.push_scope("statics"):
+            statics = prepare_llama_model_statics(config, b)
+            nodes = [statics]
+    
+            for layer_idx in range(2):
+                with NameScope.push_scope(f"layer{layer_idx}"):
+                    prefix = f"model.layers.{layer_idx}."
+                    layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)
+                    nodes.append(layer_weights)
+
+            our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)
+    
+    b.output("llama_out", our_out)
+
+    # Build graph
+    g = b.build()
+
+    # Create pipeline and enqueue inputs
+    pipeline = ComputePipeline(g)
+    inputs = {
+        "input_tokens": Tensor.from_torch(input_tokens),
+        "position_ids": Tensor.from_torch(position_ids)
+    }
+
+    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
+    return pipeline, g
+
+
 def test_pipelining():
     g = ComputeGraphBuilder()
     x = g.input("x")

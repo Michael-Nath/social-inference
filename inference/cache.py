@@ -115,7 +115,7 @@ class CacheEntry:
 
       # By default we ALWAYS TRANSPOSE THE TENSOR
       # pass in transpose=True to the safetensor operation to undo this (with another transpose!)
-      if reshaped_array.ndim == 2:
+      if reshaped_array.ndim == 2 and self.shape[0] < 100_000:
         self.data = reshaped_array.T
       else:
         self.data = reshaped_array

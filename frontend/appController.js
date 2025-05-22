@@ -62,6 +62,7 @@ export class AppController {
                 let outputAssignments = [];
                 if (finalOutputs && finalOutputs.size > 0) {
                     for (const [nodeName, outputsMap] of finalOutputs.entries()) {
+                        if (nodeName.includes("embed_matrix")) continue;
                         for (const [outputName, tensor] of outputsMap.entries()) {
                             // Ensure tensor is serializable/CPUTensor for OutputAssignment
                             // This might require a conversion from GPUTensor if not handled by executor._gatherFinalOutputs
@@ -84,6 +85,8 @@ export class AppController {
                 for (let i = 0; i < totalAssignments; i += CHUNK_SIZE) {
                     const chunk = outputAssignments.slice(i, i + CHUNK_SIZE);
                     console.log(`AppController: Checking work chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(totalAssignments / CHUNK_SIZE)}`);
+                    console.log(`AppController: chunk contents:`);
+                    console.log(chunk);
                     await this.coordinator.check_work(new SingleStepChunk({
                         partition: work.partition,
                         correlation_id: work.correlation_id,
