@@ -663,3 +663,20 @@ def test_llama_layer(layer, model_name, idx):
     }
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs)) 
     return pipeline, g
+def test_pipelining():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        with NameScope.push_scope("p0"):
+            for i in range(10):
+                x = g.add(f"add_node_{i}", x, x)
+    with g.partition("p1"):
+        with NameScope.push_scope("p1"):
+            for i in range(10):
+                x = g.add(f"add_node_{i}", x, x)
+    g.output("y", x)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+    for i in range(10):
+        pipeline.enqueue_input(PipelineInput(correlation_id=f"test_{i}", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))}))
+    return pipeline, graph

@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
@@ -43,8 +44,6 @@ app = FastAPI()
 inflight_work = {}
 sim_results = {}
 
-app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
-
 @app.post("/register", response_model=Registration)
 async def register():
     """
@@ -70,6 +69,13 @@ class SafetensorHeader(BaseModel):
     dtype: str
     shape: list[int]
 
+async def stream_bytes(bytes: bytes, chunk_size: int = 1024 * 500):
+    n_bytes = len(bytes)
+    for i in range(0, n_bytes, chunk_size):
+        start = i
+        end = min(i + chunk_size, n_bytes)
+        yield bytes[start:end]
+
 @app.get("/safetensor/{model_name}/{tensor_name}")
 async def get_safetensor(model_name: str, tensor_name: str):
     """
@@ -94,9 +100,18 @@ async def get_safetensor(model_name: str, tensor_name: str):
         elif tensor.dtype == torch.float16:
             tensor = tensor.to(torch.float32)
         tensor = Tensor.from_torch(tensor)
-        bytes = bytearray(size_encoded_tensor(tensor))
-        write_encoded_tensor(bytes, 0, tensor)
-        return StreamingResponse(io.BytesIO(bytes), media_type="application/octet-stream")
+    tensorBytes = bytearray(size_encoded_tensor(tensor))
+    write_encoded_tensor(tensorBytes, 0, tensor)
+    tensorBytes = bytes(tensorBytes)
+
+    # For large files, use chunked transfer encoding
+    return StreamingResponse(
+        stream_bytes(tensorBytes),  # Send the entire buffer as one chunk
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(tensorBytes)),
+        }
+    )
 
 @app.get("/work/{partition_name}")
 async def get_work(partition_name: PartitionName):

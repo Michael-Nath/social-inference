@@ -32,8 +32,11 @@ import tests
 model_cache = ModelCache()
 pipeline, g = tests.test_llama_attn()
 
+i = 0
 def make_input():
-    return PipelineInput(correlation_id="test_0", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))})
+    global i
+    i += 1
+    return PipelineInput(correlation_id=f"test_{i}", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))})
 
 app = FastAPI()
 
@@ -62,6 +65,15 @@ class TestContext:
 test_context = TestContext(pipeline, g, model_cache, {}, None)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
+
+@app.post("/register", response_model=Registration)
+async def register():
+    """
+    Called by clients to register their capabilities and request assignment to work.
+    """
+    return Registration(
+        partition="",
+    )
 
 @app.get("/safetensor/{model_name}/{tensor_name}")
 async def get_safetensor(model_name: str, tensor_name: str):
@@ -119,8 +131,12 @@ async def submit_work(req: Request):
     async for chunk in req.stream():
         body += chunk
 
+    print(f"got {len(body)} bytes of work back")
+
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
+
+    print("Done parsing work...")
 
     correct_result = work
     failure = False
@@ -131,6 +147,8 @@ async def submit_work(req: Request):
         correct_result = gt
         failure = True
 
+    print(f"failure: {failure}")
+
     test_context.partition_results[work.partition] = PartitionTestResult(
         partition=work.partition,
         work=test_context.last_work,
@@ -139,6 +157,8 @@ async def submit_work(req: Request):
     )
 
     test_context.pipeline.submit_partition_work(correct_result)
+
+    print("Done submitting work...")
 
     # Check if we have finished
     if test_context.pipeline.dequeue_output() is not None:
