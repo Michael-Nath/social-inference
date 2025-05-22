@@ -61,10 +61,7 @@ def prepare_llama_model_statics(model, b: ComputeGraphBuilder) -> dict:
     
     return all_statics
 
-def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder, prefix: str, model_name: str) -> dict:
-    """
-    Extracts weights from a PyTorch LlamaDecoderLayer and packages them as graph nodes.
-    """
+def package_llama_decoder_layer_weights(layer: list[str], b: ComputeGraphBuilder, prefix: str, model_name: str) -> dict:
     packaged_weights = {
         "input_layernorm": {},
         "self_attn": {},
@@ -74,20 +71,16 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
     all_param_nodes = {} # Temporary dict to hold nodes by their original HF names
 
     # Create graph nodes for all learnable parameters
-    for name, param in layer.named_parameters():
-        data = param.data.clone()
-        if len(data.shape) == 2:
-            data = data.T
+    for name in layer:
         tensor_name = prefix + name
         complete_name = model_name + tensor_name
         node = b.safetensor(complete_name, model_name, tensor_name)
-        # node = b.fixed(tensor_name, param.data.detach())
         all_param_nodes[tensor_name] = node
 
     # Handle input layernorm
     if f"{prefix}input_layernorm.weight" in all_param_nodes:
         packaged_weights["input_layernorm"]["weight"] = all_param_nodes[f"{prefix}input_layernorm.weight"]
-    ln_eps_tensor = torch.tensor(layer.input_layernorm.variance_epsilon, dtype=torch.float32)
+    ln_eps_tensor = torch.tensor(1e-5, dtype=torch.float32)
     packaged_weights["input_layernorm"]["eps"] = b.fixed("params/input_layernorm.eps", ln_eps_tensor.unsqueeze(0))
 
 
@@ -118,6 +111,6 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
     # Handle post-attention layernorm
     if f"{prefix}post_attention_layernorm.weight" in all_param_nodes:
         packaged_weights["post_layernorm"]["weight"] = all_param_nodes[f"{prefix}post_attention_layernorm.weight"]
-    post_ln_eps_tensor = torch.tensor(layer.post_attention_layernorm.variance_epsilon, dtype=torch.float32)
+    post_ln_eps_tensor = torch.tensor(1e-5, dtype=torch.float32)
     packaged_weights["post_layernorm"]["eps"] = b.fixed("params/post_attention_layernorm.eps", post_ln_eps_tensor.unsqueeze(0))
     return packaged_weights

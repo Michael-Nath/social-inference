@@ -304,13 +304,18 @@ def llama_mlp(
     up_proj: ComputeGraphNode,
     down_proj: ComputeGraphNode,
 ):
-    gate_result = b.matmul("gate_proj", x, gate_proj)
-    up_result = b.matmul("up_proj" ,x, up_proj)
+    just_0 = just(b, 0)
+    gate_proj_unsqz = b.unsqueeze("gate_proj_unsqz", gate_proj, just_0)
+    up_proj_unsqz = b.unsqueeze("up_proj_unsqz", up_proj, just_0)
+    down_proj_unsqz = b.unsqueeze("down_proj_unsqz", down_proj, just_0)
+
+    gate_result = b.matmul("gate_proj", x, gate_proj_unsqz)
+    up_result = b.matmul("up_proj" ,x, up_proj_unsqz)
     if act == "silu":
         act_result = b.silu("silu", gate_result)
     
     mul = b.hadamard("act x up", act_result, up_result)
-    down_result = b.matmul("down_proj", mul, down_proj)
+    down_result = b.matmul("down_proj", mul, down_proj_unsqz)
     return down_result
 
 def llama_fwd(
@@ -318,15 +323,16 @@ def llama_fwd(
     head_dim: int, n_kv_heads: int, mlp_act: str,
     weight_dict: dict[str, ComputeGraphNode], position_embeddings: Tuple[ComputeGraphNode, ComputeGraphNode]
 ):
-    with NameScope.push_scope("layernorm"):
+    with NameScope.push_scope("pre-layernorm"):
         layernormed = layernorm(b, hidden_states, **weight_dict["input_layernorm"])
     with NameScope.push_scope('attention'):
         attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["self_attn"])
-    
-    res_added = b.add("res_added", hidden_states, attention)
-    post_layernorm = layernorm(b, res_added, **weight_dict["post_layernorm"])
-    mlp_result = llama_mlp(b, post_layernorm, mlp_act, **weight_dict["mlp"])
-    
+    with NameScope.push_scope("res"):
+        res_added = b.add("res_added", hidden_states, attention)
+    with NameScope.push_scope("post-layernorm"):
+        post_layernorm = layernorm(b, res_added, **weight_dict["post_layernorm"])
+    with NameScope.push_scope("mlp"):
+        mlp_result = llama_mlp(b, post_layernorm, mlp_act, **weight_dict["mlp"])    
     res_added_2 = b.add('res_added2', res_added, mlp_result) 
     return res_added_2
 

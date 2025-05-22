@@ -486,16 +486,13 @@ def test_index_select():
     ))
     return pipeline, graph
 
-from transformers import AutoModelForCausalLM, LlamaForCausalLM, LlamaConfig
-from inference import ComputeGraphBuilder, ComputeGraph, ComputeGraphNode
+from inference import ComputeGraphBuilder
 from inference.name_scope import NameScope
 import torch
 from models.utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights
 from inference.tensor import Tensor
 from inference.pipeline import ComputePipeline, PipelineInput
-from inference.simulator import simulate
-from inference.test_util import llama_1b_cache
-from models.llama import rotary_embed, llama_model
+from models.llama import rotary_embed, llama_model, llama_fwd
 
 torch.set_grad_enabled(False)
 MODEL_PATH = "meta-llama/Llama-3.2-1B"
@@ -615,3 +612,54 @@ def test_llama_attn():
     pipeline = ComputePipeline(graph)
     pipeline.enqueue_input(PipelineInput(correlation_id="test_0", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))}))
     return pipeline, graph
+
+def test_llama_layer(layer, model_name, idx):
+    batch_size = 1
+    seq_len = 1
+    num_heads = 32
+    num_kv_heads = 8
+
+
+    head_dim = 64
+    hidden_dim = num_heads * head_dim
+    # create some hidden states
+    hidden_states = torch.randn(batch_size, seq_len, hidden_dim)
+    cos = torch.randn(1, seq_len, head_dim)
+    sin = torch.randn(1, seq_len, head_dim)
+
+    b = ComputeGraphBuilder()
+    with b.partition("p0"):
+        # Use the new utility function to package weights
+        prefix = f"model.layers.{idx}."
+        packaged_layer_weights = package_llama_decoder_layer_weights(layer, b, prefix, model_name)
+        
+        # Prepare the specific weight_dict for the current llama_fwd function
+        weight_dict_for_llama_fwd = {
+            "input_layernorm": packaged_layer_weights["input_layernorm"],
+            "self_attn": packaged_layer_weights["self_attn"],
+            "mlp": packaged_layer_weights["mlp"],
+            "post_layernorm": packaged_layer_weights["post_layernorm"]
+        }
+
+        # Create a graph node for the hidden_states input tensor
+        hidden_states_node = b.input("hidden_states")
+
+        # Now you can call your graph implementation of llama_fwd
+        cos_node = b.fixed("cos", cos)
+        sin_node = b.fixed("sin", sin)
+        fwd_output_node = llama_fwd(
+            b, hidden_states_node, head_dim, num_kv_heads, "silu", weight_dict_for_llama_fwd,
+            (cos_node, sin_node) 
+        )
+    b.output("llama_fwd_out", fwd_output_node)
+
+    # Build graph
+    g = b.build()
+
+    # Create pipeline and enqueue inputs
+    pipeline = ComputePipeline(g)
+    inputs = {
+        "hidden_states": Tensor.from_torch(hidden_states),
+    }
+    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs)) 
+    return pipeline, g
