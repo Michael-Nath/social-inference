@@ -62,7 +62,7 @@ export class AppController {
                 let outputAssignments = [];
                 if (finalOutputs && finalOutputs.size > 0) {
                     for (const [nodeName, outputsMap] of finalOutputs.entries()) {
-                        if (nodeName.includes("embed_matrix")) continue;
+                        if (nodeName.includes("embed_matrix") || nodeName.includes("lm_head")) continue;
                         for (const [outputName, tensor] of outputsMap.entries()) {
                             // Ensure tensor is serializable/CPUTensor for OutputAssignment
                             // This might require a conversion from GPUTensor if not handled by executor._gatherFinalOutputs

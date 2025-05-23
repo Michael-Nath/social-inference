@@ -4,7 +4,8 @@
 
 import { 
     readBEInt, sizeEncodedString, readEncodedString, 
-    writeBEInt, writeEncodedString 
+    writeBEInt, writeEncodedString, 
+    writeBool
 } from "./encoding.js";
 import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
 import { SafeTensorCache } from "./tensorcache.js";
@@ -2043,6 +2044,7 @@ class TransposeNode extends Node {
     }
 
     async getGPUKernel() {
+        const MAX_DIMS = 8; // Define explicitly here for clarity, should match WGSL
         return new GPUKernel({
             name: 'transpose',
             shader: await fetch('kernels/transpose.wgsl').then(r => r.text()),
@@ -2058,12 +2060,12 @@ class TransposeNode extends Node {
                     const d0 = this._normalize_dim(this.dim0, rank);
                     const d1 = this._normalize_dim(this.dim1, rank);
 
-                    if (rank > MAX_DIMS_SOFTMAX) {
-                        throw new Error(`TransposeNode (${this.name}): Input tensor rank (${rank}) exceeds MAX_DIMS_SOFTMAX (${MAX_DIMS_SOFTMAX}).`);
+                    if (rank > MAX_DIMS) { 
+                        throw new Error(`TransposeNode (${this.name}): Input tensor rank (${rank}) exceeds MAX_DIMS (${MAX_DIMS}).`);
                     }
 
-                    const paddedInputShape = new Array(MAX_DIMS_SOFTMAX).fill(1);
-                    const paddedInputStrides = new Array(MAX_DIMS_SOFTMAX).fill(0);
+                    const paddedInputShape = new Array(MAX_DIMS).fill(1);
+                    const paddedInputStrides = new Array(MAX_DIMS).fill(0);
                     
                     if (rank > 0) {
                         for (let i = 0; i < rank; i++) {
@@ -2074,17 +2076,51 @@ class TransposeNode extends Node {
                             paddedInputStrides[i] = inputStrides[i];
                         }
                     }
-                    // For 0D tensor, shape [1,...], strides [0,...], rank 0 is fine.
 
                     const num_elements = rank > 0 ? inputShape.reduce((acc, val) => acc * val, 1) : 1;
 
-                    // Uniform buffer layout: input_shape_vecs, input_strides_vecs, rank, dim0, dim1, num_elements, padding
-                    // Padded sizes: 8 (shape) + 8 (strides) + 1 (rank) + 1 (d0) + 1 (d1) + 1 (num_elements) = 20 u32s
-                    // Total 20 * 4 = 80 bytes. This is a multiple of 16, so no extra padding u32s needed if aligned.
-                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 4); 
-                    uniformData.set(paddedInputShape, 0);
-                    uniformData.set(paddedInputStrides, MAX_DIMS_SOFTMAX);
-                    uniformData.set([rank, d0, d1, num_elements], MAX_DIMS_SOFTMAX * 2);
+                    // Calculate dispatch grid and invocation parameters locally
+                    const workgroupSizeX = 8; // Match shader
+                    const workgroupSizeY = 8; // Match shader
+                    const workgroupSizeZ = 4; // Match shader (not used for grid_invocations_per_row/slice directly but for totalWorkgroupsNeeded)
+                    const invocationsPerWorkgroup = workgroupSizeX * workgroupSizeY * workgroupSizeZ;
+
+                    let dispatchGridX = 1;
+                    let dispatchGridY = 1;
+                    // dispatchGridZ is not needed for these specific params
+
+                    if (num_elements > 0) {
+                        const totalWorkgroupsNeeded = Math.ceil(num_elements / invocationsPerWorkgroup);
+                        const maxDispatchDim = 65535; // device.limits.maxComputeWorkgroupsPerDimension
+
+                        if (totalWorkgroupsNeeded <= maxDispatchDim) {
+                            dispatchGridX = totalWorkgroupsNeeded;
+                        } else if (totalWorkgroupsNeeded <= maxDispatchDim * maxDispatchDim) {
+                            dispatchGridX = maxDispatchDim;
+                            dispatchGridY = Math.ceil(totalWorkgroupsNeeded / maxDispatchDim);
+                        } else { // If totalWorkgroupsNeeded > maxDispatchDim^2, it implies a Z dimension or error for 2D grid calc.
+                                      // For calculating grid_invocations_per_row/slice, we primarily care about X and Y dispatches.
+                                      // If it goes to 3D dispatch for workgroups, grid_invocations_per_slice reflects that.
+                            dispatchGridX = maxDispatchDim;
+                            dispatchGridY = maxDispatchDim;
+                            // We don't need to calculate dispatchGridZ here for these two params
+                        }
+                    }
+
+                    const gridInvocationsPerRow = dispatchGridX * workgroupSizeX;
+                    const gridInvocationsPerSlice = dispatchGridX * workgroupSizeX * dispatchGridY * workgroupSizeY;
+                    
+                    console.log(`TransposeNode (${this.name}) dimensionBuffer: gridInvocationsPerRow = ${gridInvocationsPerRow}, gridInvocationsPerSlice = ${gridInvocationsPerSlice}`);
+
+                    // Shader's Params struct: 8 (shape) + 8 (strides) + 1 (rank) + 1 (d0) + 1 (d1) + 1 (num_elements) + 1 (grid_row) + 1 (grid_slice) + 2 (padding) = 24 u32s
+                    const uniformData = new Uint32Array(MAX_DIMS * 2 + 4 + 2 + 2); // 16 (shape/strides based on MAX_DIMS) + 4 (rank,d0,d1,num_el) + 2 (grid_invocations) + 2 (padding)
+                    let offset = 0;
+                    uniformData.set(paddedInputShape, offset); offset += MAX_DIMS;
+                    uniformData.set(paddedInputStrides, offset); offset += MAX_DIMS;
+                    uniformData.set([rank, d0, d1, num_elements], offset); offset += 4;
+                    uniformData.set([gridInvocationsPerRow, gridInvocationsPerSlice], offset); offset += 2;
+                    uniformData.set([0, 0], offset); // padding0, padding1
+                    
                     return uniformData;
                 },
                 index: 2, // Binding for params uniform buffer
@@ -2095,11 +2131,53 @@ class TransposeNode extends Node {
                     throw new Error(`TransposeNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
                 }
                 const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
-                const workgroupSizeX = 256; // Must match shader
+
+                // Match shader workgroup sizes
+                const workgroupSizeX = 8;
+                const workgroupSizeY = 8;
+                const workgroupSizeZ = 4;
+                const invocationsPerWorkgroup = workgroupSizeX * workgroupSizeY * workgroupSizeZ;
+
+                if (num_elements === 0) {
+                    return { x: 0, y: 0, z: 0 };
+                }
+
+                const totalWorkgroupsNeeded = Math.ceil(num_elements / invocationsPerWorkgroup);
+
+                // Get device limits
+                // const device = executionContext.device;
+                // const maxDispatchDim = device.limits.maxComputeWorkgroupsPerDimension;
+                const maxDispatchDim = 65535;
+
+                let dispatchGridX = 1;
+                let dispatchGridY = 1;
+                let dispatchGridZ = 1;
+
+                if (totalWorkgroupsNeeded <= maxDispatchDim) {
+                    dispatchGridX = totalWorkgroupsNeeded;
+                } else if (totalWorkgroupsNeeded <= maxDispatchDim * maxDispatchDim) {
+                    dispatchGridX = maxDispatchDim;
+                    dispatchGridY = Math.ceil(totalWorkgroupsNeeded / maxDispatchDim);
+                } else if (totalWorkgroupsNeeded <= maxDispatchDim * maxDispatchDim * maxDispatchDim){
+                    dispatchGridX = maxDispatchDim;
+                    dispatchGridY = maxDispatchDim;
+                    dispatchGridZ = Math.ceil(totalWorkgroupsNeeded / (maxDispatchDim * maxDispatchDim));
+                } else {
+                    throw new Error(`TransposeNode (${this.name}): num_elements (${num_elements}) is too large to dispatch with current WebGPU limits.`);
+                }
+
+                // Store these for uniform buffer population if your setup needs them pre-calculated
+                // These are used by the shader to reconstruct flat_index from global_invocation_id
+                // if (!executionContext.params) {
+                //     executionContext.params = {};
+                // }
+                // executionContext.params.grid_invocations_per_row = dispatchGridX * workgroupSizeX;
+                // executionContext.params.grid_invocations_per_slice = dispatchGridX * workgroupSizeX * dispatchGridY * workgroupSizeY;
+
                 return {
-                    x: Math.ceil(num_elements / workgroupSizeX),
-                    y: 1,
-                    z: 1,
+                    x: dispatchGridX,
+                    y: dispatchGridY,
+                    z: dispatchGridZ,
                 };
             },
             entryPoint: "main",
@@ -2916,10 +2994,9 @@ export class SingleStepChunk {
         for (const output of this.outputs) {
             offset = output.encode(view, offset);
         }
+        offset = writeBool(view, offset, this.last_chunk);
         return offset;
     }
-
-    encoded
 }
 
 /**
@@ -3032,7 +3109,7 @@ export class Coordinator {
         const buffer = new ArrayBuffer(size);
         const view = new DataView(buffer);
         work.encode(view, 0);
-        
+        const start = performance.now(); 
         await fetch(`${this.url}/check-work`, {
             method: "POST",
             body: buffer,
@@ -3040,6 +3117,8 @@ export class Coordinator {
                 ["Content-Type"]: 'application/octet-stream'
             }
         });
+        const end = performance.now();
+        console.log(`check_work took ${end - start}ms`);
         }
 
     /**

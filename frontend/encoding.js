@@ -25,11 +25,15 @@ export function writeBEInt(view, offset, value) {
  * Writes a boolean to the DataView.
  * @param {DataView} view The DataView to write to.
  * @param {number} offset The offset to start writing at.
- * @param {boolean} value The integer value to write.
+ * @param {boolean} value The boolean value to write.
  * @returns {number} The new offset after writing.
  */
 export function writeBool(view, offset, value) {
-    view.setUint8(offset, value);
+    if (value == true) {
+        view.setUint8(offset, true);
+    } else {
+        view.setUint8(offset, false); 
+    }
     return offset + 1;
 }
 

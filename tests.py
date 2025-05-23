@@ -270,38 +270,38 @@ def test_index_reshape():
     ))
     return pipeline, graph
 
-def test_transpose():
-    g = ComputeGraphBuilder()
-    input_tp = g.input("input_tp") # Transpose Input
+# def test_transpose():
+#     g = ComputeGraphBuilder()
+#     input_tp = g.input("input_tp") # Transpose Input
 
-    dim0_val = 1
-    dim1_val = 2
+#     dim0_val = 1
+#     dim1_val = 2
 
-    with g.partition("p0_transpose"):
-        # TransposeNode constructor in worker.js will take dim0, dim1 from api_response
-        # The ComputeGraphBuilder.transpose() should pass these.
-        # No need for fixed tensors for dim0, dim1 if they are direct node attributes.
-        transposed_node = g.transpose("transpose_op", input_tp, dim0=dim0_val, dim1=dim1_val)
+#     with g.partition("p0_transpose"):
+#         # TransposeNode constructor in worker.js will take dim0, dim1 from api_response
+#         # The ComputeGraphBuilder.transpose() should pass these.
+#         # No need for fixed tensors for dim0, dim1 if they are direct node attributes.
+#         transposed_node = g.transpose("transpose_op", input_tp, dim0=dim0_val, dim1=dim1_val)
     
-    g.output("transpose_out", transposed_node)
-    graph = g.build()
-    pipeline = ComputePipeline(graph)
+#     g.output("transpose_out", transposed_node)
+#     graph = g.build()
+#     pipeline = ComputePipeline(graph)
 
-    # Input tensor: 2x3x4 (arange(24))
-    # Transposing dim 1 and 2: expected output shape 2x4x3
-    input_data = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
-    # PyTorch transpose for verification:
-    # expected_output_torch = input_data.transpose(dim0_val, dim1_val)
-    # print("Input for transpose:\n", input_data)
-    # print(f"Expected output after transpose({dim0_val}, {dim1_val}):\n", expected_output_torch)
+#     # Input tensor: 2x3x4 (arange(24))
+#     # Transposing dim 1 and 2: expected output shape 2x4x3
+#     input_data = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+#     # PyTorch transpose for verification:
+#     # expected_output_torch = input_data.transpose(dim0_val, dim1_val)
+#     # print("Input for transpose:\n", input_data)
+#     # print(f"Expected output after transpose({dim0_val}, {dim1_val}):\n", expected_output_torch)
 
-    pipeline.enqueue_input(PipelineInput(
-        correlation_id="transpose_test_0",
-        inputs={
-            "input_tp": Tensor.from_torch(input_data),
-        }
-    ))
-    return pipeline, graph
+#     pipeline.enqueue_input(PipelineInput(
+#         correlation_id="transpose_test_0",
+#         inputs={
+#             "input_tp": Tensor.from_torch(input_data),
+#         }
+#     ))
+#     return pipeline, graph
 
 def test_trig_ops():
     g = ComputeGraphBuilder()
@@ -452,36 +452,30 @@ def test_reduce_mean():
 
 def test_index_select():
     g = ComputeGraphBuilder()
-    is_input = g.input("is_input_val") # Index Select input (e.g., 3D tensor)
+    is_index = g.input("is_index_val") # 1D tensor of indices
 
     with g.partition("p0_index_select"):
-        is_dim_ignored = g.fixed("is_dim_ignore", torch.tensor([0], dtype=torch.int32)) # Will be ignored by CPU kernel
+        # Define the dimension to index along as a fixed tensor
+        # For example, selecting along dimension 0
+        embed_matrix = g.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
+        is_dim_val = g.fixed("is_dim_val", torch.tensor([0], dtype=torch.int32))
 
-        # Case 1: 1D index tensor
-        is_index_1d = g.fixed("is_index_1d_val", torch.tensor([0, 2, 1], dtype=torch.int32)) # int32 for PyTorch indexing
-        selected_1d = g.index_select("index_select_1d_op", is_input, is_dim_ignored, is_index_1d)
+        # IndexSelectNode takes: input tensor, dimension tensor, index tensor
+        selected_node = g.index_select("index_select_op", embed_matrix, is_dim_val, is_index)
 
-    g.output("index_select_1d_out", selected_1d)
+    g.output("index_select_out", selected_node)
     graph = g.build()
     pipeline = ComputePipeline(graph)
 
-    # Input: 3x2x2 tensor
-    input_data = torch.arange(12, dtype=torch.float32).reshape(3, 2, 2)
-    # [[[ 0.,  1.],
-    #   [ 2.,  3.]],
-    #  [[ 4.,  5.],
-    #   [ 6.,  7.]],
-    #  [[ 8.,  9.],
-    #   [10., 11.]]]
-
-    # PyTorch behavior for reference:
-    # pt_selected_1d = input_data[is_index_1d.tensor] -> shape (3,2,2)
-    # pt_selected_2d = input_data[is_index_2d.tensor] -> shape (2,2,2,2)
-
+    # Indices to select along dimension 0
+    # index_data = torch.randint(0, 120_000, (1,))
+    index_data = torch.tensor([89103], dtype=torch.int32)
+    print("index_data:")
+    print(index_data)
     pipeline.enqueue_input(PipelineInput(
         correlation_id="index_select_test_0",
         inputs={
-            "is_input_val": Tensor.from_torch(input_data),
+            "is_index_val": Tensor.from_torch(index_data),
         }
     ))
     return pipeline, graph
@@ -492,65 +486,11 @@ import torch
 from models.utils import load_model, prepare_llama_model_statics, package_llama_decoder_layer_weights, layer_params
 from inference.tensor import Tensor
 from inference.pipeline import ComputePipeline, PipelineInput
-from models.llama import rotary_embed, llama_model, llama_fwd
+from models.llama import rotary_embed, llama_model, llama_fwd, llama_causal
 from transformers import AutoConfig
 
 torch.set_grad_enabled(False)
 MODEL_PATH = "meta-llama/Llama-3.2-1B"
-
-def test_llama_model():
-    g = ComputeGraphBuilder()
-    tokens = g.input("tokens")
-    position_ids = g.input("position_ids")
-
-
-    input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
-    position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
-    
-    b = ComputeGraphBuilder()
-    input_tokens_node = b.input("input_tokens")
-    pos_ids_node = b.input("position_ids")
-    with b.partition("p0"):
-      with NameScope.push_scope("statics"):
-        statics = prepare_llama_model_statics(config, b)
-        nodes = [statics]
-  
-        for layer_idx in range(1):
-          with NameScope.push_scope(f"layer{layer_idx}"):
-            layer_weights = package_llama_decoder_layer_weights(model_params[layer_idx], b)
-            nodes.append(layer_weights)
-
-      # Calculate and print the total size of all fixed nodes in bytes
-      total_size_bytes = 0
-      
-      for n in nodes[1:]:
-          for k, v in n.items():
-              for k2, v2 in v.items():
-                  tensor = v2.tensor
-                  total_size_bytes += tensor.numel() * tensor.element_size()
-      print(f"Total size of all fixed nodes: {total_size_bytes} bytes ({total_size_bytes / (1024 * 1024):.2f} MB)")
-
-
-      our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)
-  
-    b.output("llama_out", our_out)
-
-    # Build graph
-    g = b.build()
-
-    input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
-    position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
-
-    # Create pipeline and enqueue inputs
-    pipeline = ComputePipeline(g)
-    inputs = {
-        "input_tokens": Tensor.from_torch(input_tokens),
-        "position_ids": Tensor.from_torch(position_ids)
-    }
-
-    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
-
-    return pipeline, g
 
 def test_fixed(shape):
     g = ComputeGraphBuilder()
@@ -564,6 +504,23 @@ def test_fixed(shape):
     pipeline.enqueue_input(
         PipelineInput(correlation_id="test", inputs={"x": Tensor.from_torch(torch.rand(shape, dtype=torch.float32))}))
     return pipeline, graph
+
+def test_transpose():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        embed = g.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
+        lm_head = g.transpose("embed_t", embed, 0, 1)
+        out = g.matmul("matmul", x, lm_head)
+        
+        
+    g.output("out", out)
+    graph = g.build()
+    pipeline = ComputePipeline(graph)
+    x_input = torch.randn((1, 2048))
+    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs={"x": Tensor.from_torch(x_input)}))
+    return pipeline, graph
+    
 
 def test_safetensor():
     g = ComputeGraphBuilder()
@@ -667,7 +624,7 @@ def test_llama_model():
     config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-1B")
     input_tokens_node = b.input("input_tokens")
     pos_ids_node = b.input("position_ids")
-    input_tokens = torch.randint(0, 1000, (1,)).cpu().unsqueeze(0)
+    input_tokens = torch.randint(0, 1000, (1,), dtype=torch.int32).cpu().unsqueeze(0)
     position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
 
     with b.partition("p0"):
@@ -675,13 +632,13 @@ def test_llama_model():
             statics = prepare_llama_model_statics(config, b)
             nodes = [statics]
     
-            for layer_idx in range(2):
+            for layer_idx in range(16):
                 with NameScope.push_scope(f"layer{layer_idx}"):
                     prefix = f"model.layers.{layer_idx}."
                     layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)
                     nodes.append(layer_weights)
 
-            our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)
+        our_out = llama_model(b, input_tokens_node, pos_ids_node, nodes)
     
     b.output("llama_out", our_out)
 
@@ -698,6 +655,41 @@ def test_llama_model():
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
     return pipeline, g
 
+def test_llama_causal():
+    b = ComputeGraphBuilder()
+    config = AutoConfig.from_pretrained("meta-llama/Llama-3.2-1B")
+    input_tokens_node = b.input("input_tokens")
+    pos_ids_node = b.input("position_ids")
+    input_tokens = torch.randint(0, 1000, (1,), dtype=torch.int32).cpu().unsqueeze(0)
+    position_ids = torch.arange(0, 1).cpu().unsqueeze(0).float()
+
+    with b.partition("p0"):
+        with NameScope.push_scope("statics"):
+            statics = prepare_llama_model_statics(config, b)
+            nodes = [statics]
+    
+            for layer_idx in range(1):
+                with NameScope.push_scope(f"layer{layer_idx}"):
+                    prefix = f"model.layers.{layer_idx}."
+                    layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)
+                    nodes.append(layer_weights)
+
+        our_out = llama_causal(b, input_tokens_node, pos_ids_node, nodes)
+    
+    b.output("llama_out", our_out)
+
+    # Build graph
+    g = b.build()
+
+    # Create pipeline and enqueue inputs
+    pipeline = ComputePipeline(g)
+    inputs = {
+        "input_tokens": Tensor.from_torch(input_tokens),
+        "position_ids": Tensor.from_torch(position_ids)
+    }
+
+    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
+    return pipeline, g
 
 def test_pipelining():
     g = ComputeGraphBuilder()
@@ -716,3 +708,4 @@ def test_pipelining():
     for i in range(10):
         pipeline.enqueue_input(PipelineInput(correlation_id=f"test_{i}", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))}))
     return pipeline, graph
+

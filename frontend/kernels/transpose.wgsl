@@ -9,10 +9,14 @@ struct Params {
   dim0_to_swap: u32,
   dim1_to_swap: u32,
   num_elements: u32,
+  grid_invocations_per_row: u32, // New: dispatchGrid.x * workgroup_size.x
+  grid_invocations_per_slice: u32, // New: dispatchGrid.x * workgroup_size.x * dispatchGrid.y * workgroup_size.y
   // Padding to ensure struct size is a multiple of 16.
-  // Current members: 32 (shape) + 32 (strides) + 4 (rank) + 4 (d0) + 4 (d1) + 4 (num_elements) = 80 bytes.
-  // 80 is a multiple of 16, so no explicit padding variables needed here IF tightly packed.
-  // However, WGSL struct layout rules can be tricky. Let's assume this is fine.
+  // Struct size: 2*4*4*MAX_DIMS_VEC4 (for vecs) + 6*4 (for u32s)
+  // If MAX_DIMS_VEC4 = 2 (MAX_DIMS = 8): 32 + 32 + 24 = 88 bytes.
+  // Needs to be multiple of 16 (96 bytes). Add 8 bytes padding.
+  padding0: u32,
+  padding1: u32,
 };
 
 @group(0) @binding(0) var<storage, read> input_tensor: array<f32>; 
@@ -27,16 +31,37 @@ fn get_stride_val(idx: u32) -> u32 {
   return params.input_strides_vecs[idx / 4u][idx % 4u];
 }
 
-const WORKGROUP_SIZE_X: u32 = 256u;
+// New 3D workgroup dimensions
+const WORKGROUP_SIZE_X_3D: u32 = 8u;
+const WORKGROUP_SIZE_Y_3D: u32 = 8u;
+const WORKGROUP_SIZE_Z_3D: u32 = 4u; // Total invocations per workgroup: 8*8*4 = 256
 
-@compute @workgroup_size(WORKGROUP_SIZE_X, 1, 1)
+@compute @workgroup_size(WORKGROUP_SIZE_X_3D, WORKGROUP_SIZE_Y_3D, WORKGROUP_SIZE_Z_3D)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-  let output_flat_idx = global_id.x;
+  let output_flat_idx = global_id.z * params.grid_invocations_per_slice + 
+                        global_id.y * params.grid_invocations_per_row + 
+                        global_id.x;
 
   if (output_flat_idx >= params.num_elements) {
     return;
   }
 
+  // --- Diagnostic: Write params to output[0] and output[1] --- 
+  // --- and continue original test for other indices --- 
+  // if (output_flat_idx == 0u) {
+  //   if (params.num_elements > 0u) { // Ensure output_tensor[0] is a valid write
+  //       output_tensor[0u] = f32(params.grid_invocations_per_row);
+  //   }
+  // } else if (output_flat_idx == 1u) {
+  //   if (params.num_elements > 1u) { // Ensure output_tensor[1] is a valid write
+  //       output_tensor[1u] = f32(params.grid_invocations_per_slice);
+  //   }
+  // } else {
+  //   // Original test for other indices
+  //   output_tensor[output_flat_idx] = f32(output_flat_idx);
+  // }
+
+  // /* --- Original Transpose Logic (Commented out for testing) ---
   if (params.rank == 0u) { // Handle 0D (scalar) case
     output_tensor[output_flat_idx] = input_tensor[output_flat_idx];
     return;
@@ -74,12 +99,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   for (var i = 0u; i < params.rank; i = i + 1u) {
     if (output_strides[i] == 0u && remainder != 0u && output_shape[i] != 0u) {
         // This case should ideally not be hit if strides/shapes are consistent
-        // Can happen if a dim size is 0, leading to stride 0.
-        // If output_shape[i] is non-zero but stride is zero, it means higher dims were zero.
-        // For safety, if a stride is zero, the coord for that dim must be zero if remainder is still non-zero.
-        // However, with valid shapes, this is more about handling product of dims being 0.
-        // If num_elements is 0, this loop body won't run due to the initial check.
-        // This is complex. Let's assume valid strides from valid shapes for now.
     }
     if (output_shape[i] > 0u) { // Avoid division by zero for empty dimensions
         output_coord[i] = remainder / output_strides[i];
@@ -104,4 +123,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
 
   output_tensor[output_flat_idx] = input_tensor[input_flat_idx];
+  // */
 }

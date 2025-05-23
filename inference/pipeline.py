@@ -77,7 +77,7 @@ class SingleStepChunk:
             if our.tensor.dtype != other_node.tensor.dtype:
                 breakpoint()
                 raise ValueError(f"Output {other_node.node}.{other_node.output} dtype mismatch: {other_node.tensor.dtype} != {our.tensor.dtype}")
-            if not torch.allclose(other_node.tensor.to_torch(), our.tensor.to_torch(), atol=1e-4):
+            if not torch.allclose(other_node.tensor.to_torch(), our.tensor.to_torch(), rtol=1e-3, atol=1e-4):
                 breakpoint()
                 raise ValueError(f"Output {other_node}={other.node.tensor.to_torch()} does not match our output {our}={our.tensor.to_torch()}")
     

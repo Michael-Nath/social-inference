@@ -348,7 +348,6 @@ def llama_model(
 
     dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
     embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
-    return embed_tokens
     cos_node, sin_node = rotary_embed(
         b, position_ids, weights[0]["inv_freq"], weights[0]["attn_scaling"]
     )
@@ -363,3 +362,17 @@ def llama_model(
     
     layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight"], weights[0]["final_norm_eps"])
     return layer_out
+
+def llama_causal(
+    b: ComputeGraphBuilder,
+    tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
+    position_ids: ComputeGraphNode,
+    weights: list[dict[str, ComputeGraphNode]] # dict per layer
+):
+    with NameScope.push_scope("model"):
+        model_out = llama_model(b, tokens, position_ids, weights)
+    # weights[0] houses all statics 
+    lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix"], 0, 1)
+    lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
+    logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
+    return logits

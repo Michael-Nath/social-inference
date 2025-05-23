@@ -24,8 +24,11 @@ model_cache = ModelCache()
 # pipeline, g = tests.test_safetensor()
 # pipeline, g = tests.test_llama_layernorm()
 # pipeline, g = tests.test_llama_attn()
-pipeline, g = tests.test_llama_model()
+# pipeline, g = tests.test_llama_model()
+# pipeline, g = tests.test_llama_causal()
+pipeline, g = tests.test_transpose()
 # pipeline, g = tests.test_llama_layer(llama_layer_one_param_keys, "meta-llama/Llama-3.2-1B", idx=0)
+# pipeline, g = tests.test_index_select()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()
@@ -144,7 +147,6 @@ async def check_work(req: Request):
         body += chunk 
     
     work, _ = SingleStepChunk.decode(0, body)
-    
     if (work.partition, work.correlation_id) not in sim_results:
         print("SIMULATING")
         gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache, True)
