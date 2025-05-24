@@ -21,14 +21,7 @@ llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weigh
     
 # ]
 model_cache = ModelCache()
-# pipeline, g = tests.test_safetensor()
-# pipeline, g = tests.test_llama_layernorm()
-# pipeline, g = tests.test_llama_attn()
-# pipeline, g = tests.test_llama_model()
-# pipeline, g = tests.test_llama_causal()
-pipeline, g = tests.test_transpose()
-# pipeline, g = tests.test_llama_layer(llama_layer_one_param_keys, "meta-llama/Llama-3.2-1B", idx=0)
-# pipeline, g = tests.test_index_select()
+pipeline, g = tests.test_llama_causal()
 worker_manager = WorkerManager(g)
 
 app = FastAPI()
@@ -122,9 +115,16 @@ async def get_work(partition_name: PartitionName):
     w = pipeline.get_partition_work(partition_name)
     if w is not None:
         inflight_work[(w.partition, w.correlation_id)] = w
-        bytes = bytearray(size_encoded_partition_work(w))
-        write_encoded_partition_work(bytes, 0, w)
-        return StreamingResponse(io.BytesIO(bytes), media_type="application/octet-stream")
+        tensor_bytes = bytearray(size_encoded_partition_work(w))
+        write_encoded_partition_work(tensor_bytes, 0, w)
+        tensor_bytes = bytes(tensor_bytes)
+        return StreamingResponse(
+            stream_bytes(tensor_bytes),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(len(tensor_bytes)),
+            } 
+        )
     return StreamingResponse(io.BytesIO(b""), status_code=404, media_type="application/octet-stream")
 
 @app.post("/work")
@@ -132,9 +132,9 @@ async def submit_work(req: Request):
     """
     Called by clients to submit inference results
     """
-    body = b""
+    body = bytearray()
     async for chunk in req.stream():
-        body += chunk 
+        body.extend(chunk)
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
     return pipeline.submit_partition_work(work)
@@ -142,9 +142,9 @@ async def submit_work(req: Request):
 @app.post("/check-work")
 async def check_work(req: Request):
 
-    body = b""
+    body = bytearray()
     async for chunk in req.stream():
-        body += chunk 
+        body.extend(chunk)
     
     work, _ = SingleStepChunk.decode(0, body)
     if (work.partition, work.correlation_id) not in sim_results:

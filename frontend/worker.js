@@ -2000,6 +2000,9 @@ class TransposeNode extends Node {
         let dim0, dim1;
         [dim0, offset] = readBEInt(view, offset);
         [dim1, offset] = readBEInt(view, offset);
+        console.log(`creating transpose node ${name} with following dim`)
+        console.log(dim0);
+        console.log(dim1);
         return [new TransposeNode({ name, partition, type, dim0, dim1 }), offset];
     }
 
@@ -2046,7 +2049,7 @@ class TransposeNode extends Node {
     async getGPUKernel() {
         const MAX_DIMS = 8; // Define explicitly here for clarity, should match WGSL
         return new GPUKernel({
-            name: 'transpose',
+            name: `transpose<${this.dim0}, ${this.dim1}>`,
             shader: await fetch('kernels/transpose.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
@@ -2076,7 +2079,6 @@ class TransposeNode extends Node {
                             paddedInputStrides[i] = inputStrides[i];
                         }
                     }
-
                     const num_elements = rank > 0 ? inputShape.reduce((acc, val) => acc * val, 1) : 1;
 
                     // Calculate dispatch grid and invocation parameters locally
@@ -3108,8 +3110,10 @@ export class Coordinator {
         const size = work.encodedSize();
         const buffer = new ArrayBuffer(size);
         const view = new DataView(buffer);
+        const start = performance.now();
         work.encode(view, 0);
-        const start = performance.now(); 
+        const encodeEnd = performance.now();
+        console.log(`encode took ${encodeEnd - start}ms`);
         await fetch(`${this.url}/check-work`, {
             method: "POST",
             body: buffer,
@@ -3118,7 +3122,6 @@ export class Coordinator {
             }
         });
         const end = performance.now();
-        console.log(`check_work took ${end - start}ms`);
         }
 
     /**

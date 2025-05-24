@@ -62,7 +62,7 @@ export class AppController {
                 let outputAssignments = [];
                 if (finalOutputs && finalOutputs.size > 0) {
                     for (const [nodeName, outputsMap] of finalOutputs.entries()) {
-                        if (nodeName.includes("embed_matrix") || nodeName.includes("lm_head")) continue;
+                        if (nodeName.includes("embeds_matrix")) continue;
                         for (const [outputName, tensor] of outputsMap.entries()) {
                             // Ensure tensor is serializable/CPUTensor for OutputAssignment
                             // This might require a conversion from GPUTensor if not handled by executor._gatherFinalOutputs
@@ -80,7 +80,7 @@ export class AppController {
                 console.log("AppController: Checking work...")
                 
                 console.log("AppController: Submitting work results...");
-                const CHUNK_SIZE = 8;
+                const CHUNK_SIZE = 1;
                 const totalAssignments = outputAssignments.length;
                 for (let i = 0; i < totalAssignments; i += CHUNK_SIZE) {
                     const chunk = outputAssignments.slice(i, i + CHUNK_SIZE);

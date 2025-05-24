@@ -418,7 +418,7 @@ export class SessionExecutor {
                 if (kernel.dimensionBuffer) {
                     // Create uniform buffer for dimensions
                     const dimensionData = kernel.dimensionBuffer.func(executionContext);
-                    console.debug("Dimension data:", dimensionData);
+                    console.log("Dimension data:", dimensionData);
                     const dimensionBuffer = this.device.createBuffer({
                         label: `${node.name}.dimensions`,
                         size: dimensionData.byteLength,

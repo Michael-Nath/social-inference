@@ -46,21 +46,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     return;
   }
 
-  // --- Diagnostic: Write params to output[0] and output[1] --- 
-  // --- and continue original test for other indices --- 
-  // if (output_flat_idx == 0u) {
-  //   if (params.num_elements > 0u) { // Ensure output_tensor[0] is a valid write
-  //       output_tensor[0u] = f32(params.grid_invocations_per_row);
-  //   }
-  // } else if (output_flat_idx == 1u) {
-  //   if (params.num_elements > 1u) { // Ensure output_tensor[1] is a valid write
-  //       output_tensor[1u] = f32(params.grid_invocations_per_slice);
-  //   }
-  // } else {
-  //   // Original test for other indices
-  //   output_tensor[output_flat_idx] = f32(output_flat_idx);
-  // }
-
   // /* --- Original Transpose Logic (Commented out for testing) ---
   if (params.rank == 0u) { // Handle 0D (scalar) case
     output_tensor[output_flat_idx] = input_tensor[output_flat_idx];
@@ -70,47 +55,36 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   // Calculate output shape and strides (by transposing input shape/strides)
   var output_shape: array<u32, MAX_DIMS>;
   var output_strides: array<u32, MAX_DIMS>;
-  var temp_output_shape_for_strides: array<u32, MAX_DIMS>; // for calculateStrides pattern
 
   for (var i = 0u; i < params.rank; i = i + 1u) {
     output_shape[i] = get_shape_val(i);
-    temp_output_shape_for_strides[i] = get_shape_val(i);
   }
   // Transpose the shape for output_shape and temp_output_shape_for_strides
   var temp_dim_val = output_shape[params.dim0_to_swap];
   output_shape[params.dim0_to_swap] = output_shape[params.dim1_to_swap];
   output_shape[params.dim1_to_swap] = temp_dim_val;
 
-  temp_dim_val = temp_output_shape_for_strides[params.dim0_to_swap];
-  temp_output_shape_for_strides[params.dim0_to_swap] = temp_output_shape_for_strides[params.dim1_to_swap];
-  temp_output_shape_for_strides[params.dim1_to_swap] = temp_dim_val;
-
   // Calculate output strides (standard C-order strides for the transposed shape)
-  if (params.rank > 0u) {
-      output_strides[params.rank - 1u] = 1u;
-      for (var i = params.rank - 2u; i < params.rank; i = i - 1u) { // Loop condition i < params.rank is effectively i >= 0 for unsigned
-          output_strides[i] = output_strides[i + 1u] * temp_output_shape_for_strides[i + 1u];
-      }
+  output_strides[params.rank - 1u] = 1;
+  for (var i = params.rank - 2u; i < params.rank; i = i - 1u) { // Loop condition i < params.rank is effectively i >= 0 for unsigned
+    output_strides[i] = output_strides[i + 1u] * output_shape[i + 1u];
   }
   
   // Convert flat output index to N-D output coordinates
   var output_coord: array<u32, MAX_DIMS>;
   var remainder = output_flat_idx;
   for (var i = 0u; i < params.rank; i = i + 1u) {
-    if (output_strides[i] == 0u && remainder != 0u && output_shape[i] != 0u) {
-        // This case should ideally not be hit if strides/shapes are consistent
-    }
-    if (output_shape[i] > 0u) { // Avoid division by zero for empty dimensions
-        output_coord[i] = remainder / output_strides[i];
-        remainder = remainder % output_strides[i];
-    } else {
-        output_coord[i] = 0u; // Coordinate is 0 for an empty dimension
+    if (output_shape[i] > 0u) {
+      output_coord[i] = remainder / output_strides[i];
+      remainder = remainder % output_strides[i];
     }
   }
 
   // Transform N-D output coordinates to N-D input coordinates by swapping d0 and d1
   var input_coord: array<u32, MAX_DIMS>; // = output_coord;
-  for(var i=0u; i < params.rank; i=i+1u) { input_coord[i] = output_coord[i]; }
+  for(var i=0u; i < params.rank; i=i+1u) { 
+    input_coord[i] = output_coord[i];
+  }
 
   temp_dim_val = input_coord[params.dim0_to_swap];
   input_coord[params.dim0_to_swap] = input_coord[params.dim1_to_swap];
@@ -120,8 +94,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   var input_flat_idx = 0u;
   for (var i = 0u; i < params.rank; i = i + 1u) {
     input_flat_idx = input_flat_idx + input_coord[i] * get_stride_val(i);
-  }
-
+  } 
   output_tensor[output_flat_idx] = input_tensor[input_flat_idx];
-  // */
 }

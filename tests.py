@@ -505,19 +505,23 @@ def test_fixed(shape):
         PipelineInput(correlation_id="test", inputs={"x": Tensor.from_torch(torch.rand(shape, dtype=torch.float32))}))
     return pipeline, graph
 
-def test_transpose():
+from models.llama import just
+def test_lm_head():
     g = ComputeGraphBuilder()
     x = g.input("x")
     with g.partition("p0"):
-        embed = g.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
+        zero = just(g, 0)
+        embed  = g.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
+        tokens = g.index_select("indexed", embed, zero, x)
         lm_head = g.transpose("embed_t", embed, 0, 1)
-        out = g.matmul("matmul", x, lm_head)
+        lm_head_weight_unsqz = g.unsqueeze("lm_head_unsqz", lm_head, zero)
+        out = g.matmul("matmul", tokens, lm_head_weight_unsqz)
         
         
     g.output("out", out)
     graph = g.build()
     pipeline = ComputePipeline(graph)
-    x_input = torch.randn((1, 2048))
+    x_input = torch.randint(1, 1000, (1, 1), dtype=torch.int32)
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs={"x": Tensor.from_torch(x_input)}))
     return pipeline, graph
     
@@ -526,7 +530,6 @@ def test_safetensor():
     g = ComputeGraphBuilder()
     x = g.input("x")
     with g.partition("p0"):
-        # [2048]
         constant_node = g.safetensor("constant_node", "meta-llama/Llama-3.2-1B", "model.layers.0.input_layernorm.weight")
         result = g.add("add_node", x, constant_node)
     g.output("y", result)
@@ -668,7 +671,7 @@ def test_llama_causal():
             statics = prepare_llama_model_statics(config, b)
             nodes = [statics]
     
-            for layer_idx in range(1):
+            for layer_idx in range(16):
                 with NameScope.push_scope(f"layer{layer_idx}"):
                     prefix = f"model.layers.{layer_idx}."
                     layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)
