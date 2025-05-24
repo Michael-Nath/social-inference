@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
+import threading
+import time
 
 from inference.encoding import read_be_int, read_encoded_string, size_encoded_string, write_be_int, write_encoded_string, write_encoded_bool, read_bool
 
@@ -144,6 +147,63 @@ class PartitionWorkResult:
                 breakpoint()
                 raise ValueError(f"Output {o}={o.tensor.to_torch()} does not match our output {our_outputs[(o.node, o.output)]}={our_outputs[(o.node, o.output)].tensor.to_torch()}")
 
+class InflightWorkManager:
+    """
+    Manages inflight work for a pipeline. When work has been in-flight for long
+    enough, we will copy it and redistribute it. If a worker submits a result
+    that is NOT inflight, we discard it. This way, we can be resilient to
+    errors, with a recovery time inveresely proportional to work duplication
+    between workers.
+    """
+
+    GRACE_PERIOD_S: float = 20.0
+
+    work: dict[PartitionName, dict[str, PartitionWork]]
+    times: dict[PartitionName, dict[str, float]]
+
+    def __init__(self):
+        self.work = defaultdict(dict)
+        self.times = defaultdict(dict)
+
+    def next_overdue_work(self, partition: PartitionName) -> PartitionWork | None:
+        """
+        Returns the next overdue work for a partition.
+        """
+        if partition not in self.work:
+            return None
+
+        for correlation_id, work in self.work[partition].items():
+            if time.time() - self.times[partition][correlation_id] > self.GRACE_PERIOD_S:
+                return work
+        return None
+    
+    def mark_sent(self, work: PartitionWork):
+        """
+        Marks work as sent.
+        """
+        self.work[work.partition][work.correlation_id] = work
+        self.times[work.partition][work.correlation_id] = time.time() # Update the time
+
+    def acknowledge_work(self, work: PartitionWork) -> bool:
+        """
+        Acknowledges work for a partition. Returns True if the work was accepted (was alive). False otherwise.
+        """
+        # Partition doesn't exist
+        if work.partition not in self.work:
+            return False
+
+        # Work doesn't exist
+        if work.correlation_id not in self.work[work.partition]:
+            return False
+
+        # Grace period expired
+        if time.time() - self.times[work.partition][work.correlation_id] > self.GRACE_PERIOD_S:
+            return False
+
+        # Work is alive
+        del self.work[work.partition][work.correlation_id]
+        del self.times[work.partition][work.correlation_id]
+        return True
 
 class ComputePipeline:
     """
@@ -165,10 +225,14 @@ class ComputePipeline:
     Queues for each edge in the graph.
     """
 
+    lock: threading.Lock
+
     def __init__(self, graph: ComputeGraph):
         self.graph = graph
         self.edge_queues = {}
         self.partition_queues = {}
+        self.inflight_work_manager = InflightWorkManager()
+        self.lock = threading.Lock()
         self._build_queues()
 
     def _build_queues(self):
@@ -178,7 +242,7 @@ class ComputePipeline:
         for partition in self.graph.get_partitions():
             edges = self.graph.identify_forward_cuts(partition)
             if len(edges) > 0:
-                queue = CorrelatedQueue(list(edges))
+                queue = CorrelatedQueue(list(edges), self.lock)
                 self.partition_queues[partition] = queue
                 for edge in edges:
                     self.edge_queues[edge] = queue
@@ -224,8 +288,13 @@ class ComputePipeline:
         """
         Gets the next partition work for a partition, or None if no work is available.
         """
-        # TODO: gotta remove the peek when not debugging lmfao
-        # elements = self.partition_queues[partition].peek()
+
+        with self.lock:
+            next_overdue_work = self.inflight_work_manager.next_overdue_work(partition)
+            if next_overdue_work is not None:
+                self.inflight_work_manager.mark_sent(next_overdue_work)
+                return next_overdue_work
+
         elements = self.partition_queues[partition].pop(blocking=False)
         if elements is None:
             return None
@@ -242,17 +311,28 @@ class ComputePipeline:
         if correlation_id is None:
             raise ValueError("No elements found")
         
-        return PartitionWork(
+        w = PartitionWork(
             correlation_id=correlation_id,
             partition=partition,
             graph=self.graph.extract_partition(partition, include_cut_edges=False),
             inputs=input_assignments
         )
 
+        with self.lock:
+            self.inflight_work_manager.mark_sent(w)
+
+        return w    
+
     def submit_partition_work(self, work: PartitionWorkResult):
         """
         Submits partition work to the pipeline.
         """
+
+        with self.lock:
+            # If the work was not alive, discard it
+            if not self.inflight_work_manager.acknowledge_work(work):
+                return
+
         for output in work.outputs:
             forward_edges = self.graph.get_forward_edges(output.node, src_output=output.output)
             for edge in forward_edges:
