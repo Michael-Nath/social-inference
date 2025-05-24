@@ -1,6 +1,6 @@
 // executor.js
 import { SessionGraph, GPUSession, CPUSession, ComputeSession, KernelCompiler } from './compiler.js';
-import { PartitionWork, ExecutionContext, OutputAssignment } from './worker.js';
+import { PartitionWork, ExecutionContext, OutputAssignment, SingleStepChunk } from './worker.js';
 import { GPUTensor, CPUTensor } from './kernel.js';
 import { SafeTensorCache } from './tensorcache.js';
 import { ALL_SCOPES, popErrorScopes, pushErrorScopes } from './common.js';
@@ -21,11 +21,11 @@ export class SessionExecutionTrace {
     constructor(cpuOutputs) {
         this.outputs = [];
         for (const [dataKey, tensor] of cpuOutputs.entries()) {
-            this.outputs.push({
+            this.outputs.push(new OutputAssignment({
                 node: dataKey.split(':')[0],
                 output: dataKey.split(':')[1],
                 tensor: tensor
-            });
+            }));
         }
     }
 
@@ -40,12 +40,7 @@ export class SessionExecutionTrace {
             // If adding this output would exceed the limit and we already have outputs,
             // create a new chunk with the current outputs
             if (currentSize + outputSize > approximateChunkSizeBytes && currentChunk.length > 0) {
-                chunks.push(new SingleStepChunk({
-                    correlation_id: this.correlation_id,
-                    partition: this.partition,
-                    outputs: [...currentChunk],
-                    last_chunk: false
-                }));
+                chunks.push([...currentChunk]);
                 currentChunk = [];
                 currentSize = 0;
             }
@@ -57,12 +52,7 @@ export class SessionExecutionTrace {
 
         // Add the final chunk if there are any remaining outputs
         if (currentChunk.length > 0) {
-            chunks.push(new SingleStepChunk({
-                correlation_id: this.correlation_id,
-                partition: this.partition,
-                outputs: currentChunk,
-                last_chunk: true
-            }));
+            chunks.push(currentChunk);
         }
 
         return chunks;
@@ -126,7 +116,7 @@ export class SessionExecutor {
         this.cpuOutputs = new Map();
         this.gpuOutputs = new Map();
 
-        this.singleStepping = true;
+        this.singleStepping = tracing;
         this.safetensorCache = safetensorCache || new SafeTensorCache();
         this.tracing = tracing;
     }

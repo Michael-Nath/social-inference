@@ -121,7 +121,7 @@ async def get_work(partition_name: PartitionName):
     """
     w = pipeline.get_partition_work(partition_name)
     if w is not None:
-        w.shouldTrace = True
+        w.should_trace = True
         inflight_work[(w.partition, w.correlation_id)] = w
         bytes = bytearray(size_encoded_partition_work(w))
         write_encoded_partition_work(bytes, 0, w)
@@ -133,20 +133,20 @@ async def submit_work(req: Request):
     """
     Called by clients to submit inference results
     """
-    body = b""
+    body = bytearray()
     async for chunk in req.stream():
-        body += chunk 
+        body.extend(chunk)
+
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
     return pipeline.submit_partition_work(work)
 
 @app.post("/check-work")
 async def check_work(req: Request):
-
-    body = b""
+    body = bytearray()
     async for chunk in req.stream():
-        body += chunk 
-    
+        body.extend(chunk)
+
     work, _ = SingleStepChunk.decode(0, body)
     if (work.partition, work.correlation_id) not in sim_results:
         print("SIMULATING")

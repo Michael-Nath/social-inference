@@ -2956,18 +2956,6 @@ export class SingleStepChunk {
     }
 
     /**
-     * @returns {Object} An API-ready representation of the chunk.
-     */
-    toAPI() {
-        return {
-            correlation_id: this.correlation_id,
-            partition: this.partition,
-            outputs: this.outputs.map((oa) => oa.toAPI()),
-            last_chunk: this.last_chunk
-        };
-    }
-
-    /**
      * Calculates the size of an encoded SingleStepChunk.
      * @returns {number} The size in bytes.
      */
