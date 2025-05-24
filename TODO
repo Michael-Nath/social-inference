@@ -1,4 +1,6 @@
-1. Finish kernels (+ constant nodes)
-2. Finish llama
-3. Error recovery with retries
-4. Visualization of work
+Optimization Wishlist
+- Better session scheduling
+- More CPU/GPU kernels (helps with above)
+- Fusion
+- WebGPU limits
+- Improve kernels (tile many untiled kernels)

@@ -646,8 +646,6 @@ def test_llama_model():
     # Build graph
     g = b.build()
 
-    g.split_partition("p0")
-
     # Create pipeline and enqueue inputs
     pipeline = ComputePipeline(g)
     inputs = {
