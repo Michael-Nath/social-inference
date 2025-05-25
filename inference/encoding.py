@@ -15,7 +15,7 @@ def write_encoded_string(data: bytearray, offset: int, string: str) -> int:
     return offset + len(string)
 
 def write_encoded_bool(data: bytearray, offset: int, b: bool) -> int:
-    data[offset:offset+1] = 1 if b else 0
+    data[offset:offset+1] = (1).to_bytes(1, byteorder='big') if b else (0).to_bytes(1, byteorder='big')
     return offset + 1
 
 def read_bool(offset: int, data: bytes) -> tuple[bool, int]:

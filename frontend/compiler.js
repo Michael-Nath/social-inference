@@ -84,13 +84,6 @@ export class GPUSession extends ComputeSession {
     // GPU-specific methods might go here
 }
 
-
-export class SessionGraphResult {
-    constructor(node, should_check) {
-        this.node 
-    }
-}
-
 /** 
  * @typedef {import("./worker.js").Shape} Shape 
  */
@@ -127,7 +120,7 @@ export class SessionGraph {
     /**
      * @param {ComputeSession[]} sessions - List of compute sessions
      */
-    constructor(sessions, single_step) {
+    constructor(sessions, single_step = false) {
         this.sessions = sessions;
         this._nodeToSession = new Map();
         this._outputDependencies = new Map();
@@ -290,7 +283,7 @@ export class SessionGraph {
         }
 
         // Now that sessions are created and nodes assigned, instantiate the SessionGraph
-        const sessionGraphInstance = new SessionGraph(initialSessions, true);
+        const sessionGraphInstance = new SessionGraph(initialSessions);
         sessionGraphInstance._nodeToSession = nodeToSessionAssignment; // Assign the populated map
 
         // Build session DAG edges (_sessionEdges and _sessionPredecessorEdges)
@@ -660,6 +653,7 @@ export class KernelCompiler {
 
         // 2. Create Session DAG (Static)
         const sessionGraph = KernelCompiler.createSessionsFrom(graph);
+        sessionGraph.single_step = partition.shouldTrace;
         console.log("Compile Step: Session Graph created:", sessionGraph);
 
         // 4. Prepare GPU Resources (Instance Method using this.device)

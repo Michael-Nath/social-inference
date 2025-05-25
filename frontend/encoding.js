@@ -37,6 +37,10 @@ export function writeBool(view, offset, value) {
     return offset + 1;
 }
 
+export function readBool(view, offset) {
+    return [view.getUint8(offset) === 1, offset + 1];
+}
+
 /**
  * Reads a 32-bit big-endian integer from the DataView.
  * @param {DataView} view The DataView to read from.

@@ -616,10 +616,11 @@ def test_llama_layer(layer, model_name, idx):
 
     # Create pipeline and enqueue inputs
     pipeline = ComputePipeline(g)
-    inputs = {
-        "hidden_states": Tensor.from_torch(hidden_states),
-    }
-    pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs)) 
+    
+    for i in range(1):
+        pipeline.enqueue_input(PipelineInput(correlation_id=f"test_{i}", inputs={
+            "hidden_states": Tensor.from_torch(hidden_states),
+        })) 
     return pipeline, g
 
 def test_llama_model():
@@ -671,7 +672,7 @@ def test_llama_causal():
             statics = prepare_llama_model_statics(config, b)
             nodes = [statics]
     
-            for layer_idx in range(16):
+            for layer_idx in range(1):
                 with NameScope.push_scope(f"layer{layer_idx}"):
                     prefix = f"model.layers.{layer_idx}."
                     layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)

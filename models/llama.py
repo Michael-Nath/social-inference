@@ -4,7 +4,7 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 from accelerate import init_empty_weights
 import torch
 
-from inference import ComputeGraphBuilder, ComputeGraph, ComputeGraphNode
+from inference import ComputeGraphBuilder, ComputeGraphNode, PartitionName
 from inference.name_scope import NameScope
 from typing import Tuple
 
@@ -341,38 +341,46 @@ def llama_model(
     b: ComputeGraphBuilder, 
     tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
     position_ids: ComputeGraphNode,
-    weights: list[dict[str, ComputeGraphNode]] # dict per layer
+    weights: list[dict[str, ComputeGraphNode]], # dict per layer
+    outer_part: PartitionName,
+    inner_parts: list[PartitionName],
 ):
     # weights[0] houses all statics
     # compute the embeddings of the input tokens
 
-    dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
-    embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
-    cos_node, sin_node = rotary_embed(
+    with b.partition(outer_part):
+      dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
+      embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
+      cos_node, sin_node = rotary_embed(
         b, position_ids, weights[0]["inv_freq"], weights[0]["attn_scaling"]
-    )
+      )
 
     layer_out = embed_tokens
     for layer_idx in range(1, len(weights)):
+      with b.partition(inner_parts[layer_idx - 1]):
         with NameScope.push_scope(f"layer{layer_idx}"):
-            layer_out = llama_fwd(
-                b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
-                weights[layer_idx], (cos_node, sin_node)
-            )
+          layer_out = llama_fwd(
+            b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
+            weights[layer_idx], (cos_node, sin_node))
     
-    layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight"], weights[0]["final_norm_eps"])
+    with b.partition(outer_part): 
+      layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight"], weights[0]["final_norm_eps"])
     return layer_out
 
 def llama_causal(
-    b: ComputeGraphBuilder,
-    tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
-    position_ids: ComputeGraphNode,
-    weights: list[dict[str, ComputeGraphNode]] # dict per layer
+  b: ComputeGraphBuilder,
+  tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
+  position_ids: ComputeGraphNode,
+  weights: list[dict[str, ComputeGraphNode]], # dict per layer
+  outer_part: PartitionName,
+  layer_parts: list[PartitionName] 
 ):
-    with NameScope.push_scope("model"):
-        model_out = llama_model(b, tokens, position_ids, weights)
+  with NameScope.push_scope("model"):
+    model_out = llama_model(b, tokens, position_ids, weights, outer_part, layer_parts)
     # weights[0] houses all statics 
-    lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix"], 0, 1)
-    lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
-    logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
-    return logits
+  with NameScope.push_scope("post_model"):
+    with b.partition(outer_part):
+      lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix"], 0, 1)
+      lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
+      logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
+  return logits
