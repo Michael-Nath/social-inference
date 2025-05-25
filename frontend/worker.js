@@ -3072,6 +3072,38 @@ export class Coordinator {
         return new Registration(await response.json());
     }
 
+    async push_input(i) {
+        // const tokens = [128000, 13347, 856, 836, 374, 8388];
+        const tokens = [128000, 13347];
+        const pos = [0, 1];
+        const correlation_id = `${i}`
+        const inputs = {
+            "input_tokens": new CPUTensor({
+                data: new Uint32Array(tokens).buffer,
+                shape: [1,2],
+                dtype: "int32"
+            }),
+            "position_ids": new CPUTensor({
+                shape: [1,2],
+                data: new Uint32Array(pos).buffer,
+                dtype: "int32"
+            })
+        };
+        const pInput = new PipelineInput({correlation_id, inputs})
+        
+        const size = pInput.encodedSize();
+        const buffer = new ArrayBuffer(size);
+        const view = new DataView(buffer);
+        pInput.encode(view, 0);
+        const response = await fetch(`${this.url}/input`, {
+            method: "POST",
+            body: buffer,
+            headers: {
+                ["Content-Type"]: 'application/octet-stream'
+            }
+        });
+    }
+
     /**
      * Gets the next partition work from the coordination server
      * @param {string} partition_name - Partition to get work for
@@ -3892,6 +3924,77 @@ class SquaredNode extends Node {
             inputs: [{ name: SquaredNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
             outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
         });
+    }
+}
+
+/**
+ * @class PipelineInput
+ * @classdesc Represents an input to the pipeline, mirroring inference.pipeline.PipelineInput.
+ */
+export class PipelineInput {
+    /** @type {string} */
+    correlation_id;
+    /** @type {Object.<string, CPUTensor>} */ // NodeName (string) to CPUTensor
+    inputs;
+
+    /**
+     * @param {Object} options
+     * @param {string} options.correlation_id
+     * @param {Object.<string, CPUTensor>} options.inputs
+     */
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.inputs = options.inputs; // Should be an object like { "nodeName1": CPUTensor1, "nodeName2": CPUTensor2 }
+    }
+
+    /**
+     * Calculates the size of an encoded PipelineInput.
+     * This matches the structure decoded by `PipelineInput.decode` in `pipeline.py`
+     * and `size_encoded_pipeline_input` in `pipeline.py`.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        let size = sizeEncodedString(this.correlation_id);
+        size += 4; // For inputs_length (integer, 4 bytes)
+
+        for (const nodeName in this.inputs) {
+            if (this.inputs.hasOwnProperty(nodeName)) {
+                size += sizeEncodedString(nodeName);
+                const tensor = this.inputs[nodeName];
+                if (!(tensor instanceof CPUTensor)) {
+                    console.error("PipelineInput.encodedSize: Input tensor is not a CPUTensor", nodeName, tensor);
+                    throw new Error("PipelineInput.encodedSize expects CPUTensor instances in inputs map.");
+                }
+                size += tensor.encodedSize();
+            }
+        }
+        return size;
+    }
+
+    /**
+     * Writes a PipelineInput object to the DataView.
+     * This matches the structure decoded by `PipelineInput.decode` in `pipeline.py`
+     * and `write_encoded_pipeline_input` in `pipeline.py`.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.correlation_id);
+        
+        const inputKeys = Object.keys(this.inputs);
+        offset = writeBEInt(view, offset, inputKeys.length); // inputs_length
+
+        for (const nodeName of inputKeys) {
+            offset = writeEncodedString(view, offset, nodeName);
+            const tensor = this.inputs[nodeName];
+            if (!(tensor instanceof CPUTensor)) {
+                console.error("PipelineInput.encode: Input tensor is not a CPUTensor", nodeName, tensor);
+                throw new Error("PipelineInput.encode expects CPUTensor instances in inputs map.");
+            }
+            offset = tensor.encode(view, offset);
+        }
+        return offset;
     }
 }
 

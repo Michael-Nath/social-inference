@@ -3,6 +3,7 @@ from models.utils import prepare_llama_model_statics, package_llama_decoder_laye
 from inference import ComputeGraphBuilder
 from transformers import AutoConfig
 from inference import NameScope
+import torch
 
 MODEL_PATH = "meta-llama/Llama-3.2-1B"
 
@@ -15,24 +16,35 @@ def build_llaam_causal_mp():
   
   # create a partition per layer
 
-  outer_part  = "pre_and_post"
-  with b.partition(outer_part):
-    with NameScope.push_scope("statics"):
+  with b.partition("pre"):
+    with NameScope.push_scope("statics_pre"):
       statics = prepare_llama_model_statics(config, b)
-      nodes = [statics]
+  
+  with b.partition("post"):
+    with NameScope.push_scope("statics_post"):
+      statics["final_norm_weight_post"] = b.safetensor("final_norm.weight", "meta-llama/Llama-3.2-1B", "model.norm.weight")
+      final_norm_eps_torch = torch.tensor(1e-5, dtype=torch.float32) 
+      statics["final_norm_eps_post"] = b.fixed("final_norm.eps", final_norm_eps_torch.unsqueeze(0))
+      statics["embed_matrix_post"] = b.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
 
-  for p_idx in range(16):
-    with b.partition(f"layer_{p_idx}"):
+  nodes = [statics]
+  num_layers = 1
+
+  for p_idx in range(num_layers):
+    with b.partition(f"layer_{0}"):
       layer_idx = p_idx
       with NameScope.push_scope(f"layer{p_idx}"):
         prefix = f"model.layers.{layer_idx}."
         layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)
         nodes.append(layer_weights)
     
-  layer_parts = [f"layer_{i}" for i in range(16)]
-  our_out = llama_causal(b, input_tokens_node, pos_ids_node, nodes, outer_part, layer_parts) 
+  layer_parts = [f"layer_{0}" for i in range(num_layers)]
+  our_out = llama_causal(b, input_tokens_node, pos_ids_node, nodes, layer_parts) 
 
-  with b.partition(outer_part):
+  with b.partition("layer_0"):
     b.output("llama_out", our_out)
+  
+  # with b.partition("post"):
+  #   b.output("llama_out", our_out)
   g = b.build()
   return g

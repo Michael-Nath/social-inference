@@ -39,6 +39,7 @@ def rotary_embed(b: ComputeGraphBuilder, position_ids_node: ComputeGraphNode, in
 
     pos_ids_shape_node = b.shape("rotary_embed/pos_ids_shape", position_ids_node)
     batch_size_scalar_node = b.index("rotary_embed/batch_size_scalar", pos_ids_shape_node, dim0_node)
+    seq_len_scalar_node = b.index("rotary_embed/seq_len_scalar", pos_ids_shape_node, dim1_node)
 
     inv_freq_expanded = b.broadcast(
         "rotary_embed/inv_freq_expanded",
@@ -57,10 +58,11 @@ def rotary_embed(b: ComputeGraphBuilder, position_ids_node: ComputeGraphNode, in
     emb = b.cat("rotary_embed/emb_cat", freqs, freqs, cat_axis_node)
 
     cos_val = b.cos("rotary_embed/emb_cos", emb)
-    cos_scaled = b.hadamard("rotary_embed/cos_scaled", cos_val, attention_scaling_node)
+    attn_scale_bcasted = b.broadcast("attn_scale_bcasted", attention_scaling_node, dim1_node, seq_len_scalar_node)
+    cos_scaled = b.hadamard("rotary_embed/cos_scaled", cos_val, attn_scale_bcasted)
 
     sin_val = b.sin("rotary_embed/emb_sin", emb)
-    sin_scaled = b.hadamard("rotary_embed/sin_scaled", sin_val, attention_scaling_node)
+    sin_scaled = b.hadamard("rotary_embed/sin_scaled", sin_val, attn_scale_bcasted)
     return cos_scaled, sin_scaled
 
 def apply_llama_rope(b: ComputeGraphBuilder, q: ComputeGraphNode, k: ComputeGraphNode, cos: ComputeGraphNode, sin: ComputeGraphNode):
@@ -227,11 +229,12 @@ def llama_attn(
     
     with NameScope.push_scope("llama_rope"):
         query_states, key_states = apply_llama_rope(b, query_states, key_states, *position_embeddings)
-    
     with NameScope.push_scope("attn_weights"):
         k_T = b.transpose("transposed<2,3>", key_states, 2, 3)
         attn_weights = b.matmul("matmul", query_states, k_T)
-    
+        scaling = b.fixed("attn_scaler", torch.tensor(0.125).broadcast_to((1, 32, 2, 2)))
+        attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)
+     
     attn_scores = b.softmax("softmax", attn_weights, dim=two_node) 
     with NameScope.push_scope("attn_output"):
         attn_out = b.matmul("matmul", attn_scores, value_states)
@@ -327,6 +330,7 @@ def llama_fwd(
         layernormed = layernorm(b, hidden_states, **weight_dict["input_layernorm"])
     with NameScope.push_scope('attention'):
         attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["self_attn"])
+    return attention
     with NameScope.push_scope("res"):
         res_added = b.add("res_added", hidden_states, attention)
     with NameScope.push_scope("post-layernorm"):
@@ -342,13 +346,12 @@ def llama_model(
     tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
     position_ids: ComputeGraphNode,
     weights: list[dict[str, ComputeGraphNode]], # dict per layer
-    outer_part: PartitionName,
     inner_parts: list[PartitionName],
 ):
     # weights[0] houses all statics
     # compute the embeddings of the input tokens
 
-    with b.partition(outer_part):
+    with b.partition("pre"):
       dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
       embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
       cos_node, sin_node = rotary_embed(
@@ -358,13 +361,13 @@ def llama_model(
     layer_out = embed_tokens
     for layer_idx in range(1, len(weights)):
       with b.partition(inner_parts[layer_idx - 1]):
-        with NameScope.push_scope(f"layer{layer_idx}"):
+        with NameScope.push_scope(f"layer{layer_idx-1}"):
           layer_out = llama_fwd(
             b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
             weights[layer_idx], (cos_node, sin_node))
     
-    with b.partition(outer_part): 
-      layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight"], weights[0]["final_norm_eps"])
+    # with b.partition("post"): 
+    #   layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight_post"], weights[0]["final_norm_eps_post"])
     return layer_out
 
 def llama_causal(
@@ -372,15 +375,14 @@ def llama_causal(
   tokens: ComputeGraphNode, # input tokens to the model; must have shape (bsz, seq_len)
   position_ids: ComputeGraphNode,
   weights: list[dict[str, ComputeGraphNode]], # dict per layer
-  outer_part: PartitionName,
   layer_parts: list[PartitionName] 
 ):
   with NameScope.push_scope("model"):
-    model_out = llama_model(b, tokens, position_ids, weights, outer_part, layer_parts)
+    model_out = llama_model(b, tokens, position_ids, weights, layer_parts)
     # weights[0] houses all statics 
-  with NameScope.push_scope("post_model"):
-    with b.partition(outer_part):
-      lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix"], 0, 1)
-      lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
-      logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
-  return logits
+  # with NameScope.push_scope("post_model"):
+  #   with b.partition("post"):
+  #     lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix_post"], 0, 1)
+  #     lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
+  #     logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
+  return model_out

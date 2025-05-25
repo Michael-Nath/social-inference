@@ -21,6 +21,17 @@ class PipelineInput:
     correlation_id: str
     inputs: dict[NodeName, Tensor]
 
+    @classmethod
+    def decode(cls, offset: int, data: bytes):
+        correlation_id, offset = read_encoded_string(offset, data)
+        inputs_length, offset = read_be_int(offset, data)
+        inputs = {}
+        for _ in range(inputs_length):
+            node, offset = read_encoded_string(offset, data)
+            tensor, offset = read_encoded_tensor(offset, data)
+            inputs[node] = tensor
+        return cls(correlation_id, inputs), offset
+
 @dataclass
 class PipelineOutput:
     """
@@ -156,7 +167,7 @@ class InflightWorkManager:
     between workers.
     """
 
-    GRACE_PERIOD_S: float = 20.0
+    GRACE_PERIOD_S: float = 45.0
 
     work: dict[PartitionName, dict[str, PartitionWork]]
     times: dict[PartitionName, dict[str, float]]
@@ -247,14 +258,14 @@ class ComputePipeline:
                 for edge in edges:
                     self.edge_queues[edge] = queue
 
-    def enqueue_input(self, input: PipelineInput):
+    def enqueue_input(self, pinput: PipelineInput):
         """
         Enqueues elements for the pipeline
         """
         # Build correlated elements
         elements = {}
-        for node, tensor in input.inputs.items():
-            elements[node] = CorrelatedTensor(correlation_id=input.correlation_id, tensor=tensor)
+        for node, tensor in pinput.inputs.items():
+            elements[node] = CorrelatedTensor(correlation_id=pinput.correlation_id, tensor=tensor)
 
         # Ensure that all elements in the PARTITION_INPUT partition are covered
         for node in self.graph.list_partition(PARTITION_INPUT):
@@ -289,11 +300,11 @@ class ComputePipeline:
         Gets the next partition work for a partition, or None if no work is available.
         """
 
-        with self.lock:
-            next_overdue_work = self.inflight_work_manager.next_overdue_work(partition)
-            if next_overdue_work is not None:
-                self.inflight_work_manager.mark_sent(next_overdue_work)
-                return next_overdue_work
+        # with self.lock:
+        #     next_overdue_work = self.inflight_work_manager.next_overdue_work(partition)
+        #     if next_overdue_work is not None:
+        #         self.inflight_work_manager.mark_sent(next_overdue_work)
+        #         return next_overdue_work
 
         elements = self.partition_queues[partition].pop(blocking=False)
         if elements is None:
@@ -328,11 +339,10 @@ class ComputePipeline:
         Submits partition work to the pipeline.
         """
 
-        with self.lock:
-            # If the work was not alive, discard it
-            if not self.inflight_work_manager.acknowledge_work(work):
-                return
-
+        # with self.lock:
+        #     # If the work was not alive, discard it
+        #     if not self.inflight_work_manager.acknowledge_work(work):
+        #         return
         for output in work.outputs:
             forward_edges = self.graph.get_forward_edges(output.node, src_output=output.output)
             for edge in forward_edges:

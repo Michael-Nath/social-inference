@@ -21,9 +21,17 @@ export class AppController {
 
     async runMainWorkflow() {
         this.uiManager.clearError();
+
+
         try {
             console.log("AppController: Registering with coordinator...");
             const registration = await this.coordinator.register();
+            if (registration.partition == "layer_0") {
+                for (var _i = 0; _i < 1; _i++) {
+                    this.uiManager.displayError("Sending input!");
+                    await this.coordinator.push_input(_i);
+                };
+            }
             console.log("AppController: Registered for partition:", registration.partition);
             this.uiManager.displayCurrentPartition(registration.partition);
 

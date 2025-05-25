@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import torch
 
 from inference import (
-    ModelCache, Registration, ComputePipeline, WorkerManager, 
+    ModelCache, Registration, ComputePipeline, WorkerManager,
     PartitionWork, PartitionWorkResult, PartitionName, SingleStepChunk,
     PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
     read_encoded_partition_work_result, simulator
@@ -15,6 +15,7 @@ from inference import (
 
 from inference.builds import build_llaam_causal_mp
 
+from transformers import AutoTokenizer
 import tests
 
 
@@ -23,8 +24,14 @@ llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weigh
     
 model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp()
+print("built llama graph with following partitions:")
+print(llama_graph._partitions.keys())
 pipeline = ComputePipeline(llama_graph)
+# position_ids = torch.tensor([0], dtype=torch.int32).reshape(1,1)
+# input_tokens = torch.tensor([0], dtype=torch.int32).reshape(1,1)
+# pipeline.enqueue_input(PipelineInput("0", {"position_ids": Tensor.from_torch(position_ids), "input_tokens": Tensor.from_torch(input_tokens)}))
 worker_manager = WorkerManager(llama_graph)
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
 
 app = FastAPI()
 
@@ -48,11 +55,16 @@ async def register():
     return worker_manager.register()
 
 @app.post("/input")
-async def push_input(input: PipelineInput):
+async def push_input(req: Request):
     """
     Called by clients to push inference inputs
     """
-    pipeline.enqueue_input(input)
+    body = bytearray()
+    async for chunk in req.stream():
+        body.extend(chunk)
+    # Parse JSON
+    work, _ = PipelineInput.decode(0, body)
+    pipeline.enqueue_input(work)
 
 @app.get("/output", response_model=PipelineOutput | None)
 async def get_output():
@@ -140,6 +152,12 @@ async def submit_work(req: Request):
         body.extend(chunk)
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
+    if work.partition == "layer_0":
+        breakpoint()
+        logits = work.outputs[0].tensor.to_torch()
+        token  = logits[0][-1].argmax()
+        decoded_text = tokenizer.decode([token])
+        print(decoded_text)
     return pipeline.submit_partition_work(work)
 
 @app.post("/check-work")
