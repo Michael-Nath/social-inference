@@ -233,10 +233,13 @@ def llama_attn(
     with NameScope.push_scope("attn_weights"):
         k_T = b.transpose("transposed<2,3>", key_states, 2, 3)
         attn_weights = b.matmul("matmul", query_states, k_T)
+        scaling = b.fixed('attn_scalar', torch.tensor(0.125).broadcast_to(1,32,1,1))
+        scaling = b.broadcast('attn_scalar_bcasted', scaling, two_node, seq_len)
+        scaling = b.broadcast('attn_scalar_bcasted_2', scaling, three_node, seq_len)
         # scaling = b.fixed("attn_scaler", torch.tensor(0.125).broadcast_to((1, 32, 2, 2)))
-        # attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)
+        attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)
     with NameScope.push_scope("causal"):
-        causal_mask = b.upper_triangular_mask("causal", 2, "int32")
+        causal_mask = b.upper_triangular_mask("causal", 4, "int32")
         mask_unsqz  = b.unsqueeze("causal_unsqz", causal_mask, zero_node) 
         mask_unsqz  = b.unsqueeze("causal_unsqz_unsqz", mask_unsqz, zero_node)
         causal_mask_bcast = b.broadcast("causal_bcast", mask_unsqz, one_node, nhead_node_q)
@@ -336,7 +339,6 @@ def llama_fwd(
         layernormed = layernorm(b, hidden_states, **weight_dict["input_layernorm"])
     with NameScope.push_scope('attention'):
         attention  = llama_attn(b, layernormed, head_dim, n_kv_heads, position_embeddings=position_embeddings, **weight_dict["self_attn"])
-    return attention
     with NameScope.push_scope("res"):
         res_added = b.add("res_added", hidden_states, attention)
     with NameScope.push_scope("post-layernorm"):
@@ -357,7 +359,7 @@ def llama_model(
     # weights[0] houses all statics
     # compute the embeddings of the input tokens
 
-    with b.partition("pre"):
+    with b.partition("p0"):
       dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
       embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
       cos_node, sin_node = rotary_embed(
@@ -372,8 +374,8 @@ def llama_model(
             b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
             weights[layer_idx], (cos_node, sin_node))
     
-    # with b.partition("post"): 
-    #   layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight_post"], weights[0]["final_norm_eps_post"])
+    with b.partition("p0"): 
+      layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight_post"], weights[0]["final_norm_eps_post"])
     return layer_out
 
 def llama_causal(
@@ -386,9 +388,9 @@ def llama_causal(
   with NameScope.push_scope("model"):
     model_out = llama_model(b, tokens, position_ids, weights, layer_parts)
     # weights[0] houses all statics 
-  # with NameScope.push_scope("post_model"):
-  #   with b.partition("post"):
-  #     lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix_post"], 0, 1)
-  #     lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
-  #     logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
-  return model_out
+  with NameScope.push_scope("post_model"):
+    with b.partition("p0"):
+      lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix_post"], 0, 1)
+      lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
+      logits = b.matmul("logits", model_out, lm_head_weight_unsqz)
+  return logits

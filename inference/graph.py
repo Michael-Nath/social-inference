@@ -933,7 +933,6 @@ class MaskedFillNode(ComputeGraphNode):
 class UpperTriangularMaskNode(ComputeGraphNode):
     """
     Generates a square mask tensor where elements (r, c) are 1 if c > r, else 0.
-    Diagonal is fixed to 0.
     """
     dimension: int
     output_dtype: str

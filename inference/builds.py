@@ -6,6 +6,7 @@ from inference import NameScope
 import torch
 
 MODEL_PATH = "meta-llama/Llama-3.2-1B"
+# MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
 
 def build_llaam_causal_mp():
   b = ComputeGraphBuilder() 
@@ -16,11 +17,11 @@ def build_llaam_causal_mp():
   
   # create a partition per layer
 
-  with b.partition("pre"):
+  with b.partition("p0"):
     with NameScope.push_scope("statics_pre"):
       statics = prepare_llama_model_statics(config, b)
   
-  with b.partition("post"):
+  with b.partition("p0"):
     with NameScope.push_scope("statics_post"):
       statics["final_norm_weight_post"] = b.safetensor("final_norm.weight", "meta-llama/Llama-3.2-1B", "model.norm.weight")
       final_norm_eps_torch = torch.tensor(1e-5, dtype=torch.float32) 
@@ -31,17 +32,17 @@ def build_llaam_causal_mp():
   num_layers = 1
 
   for p_idx in range(num_layers):
-    with b.partition(f"layer_{0}"):
+    with b.partition(f"p0"):
       layer_idx = p_idx
       with NameScope.push_scope(f"layer{p_idx}"):
         prefix = f"model.layers.{layer_idx}."
         layer_weights = package_llama_decoder_layer_weights(layer_params, b, prefix, MODEL_PATH)
         nodes.append(layer_weights)
     
-  layer_parts = [f"layer_{0}" for i in range(num_layers)]
+  layer_parts = [f"p0" for i in range(num_layers)]
   our_out = llama_causal(b, input_tokens_node, pos_ids_node, nodes, layer_parts) 
 
-  with b.partition("layer_0"):
+  with b.partition("p0"):
     b.output("llama_out", our_out)
   
   # with b.partition("post"):

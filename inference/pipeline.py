@@ -10,8 +10,10 @@ from inference.encoding import read_be_int, read_encoded_string, size_encoded_st
 from .graph import ComputeGraph, ComputeGraphEdge, NodeName, PartitionName, PARTITION_INPUT, PARTITION_OUTPUT
 from .tensor import Tensor, read_encoded_tensor, size_encoded_tensor, write_encoded_tensor
 from .queue import CorrelatedQueue, CorrelatedTensor
+from transformers import AutoTokenizer
 
 import torch
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
 
 @dataclass
 class PipelineInput:
@@ -92,6 +94,8 @@ class SingleStepChunk:
             if our.tensor.dtype != other_node.tensor.dtype:
                 breakpoint()
                 raise ValueError(f"Output {other_node.node}.{other_node.output} dtype mismatch: {other_node.tensor.dtype} != {our.tensor.dtype}")
+            if our.tensor.shape == [1,32,2,2]:
+                pass
             if not torch.allclose(other_node.tensor.to_torch(), our.tensor.to_torch(), rtol=1e-4, atol=1e-4):
                 breakpoint()
                 raise ValueError(f"Output {other_node}={other.node.tensor.to_torch()} does not match our output {our}={our.tensor.to_torch()}")
@@ -347,6 +351,11 @@ class ComputePipeline:
             forward_edges = self.graph.get_forward_edges(output.node, src_output=output.output)
             for edge in forward_edges:
                 self.edge_queues[edge].put(edge, CorrelatedTensor(correlation_id=work.correlation_id, tensor=output.tensor))
+
+        if work.partition == "p0":
+            logits = work.outputs[-1].tensor.to_torch()
+            token  = logits[0][-1].argmax()
+            return {"next_token": token.item(), "decoded_text": tokenizer.decode(token)}
 
     def dequeue_output(self, blocking: bool = True, timeout: float | None = None) -> PipelineOutput | None:
         """

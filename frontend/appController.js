@@ -17,19 +17,19 @@ export class AppController {
 
         this.coordinator = new Coordinator({ url: "" }); // Configure URL if needed
         this.compiler = new KernelCompiler(this.device);
+        this.tokens = [128000,     40,   1093,    311]
+        this.decodedTokens = ""
     }
 
     async runMainWorkflow() {
         this.uiManager.clearError();
-
-
         try {
             console.log("AppController: Registering with coordinator...");
             const registration = await this.coordinator.register();
-            if (registration.partition == "layer_0") {
+            if (registration.partition == "p0") {
                 for (var _i = 0; _i < 1; _i++) {
                     this.uiManager.displayError("Sending input!");
-                    await this.coordinator.push_input(_i);
+                    await this.coordinator.push_input(_i, this.tokens);
                 };
             }
             console.log("AppController: Registered for partition:", registration.partition);
@@ -39,6 +39,7 @@ export class AppController {
 
             while (true) {
                 console.log("AppController: Getting work for partition:", registration.partition);
+                this.uiManager.displayDecodedText(this.decodedTokens)
                 const work = await this.coordinator.get_work(registration.partition);
                 if (!work) {
                     console.log("AppController: No work available for partition:", registration.partition);
@@ -100,12 +101,21 @@ export class AppController {
                     console.log("AppController: Submitting work results...");
                 }
 
-                await this.coordinator.submit_work(new PartitionWorkResult({
+                const submitResponse = await this.coordinator.submit_work(new PartitionWorkResult({
                     partition: work.partition,
                     correlation_id: work.correlation_id,
                     outputs: outputAssignments,
                 }));
                 console.log("AppController: Work results submitted successfully.");
+                const nextToken = submitResponse.next_token;
+                const decodedText = submitResponse.decoded_text;
+                this.tokens.push(nextToken);
+                console.log(submitResponse);
+                // Display the decoded text
+                console.log("Decoded text:", decodedText);
+                if (decodedText && decodedText.trim()) {
+                    this.decodedTokens += decodedText;
+                }
                 // Optionally display a success message via UIManager
             }
         } catch (error) {

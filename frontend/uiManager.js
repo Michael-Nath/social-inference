@@ -25,6 +25,20 @@ export class UIManager {
         }
     }
 
+    displayDecodedText(text) {
+        if (this.currentPartitionElement && text && text.trim()) {
+            // Create or get the decoded text container
+            let decodedTextDiv = document.getElementById('decoded-text-container');
+            if (!decodedTextDiv) {
+                decodedTextDiv = document.createElement('div');
+                decodedTextDiv.id = 'decoded-text-container';
+                decodedTextDiv.style.cssText = 'margin-top: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; background: #f9f9f9; font-family: monospace; white-space: pre-wrap;';
+                this.currentPartitionElement.parentNode.insertBefore(decodedTextDiv, this.currentPartitionElement.nextSibling);
+            }
+            decodedTextDiv.textContent = text;
+        }
+    }
+
     displayError(message) {
         console.error("UIManager Displaying Error:", message);
         if (this.errorDisplayElement) {

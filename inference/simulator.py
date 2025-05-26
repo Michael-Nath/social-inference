@@ -368,14 +368,19 @@ def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) ->
                 return output
             elif isinstance(encoded_node, UpperTriangularMaskNode):
                 dimension = encoded_node.dimension
-                output_dtype = torch.int32
+                output_dtype_str = encoded_node.output_dtype
+                if output_dtype_str == "uint8":
+                    output_dtype = torch.uint8
+                elif output_dtype_str == "int32":
+                    output_dtype = torch.int32
+                elif output_dtype_str == "float32":
+                    output_dtype = torch.float32
+                else:
+                    raise ValueError(f"Unsupported dtype {output_dtype_str} for UpperTriangularMaskNode in simulator")
                 
-                # Create a square matrix of the specified dimension
                 indices = torch.arange(dimension)
-                # Create row and column indices
                 col_idx = indices.unsqueeze(0).expand(dimension, -1)
                 row_idx = indices.unsqueeze(1).expand(-1, dimension)
-                # Create mask where col_idx > row_idx (upper triangular, excluding diagonal)
                 output = (col_idx > row_idx).to(output_dtype)
                 
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output

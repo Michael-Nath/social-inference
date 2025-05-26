@@ -15,7 +15,6 @@ from inference import (
 
 from inference.builds import build_llaam_causal_mp
 
-from transformers import AutoTokenizer
 import tests
 
 
@@ -29,7 +28,6 @@ print(llama_graph._partitions.keys())
 pipeline = ComputePipeline(llama_graph)
 # pipeline, llama_graph = tests.test_softmax()
 worker_manager = WorkerManager(llama_graph)
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
 
 app = FastAPI()
 
@@ -126,7 +124,7 @@ async def get_work(partition_name: PartitionName):
     """
     w = pipeline.get_partition_work(partition_name)
     if w is not None:
-        w.should_trace = True
+        w.should_trace = False 
         inflight_work[(w.partition, w.correlation_id)] = w
         tensor_bytes = bytearray(size_encoded_partition_work(w))
         write_encoded_partition_work(tensor_bytes, 0, w)
@@ -150,12 +148,6 @@ async def submit_work(req: Request):
         body.extend(chunk)
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
-    if work.partition == "layer_0":
-        breakpoint()
-        logits = work.outputs[0].tensor.to_torch()
-        token  = logits[0][-1].argmax()
-        decoded_text = tokenizer.decode([token])
-        print(decoded_text)
     return pipeline.submit_partition_work(work)
 
 @app.post("/check-work")

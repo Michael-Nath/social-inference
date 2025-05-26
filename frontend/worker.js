@@ -8,7 +8,7 @@ import {
     writeBool,
     readBool
 } from "./encoding.js";
-import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
+import { CPUKernel, CPUTensor, GPUKernel, GPUTensor, Tensor } from "./kernel.js";
 import { SafeTensorCache } from "./tensorcache.js";
 
 /*
@@ -3077,19 +3077,19 @@ export class Coordinator {
         return new Registration(await response.json());
     }
 
-    async push_input(i) {
+    async push_input(i, tokens) {
         // const tokens = [128000, 13347, 856, 836, 374, 8388];
-        const tokens = [128000, 13347];
-        const pos = [0, 1];
+        // const tokens = [128000, 13347];
+        const pos = Array.from({length: tokens.length}, (_, i) => i);
         const correlation_id = `${i}`
         const inputs = {
             "input_tokens": new CPUTensor({
                 data: new Uint32Array(tokens).buffer,
-                shape: [1,2],
+                shape: [1,tokens.length],
                 dtype: "int32"
             }),
             "position_ids": new CPUTensor({
-                shape: [1,2],
+                shape: [1,tokens.length],
                 data: new Uint32Array(pos).buffer,
                 dtype: "int32"
             })
@@ -3161,13 +3161,14 @@ export class Coordinator {
         const view = new DataView(buffer);
         work.encode(view, 0);
         
-        await fetch(`${this.url}/work`, {
+        const response = await fetch(`${this.url}/work`, {
             method: "POST",
             body: buffer,
-            headers: {
-                ["Content-Type"]: 'application/octet-stream'
-            }
+            // headers: {
+            //     ["Content-Type"]: 'application/octet-stream'
+            // }
         });
+        return await response.json();
     }
 }
 
@@ -4014,7 +4015,7 @@ class UpperTriangularMaskNode extends Node {
         }
         this.dimension = options.dimension;
         this.output_dtype = options.output_dtype || "uint8";
-        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: false });
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: true });
     }
 
     static decode(view, offset, name, partition, type) {
@@ -4039,63 +4040,45 @@ class UpperTriangularMaskNode extends Node {
     getCPUKernel() {
         return new CPUKernel({
             name: 'upper_triangular_mask_cpu',
+            inputs: [],
+            outputs: [DEFAULT_NODE_OUTPUT],
             func: (executionContext) => {
                 const outputTensor = CPUTensor.uninitialized([this.dimension, this.dimension], this.output_dtype);
                 const outputView = outputTensor.getTypedArray();
                 for (let r = 0; r < this.dimension; r++) {
                     for (let c = 0; c < this.dimension; c++) {
-                        outputView[r * this.dimension + c] = (c > r) ? 1 : 0; // Reverted condition
+                        outputView[r * this.dimension + c] = c > r ? 1 : 0;
                     }
                 }
                 return { [DEFAULT_NODE_OUTPUT]: outputTensor };
-            },
-            inputs: [],
-            outputs: [DEFAULT_NODE_OUTPUT],
+            }
         });
     }
 
     async getGPUKernel() {
-        return new GPUKernel({
-            name: `upper_triangular_mask_gpu<${this.dimension}>`,
-            shader: `
-                struct Params {
-                    dim: u32,
-                };
-                @group(0) @binding(0) var<storage, read_write> output_buffer: array<u32>;
-                @group(0) @binding(1) var<uniform> params: Params;
+        const code = `
+            @group(0) @binding(0) var<storage, read_write> output: array<${this.output_dtype}>;
+            @group(0) @binding(1) var<uniform> params: vec2<u32>; // dimension
 
-                @compute @workgroup_size(16, 16, 1)
-                fn main(@global_id(global_invocation_id) id: vec3<u32>) {
-                    let r = id.x;
-                    let c = id.y;
-
-                    if (r >= params.dim || c >= params.dim) {
-                        return;
-                    }
-                    let val = select(0u, 1u, c > r); // Reverted condition
-                    output_buffer[r * params.dim + c] = val;
+            @compute @workgroup_size(16, 16)
+            fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+                let dim = params[0];
+                let r = global_id.x;
+                let c = global_id.y;
+                if (r >= dim || c >= dim) {
+                    return;
                 }
-            `,
-            dimensionBuffer: {
-                func: (executionContext) => {
-                    return new Uint32Array([this.dimension]);
-                },
-                index: 1,
-            },
-            workgroupFunction: (executionContext) => {
-                const workgroupSizeX = 16;
-                const workgroupSizeY = 16;
-                return {
-                    x: Math.ceil(this.dimension / workgroupSizeX),
-                    y: Math.ceil(this.dimension / workgroupSizeY),
-                    z: 1,
-                };
-            },
-            entryPoint: "main",
-            inputs: [],
-            outputs: [
-                { name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 0 } },
-            ],
+                let idx = r * dim + c;
+                output[idx] = select(${this.output_dtype}(0), ${this.output_dtype}(1), c > r);
+            }
+        `;
+
+        return new GPUKernel({
+            code,
+            uniforms: [{ name: "params", data: new Uint32Array([this.dimension]) }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, dimensions: [this.dimension, this.dimension], dtype: this.output_dtype }],
+            workgroupSize: [16, 16],
+            workloadSize: [this.dimension, this.dimension]
         });
     }
 }
@@ -4125,40 +4108,36 @@ class MaskedFillNode extends Node {
     getOutputShape(executionContext) {
         const inputTensor = executionContext.cpu(MaskedFillNode.INPUT) || executionContext.gpu(MaskedFillNode.INPUT);
         if (!inputTensor || !inputTensor.shape) {
-            throw new Error(`MaskedFillNode (${this.name}): Missing input tensor or shape for 'input'.`);
+            throw new Error(`MaskedFillNode (${this.name}): Input tensor or its shape is undefined.`);
         }
-        return [...inputTensor.shape];
+        return inputTensor.shape;
     }
 
     getCPUKernel() {
         return new CPUKernel({
             name: 'masked_fill_cpu',
+            inputs: [MaskedFillNode.INPUT, MaskedFillNode.MASK, MaskedFillNode.VALUE],
+            outputs: [DEFAULT_NODE_OUTPUT],
             func: (executionContext) => {
                 const inputTensor = executionContext.cpu(MaskedFillNode.INPUT);
                 const maskTensor = executionContext.cpu(MaskedFillNode.MASK);
                 const valueTensor = executionContext.cpu(MaskedFillNode.VALUE);
 
                 if (!inputTensor || !maskTensor || !valueTensor) {
-                    throw new Error(`MaskedFillNode (${this.name}) CPU kernel: Missing one or more input tensors.`);
+                    throw new Error(`MaskedFillNode (${this.name}): Missing one or more input tensors in CPUKernel.`);
                 }
 
-                const outputTensor = CPUTensor.uninitialized(inputTensor.shape, inputTensor.dtype);
-                const outputView = outputTensor.getTypedArray();
-                const inputView = inputTensor.getTypedArray();
-                const maskView = maskTensor.getTypedArray();
-                const fillValue = valueTensor.getTypedArray()[0];
+                const outputTensor = new CPUTensor(inputTensor.shape, inputTensor.dtype);
+                const inputData = inputTensor.getTypedArray();
+                const maskData = maskTensor.getTypedArray();
+                const outputData = outputTensor.getTypedArray();
+                const fillValue = valueTensor.data[0];
 
-                if (inputView.length !== maskView.length) {
-                    throw new Error(`MaskedFillNode (${this.name}) CPU kernel: Input and mask tensors must have the same number of elements. Input: ${inputView.length}, Mask: ${maskView.length}.`);
-                }
-
-                for (let i = 0; i < inputView.length; i++) {
-                    outputView[i] = maskView[i] === 1 ? fillValue : inputView[i];
+                for (let i = 0; i < inputData.length; i++) {
+                    outputData[i] = maskData[i] ? fillValue : inputData[i];
                 }
                 return { [DEFAULT_NODE_OUTPUT]: outputTensor };
-            },
-            inputs: [MaskedFillNode.INPUT, MaskedFillNode.MASK, MaskedFillNode.VALUE],
-            outputs: [DEFAULT_NODE_OUTPUT],
+            }
         });
     }
 

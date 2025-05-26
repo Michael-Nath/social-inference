@@ -288,7 +288,10 @@ class ModelCache:
     self._caches = {
       "meta-llama/Llama-3.2-1B": SafeTensorCache([
         "https://huggingface.co/meta-llama/Llama-3.2-1B/resolve/main/model.safetensors"
-      ])
+      ]),
+      # "meta-llama/Llama-3.2-3B-Instruct": SafeTensorCache([
+      #   "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/model.safetensors"
+      # ])
     }
   def get_cache(self, model: str) -> SafeTensorCache:
     return self._caches[model]
