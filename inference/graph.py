@@ -933,19 +933,18 @@ class MaskedFillNode(ComputeGraphNode):
 class UpperTriangularMaskNode(ComputeGraphNode):
     """
     Generates a square mask tensor where elements (r, c) are 1 if c > r, else 0.
+    Diagonal is fixed to 0.
     """
-    dimension: int
+    DIM: NodeInput = "dim"
     output_dtype: str
 
-    def __init__(self, name: NodeName, partition: PartitionName, dimension: int, output_dtype: str = "uint8"):
+    def __init__(self, name: NodeName, partition: PartitionName, output_dtype: str = "uint8"):
         super().__init__(name, partition)
-        self.dimension = dimension
         self.output_dtype = output_dtype
 
     def encode_binary(self, offset: int, data: bytearray) -> int:
         offset = super().encode_binary(offset, data)
         offset = write_encoded_string(data, offset, "upper_triangular_mask")
-        offset = write_be_int(data, offset, self.dimension)
         offset = write_encoded_string(data, offset, self.output_dtype)
         return offset
     
@@ -953,12 +952,11 @@ class UpperTriangularMaskNode(ComputeGraphNode):
         return (
             super().size_binary() +
             size_encoded_string("upper_triangular_mask") +
-            4 +  # For dimension (int)
             size_encoded_string(self.output_dtype)
         )
 
     def get_input_names(self) -> set[str]:
-        return set()
+        return {UpperTriangularMaskNode.DIM}
 
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -1284,11 +1282,12 @@ class ComputeGraphBuilder:
         self._make_edge(value_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.VALUE)
         return node
 
-    def upper_triangular_mask(self, name: NodeName, dimension: int, output_dtype: str = "uint8") -> UpperTriangularMaskNode:
+    def upper_triangular_mask(self, name: NodeName, dimension: ComputeGraphNode, output_dtype: str = "uint8") -> UpperTriangularMaskNode:
         name = NameScope.name(name)
         self._check_node(name)
-        node = UpperTriangularMaskNode(name, self._active_partition, dimension, output_dtype)
+        node = UpperTriangularMaskNode(name, self._active_partition, output_dtype)
         self._nodes[name] = node
+        self._make_edge(dimension.name, DEFAULT_NODE_OUTPUT, name, UpperTriangularMaskNode.DIM);
         return node
 
     def build(self, copy: bool = False) -> ComputeGraph:

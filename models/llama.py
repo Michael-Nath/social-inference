@@ -239,7 +239,7 @@ def llama_attn(
         # scaling = b.fixed("attn_scaler", torch.tensor(0.125).broadcast_to((1, 32, 2, 2)))
         attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)
     with NameScope.push_scope("causal"):
-        causal_mask = b.upper_triangular_mask("causal", 4, "int32")
+        causal_mask = b.upper_triangular_mask("causal", seq_len, "int32")
         mask_unsqz  = b.unsqueeze("causal_unsqz", causal_mask, zero_node) 
         mask_unsqz  = b.unsqueeze("causal_unsqz_unsqz", mask_unsqz, zero_node)
         causal_mask_bcast = b.broadcast("causal_bcast", mask_unsqz, one_node, nhead_node_q)

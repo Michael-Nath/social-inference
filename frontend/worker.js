@@ -4005,46 +4005,46 @@ export class PipelineInput {
 }
 
 class UpperTriangularMaskNode extends Node {
-    dimension;
+    static DIM = "dim"
+    // dimension;
     output_dtype;
 
     constructor(options) {
         super(options);
-        if (options.dimension === undefined) {
-            throw new Error(`UpperTriangularMaskNode (${this.name}): Must provide 'dimension'.`);
-        }
-        this.dimension = options.dimension;
         this.output_dtype = "int32";
-        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: true });
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: false });
     }
 
     static decode(view, offset, name, partition, type) {
-        let dimension, output_dtype_str;
-        [dimension, offset] = readBEInt(view, offset);
+        let output_dtype_str;
         [output_dtype_str, offset] = readEncodedString(view, offset);
-        return [new UpperTriangularMaskNode({ name, partition, type, dimension, output_dtype: output_dtype_str }), offset];
+        return [new UpperTriangularMaskNode({ name, partition, type, output_dtype: output_dtype_str }), offset];
     }
 
     estimateWeight(inputsMap) {
-        return this.dimension * this.dimension;
+        // return this.dimension * this.dimension;
+        return 0;
     }
 
-    get_inputs() { return []; }
+    get_inputs() { return [UpperTriangularMaskNode.DIM]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
 
     getOutputShape(executionContext) {
         return [this.dimension, this.dimension];
+        return executionContext.output_dtype
     }
 
     getCPUKernel() {
         return new CPUKernel({
             name: 'upper_triangular_mask_cpu',
-            inputs: [],
+            inputs: [UpperTriangularMaskNode.DIM],
             outputs: [DEFAULT_NODE_OUTPUT],
             func: (executionContext) => {
-                console.log(this.output_dtype);
-                const outputTensor = CPUTensor.uninitialized([this.dimension, this.dimension], this.output_dtype);
+                const dimTensor = executionContext.cpu(UpperTriangularMaskNode.DIM);
+                const dim = dimTensor.data[0];
+                console.log(dim);
+                const outputTensor = CPUTensor.uninitialized([dim, dim], this.output_dtype);
                 const outputView = outputTensor.getTypedArray();
                 for (let r = 0; r < this.dimension; r++) {
                     for (let c = 0; c < this.dimension; c++) {

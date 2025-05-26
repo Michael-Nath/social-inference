@@ -26,18 +26,18 @@ export class AppController {
         try {
             console.log("AppController: Registering with coordinator...");
             const registration = await this.coordinator.register();
-            if (registration.partition == "p0") {
-                for (var _i = 0; _i < 1; _i++) {
-                    this.uiManager.displayError("Sending input!");
-                    await this.coordinator.push_input(_i, this.tokens);
-                };
-            }
             console.log("AppController: Registered for partition:", registration.partition);
             this.uiManager.displayCurrentPartition(registration.partition);
 
             const cache = new SafeTensorCache();
 
             while (true) {
+                if (registration.partition == "p0") {
+                    for (var _i = 0; _i < 1; _i++) {
+                        this.uiManager.displayError("Sending input!");
+                        await this.coordinator.push_input(_i, this.tokens);
+                    };
+                }
                 console.log("AppController: Getting work for partition:", registration.partition);
                 this.uiManager.displayDecodedText(this.decodedTokens)
                 const work = await this.coordinator.get_work(registration.partition);
