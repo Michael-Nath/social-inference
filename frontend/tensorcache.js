@@ -20,7 +20,7 @@ export class SafeTensorCache {
         if (!model) {
             return null;
         }
-        return model[tensor_name];
+        return model.get(tensor_name);
     }
 
     /**

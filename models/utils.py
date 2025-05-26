@@ -21,7 +21,7 @@ layer_params = [
 
 model_params = [layer_params]
         
-def prepare_llama_model_statics(config, b: ComputeGraphBuilder) -> dict:
+def prepare_llama_model_statics(config, model_path, b: ComputeGraphBuilder) -> dict:
     """
     Fetches static configuration values and prepares static graph nodes for a Llama model.
     The caller is responsible for setting the partition context on the ComputeGraphBuilder.
@@ -44,16 +44,16 @@ def prepare_llama_model_statics(config, b: ComputeGraphBuilder) -> dict:
 
     hf_rope_module = LlamaRotaryEmbedding(config, device=None)
     inv_freq_torch = hf_rope_module.inv_freq.clone()
-    attention_scaling_torch = torch.tensor(hf_rope_module.attention_scaling).unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(1,1,64)
+    attention_scaling_torch = torch.tensor(hf_rope_module.attention_scaling).unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(1,1,config.head_dim)
 
     all_statics["inv_freq"] = b.fixed("inv_freq", inv_freq_torch)
     all_statics["attn_scaling"] = b.fixed("attn_scaling", attention_scaling_torch)
     
-    embed_matrix = b.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
+    embed_matrix = b.safetensor("embed_matrix", model_path, "model.embed_tokens.weight")
     all_statics["embed_matrix"] = embed_matrix
 
     # Fetch final layernorm weights and epsilon (from model.model.norm)
-    final_norm_weight = b.safetensor("final_norm.weight", "meta-llama/Llama-3.2-1B", "model.norm.weight")
+    final_norm_weight = b.safetensor("final_norm.weight", model_path, "model.norm.weight")
     all_statics["final_norm_weight"] = final_norm_weight
     final_norm_eps_torch = torch.tensor(1e-5, dtype=torch.float32)
     all_statics["final_norm_eps"] = b.fixed("final_norm.eps", final_norm_eps_torch.unsqueeze(0))

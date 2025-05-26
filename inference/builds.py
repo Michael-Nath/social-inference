@@ -5,8 +5,8 @@ from transformers import AutoConfig
 from inference import NameScope
 import torch
 
-MODEL_PATH = "meta-llama/Llama-3.2-1B"
-# MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
+# MODEL_PATH = "meta-llama/Llama-3.2-1B"
+MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
 
 def build_llaam_causal_mp():
   b = ComputeGraphBuilder() 
@@ -19,17 +19,17 @@ def build_llaam_causal_mp():
 
   with b.partition("p0"):
     with NameScope.push_scope("statics_pre"):
-      statics = prepare_llama_model_statics(config, b)
+      statics = prepare_llama_model_statics(config, MODEL_PATH, b)
   
   with b.partition("p0"):
     with NameScope.push_scope("statics_post"):
-      statics["final_norm_weight_post"] = b.safetensor("final_norm.weight", "meta-llama/Llama-3.2-1B", "model.norm.weight")
+      statics["final_norm_weight_post"] = b.safetensor("final_norm.weight", MODEL_PATH, "model.norm.weight")
       final_norm_eps_torch = torch.tensor(1e-5, dtype=torch.float32) 
       statics["final_norm_eps_post"] = b.fixed("final_norm.eps", final_norm_eps_torch.unsqueeze(0))
-      statics["embed_matrix_post"] = b.safetensor("embed_matrix", "meta-llama/Llama-3.2-1B", "model.embed_tokens.weight")
+      statics["embed_matrix_post"] = b.safetensor("embed_matrix", MODEL_PATH, "model.embed_tokens.weight")
 
   nodes = [statics]
-  num_layers = 16
+  num_layers = 1
 
   for p_idx in range(num_layers):
     with b.partition(f"p0"):

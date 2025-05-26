@@ -233,8 +233,9 @@ def llama_attn(
     with NameScope.push_scope("attn_weights"):
         k_T = b.transpose("transposed<2,3>", key_states, 2, 3)
         attn_weights = b.matmul("matmul", query_states, k_T)
-        scaling = b.fixed('attn_scalar', torch.tensor(0.125).broadcast_to(1,32,1,1))
-        scaling = b.broadcast('attn_scalar_bcasted', scaling, two_node, seq_len)
+        scaling = b.fixed('attn_scalar', torch.tensor(0.125).broadcast_to(1,1,1,1))
+        scaling = b.broadcast('attn_scalar_bcasted_0', scaling, one_node, nhead_node_q)
+        scaling = b.broadcast('attn_scalar_bcasted_1', scaling, two_node, seq_len)
         scaling = b.broadcast('attn_scalar_bcasted_2', scaling, three_node, seq_len)
         # scaling = b.fixed("attn_scaler", torch.tensor(0.125).broadcast_to((1, 32, 2, 2)))
         attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)

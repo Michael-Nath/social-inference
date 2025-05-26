@@ -1,7 +1,8 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_id = "meta-llama/Llama-3.2-1B"
+# model_id = "meta-llama/Llama-3.2-1B"
+model_id = "meta-llama/Llama-3.2-3B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(model_id)
@@ -9,7 +10,7 @@ model = AutoModelForCausalLM.from_pretrained(model_id)
 # BOS token, then "Hello, my name is"
 # input_ids = torch.tensor([[128000, 13347, 856, 836, 374, 8388]])
 # Encode the text "I like to" using the tokenizer
-input_ids = torch.tensor([tokenizer.encode("I like to")])
+input_ids = torch.tensor([tokenizer.encode("What is the capital of Spain?")])
 
 for i in range(10):
     position_ids = torch.arange(len(input_ids)).unsqueeze(0)
