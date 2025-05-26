@@ -4014,7 +4014,7 @@ class UpperTriangularMaskNode extends Node {
             throw new Error(`UpperTriangularMaskNode (${this.name}): Must provide 'dimension'.`);
         }
         this.dimension = options.dimension;
-        this.output_dtype = options.output_dtype || "uint8";
+        this.output_dtype = "int32";
         this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: true });
     }
 
@@ -4043,6 +4043,7 @@ class UpperTriangularMaskNode extends Node {
             inputs: [],
             outputs: [DEFAULT_NODE_OUTPUT],
             func: (executionContext) => {
+                console.log(this.output_dtype);
                 const outputTensor = CPUTensor.uninitialized([this.dimension, this.dimension], this.output_dtype);
                 const outputView = outputTensor.getTypedArray();
                 for (let r = 0; r < this.dimension; r++) {
@@ -4050,6 +4051,7 @@ class UpperTriangularMaskNode extends Node {
                         outputView[r * this.dimension + c] = c > r ? 1 : 0;
                     }
                 }
+                console.log(outputTensor);
                 return { [DEFAULT_NODE_OUTPUT]: outputTensor };
             }
         });
@@ -4127,10 +4129,11 @@ class MaskedFillNode extends Node {
                     throw new Error(`MaskedFillNode (${this.name}): Missing one or more input tensors in CPUKernel.`);
                 }
 
-                const outputTensor = new CPUTensor(inputTensor.shape, inputTensor.dtype);
+                const outputShape = this.getOutputShape(executionContext)
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                const outputData = outputTensor.getTypedArray();
                 const inputData = inputTensor.getTypedArray();
                 const maskData = maskTensor.getTypedArray();
-                const outputData = outputTensor.getTypedArray();
                 const fillValue = valueTensor.data[0];
 
                 for (let i = 0; i < inputData.length; i++) {
