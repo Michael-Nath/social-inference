@@ -722,7 +722,6 @@ export class SessionExecutor {
                     }
                 }
                 // Annotate session.resourcePlan usage here later
-                await new Promise(r => setTimeout(r, 10));
                 success = true;
             } catch (e) {
                 console.error(`Error during CPU kernel execution for node ${node.name} in session ${session.index}:`, e);
@@ -736,7 +735,6 @@ export class SessionExecutor {
             }
         }
         // Annotate session.resourcePlan usage here later
-        await new Promise(r => setTimeout(r, 10));
         console.groupEnd();
         popErrorScopes(this.device, ALL_SCOPES);
     }

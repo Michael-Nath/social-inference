@@ -17,8 +17,8 @@ export class AppController {
 
         this.coordinator = new Coordinator({ url: "" }); // Configure URL if needed
         this.compiler = new KernelCompiler(this.device);
-        this.tokens = [128000,     40,   1093,    311]
-        this.decodedTokens = ""
+        this.tokens = [128000,   3923,    374,    279,   6864,    315,  18157,     30]
+        this.decodedTokens = "What is the capital of Spain?"
     }
 
     async runMainWorkflow() {

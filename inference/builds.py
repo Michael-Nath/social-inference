@@ -29,7 +29,7 @@ def build_llaam_causal_mp():
       statics["embed_matrix_post"] = b.safetensor("embed_matrix", MODEL_PATH, "model.embed_tokens.weight")
 
   nodes = [statics]
-  num_layers = 1
+  num_layers = 28
 
   for p_idx in range(num_layers):
     with b.partition(f"p0"):

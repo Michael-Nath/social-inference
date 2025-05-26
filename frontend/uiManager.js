@@ -160,6 +160,7 @@ export class UIManager {
 
     // --- Callbacks for SessionExecutor ---
     onSessionStart(sessionId, sessionIndex) {
+        return
         const elId = DomHighlighter.getSessionElementId(sessionId, sessionIndex);
         DomHighlighter.updateElementClass(elId, 'session-executing', true);
         DomHighlighter.updateElementClass(elId, 'session-completed', false);
@@ -167,12 +168,14 @@ export class UIManager {
     }
 
     onSessionEnd(sessionId, sessionIndex, success) {
+        return
         const elId = DomHighlighter.getSessionElementId(sessionId, sessionIndex);
         DomHighlighter.updateElementClass(elId, 'session-executing', false);
         DomHighlighter.updateElementClass(elId, success ? 'session-completed' : 'session-failed', true);
     }
 
     onNodeStart(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession) {
+        return
         const elId = DomHighlighter.getNodeElementId(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession);
         DomHighlighter.updateElementClass(elId, 'node-executing', true);
         DomHighlighter.updateElementClass(elId, 'node-completed', false);
@@ -182,6 +185,7 @@ export class UIManager {
     onNodeEnd(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession, success) {
         console.log("success")
         console.log(success)
+        return
         const elId = DomHighlighter.getNodeElementId(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession);
         DomHighlighter.updateElementClass(elId, 'node-executing', false);
         DomHighlighter.updateElementClass(elId, success ? 'node-completed' : 'node-failed', true);

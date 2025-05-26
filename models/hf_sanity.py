@@ -11,6 +11,7 @@ model = AutoModelForCausalLM.from_pretrained(model_id)
 # input_ids = torch.tensor([[128000, 13347, 856, 836, 374, 8388]])
 # Encode the text "I like to" using the tokenizer
 input_ids = torch.tensor([tokenizer.encode("What is the capital of Spain?")])
+print(input_ids)
 
 for i in range(10):
     position_ids = torch.arange(len(input_ids)).unsqueeze(0)
