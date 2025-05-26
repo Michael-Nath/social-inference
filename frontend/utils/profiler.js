@@ -11,6 +11,9 @@ export class Profiler {
         this.cpuKernelTimes = new Map(); // kernelName -> cumulativeTime
         this.gpuKernelTimes = new Map(); // kernelName -> cumulativeTime
         this.totalWorkTime = 0;
+
+        this.outputCacheHits = 0;
+        this.outputCacheMisses = 0;
     }
 
     enterWork() {
@@ -95,5 +98,25 @@ export class Profiler {
 
     getWorkTime() {
         return this.totalWorkTime;
+    }
+
+    getOutputCacheHits() {
+        return this.outputCacheHits;
+    }
+
+    getOutputCacheMisses() {
+        return this.outputCacheMisses;
+    }
+
+    clear() {
+        this.activeWork.clear();
+        this.activeSessions.clear();
+        this.activeKernels.clear();
+        this.sessionTimes.clear();
+        this.cpuKernelTimes.clear();
+        this.gpuKernelTimes.clear();
+        this.totalWorkTime = 0;
+        this.outputCacheHits = 0;
+        this.outputCacheMisses = 0;
     }
 }

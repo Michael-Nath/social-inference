@@ -1,5 +1,31 @@
-import { CPUTensor } from "./kernel.js";
+import { CPUTensor, GPUTensor } from "./kernel.js";
 
+
+export class OutputCache {
+    constructor() {
+        this.cpuOutputs = new Map();
+        this.gpuOutputs = new Map();
+    }
+
+    getGPU(outputKey) {
+        return this.gpuOutputs.get(outputKey);
+    }
+
+    getCPU(outputKey) {
+        return this.cpuOutputs.get(outputKey);
+    }
+
+    put(outputKey, tensor) {
+        if(tensor instanceof GPUTensor) {
+            this.gpuOutputs.set(outputKey, tensor);
+        } else if(tensor instanceof CPUTensor) {
+            this.cpuOutputs.set(outputKey, tensor);
+        } else {
+            throw new Error(`Invalid tensor type: ${tensor.constructor.name}`);
+        }
+    }
+
+}
 
 export class SafeTensorCache {
     /**

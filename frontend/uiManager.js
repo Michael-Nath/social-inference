@@ -35,6 +35,12 @@ export class UIManager {
         
         // Total time
         profilingContainer.innerHTML += `<h2>Total Time: ${totalTime.toFixed(3)}ms</h2>`;
+
+        // Output cache hits
+        profilingContainer.innerHTML += `<h2>Output Cache Hits: ${profiler.getOutputCacheHits()}</h2>`;
+
+        // Output cache misses
+        profilingContainer.innerHTML += `<h2>Output Cache Misses: ${profiler.getOutputCacheMisses()}</h2>`;
         
         // Session breakdown
         profilingContainer.innerHTML += '<h2>Sessions</h2>';
@@ -120,6 +126,7 @@ export class UIManager {
 
     // Renders the visual representation of the session graph
     renderSessionGraph(sessionGraph) {
+        return;
         console.log("UIManager: renderSessionGraph called with sessionGraph:", JSON.parse(JSON.stringify(sessionGraph))); // Log the input
 
         if (!this.sessionsContainer) {
@@ -245,6 +252,7 @@ export class UIManager {
     }
 
     onNodeEnd(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession, success) {
+        return;
         console.log("success")
         console.log(success)
         return

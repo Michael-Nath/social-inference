@@ -1,7 +1,6 @@
 import { Node, Graph, Device, GPUDevice, CPUDevice } from "./worker.js";
-// We'll need Kernel eventually, assuming it's defined elsewhere (e.g., kernel_builder.js)
-// For now, let's stub it if it's not imported, or assume KernelBuilder provides it.
 import { GPUKernel } from "./kernel.js";
+import { SafetensorNode, FixedNode } from "./worker.js";
 
 // Base class for a computation session (a sequence of nodes on one device)
 export class ComputeSession {
@@ -615,6 +614,32 @@ export class KernelCompiler {
 
             session.resourcePlan = resourcePlan;
             console.log("Planned resources:", resourcePlan);
+        }
+
+        // Find cacheable nodes
+        const topo = originalGraph.topologicalSort();
+        for (const node of topo) {
+            // Two always-cacheable nodes
+            if (node instanceof SafetensorNode || node instanceof FixedNode) {
+                node.cacheable = true;
+            }
+            // Check if all of the node's inputs are cacheable
+            node.cacheable = true;
+            for(const input of node.get_inputs()) {
+                // Backward edge to input node must exist (node must be attached to a node in this partition)
+                if(backwardEdges.has(node.name) && backwardEdges.get(node.name).has(input)) {
+                    const inputNode = backwardEdges.get(node.name).get(input).split(':')[0];
+                    const inputNodeObj = originalGraph.nodes[inputNode];
+                    // Node must exist and be cacheable
+                    if(!inputNodeObj || !inputNodeObj.cacheable) {
+                        node.cacheable = false;
+                        break;
+                    }
+                } else {
+                    node.cacheable = false;
+                    break;
+                }
+            }
         }
     }
 

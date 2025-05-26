@@ -507,7 +507,7 @@ class MatmulNode extends Node {
  * @classdesc Represents a node that outputs a safetensor.
  * @extends Node
  */
-class SafetensorNode extends Node {
+export class SafetensorNode extends Node {
     /**
      * @param {Object} options - Options for SafetensorNode.
      * @param {string} options.name - Name of the node.
@@ -546,11 +546,16 @@ class SafetensorNode extends Node {
         return new CPUKernel({
             name: 'safetensor',
             func: async (executionContext) => {
-                const cache = executionContext.cache();
-                const tensor = await cache.getTensor(this.model_name, this.tensor_name);
-                if (!tensor) {
-                    throw new Error(`SafetensorNode (${this.name}): Tensor not found in cache.`);
+                const encodedModelName = btoa(this.model_name);
+                const response = await fetch(`/safetensor/${encodedModelName}/${this.tensor_name}`);
+        
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch tensor: ${response.status} ${response.statusText}`);
                 }
+        
+                const buffer = await response.arrayBuffer();
+                const view = new DataView(buffer);
+                const [tensor] = CPUTensor.decode(view, 0);
                 return {
                     [DEFAULT_NODE_OUTPUT]: tensor,
                 };
@@ -1531,7 +1536,7 @@ class CatNode extends Node {
  * @classdesc Represents a node with a fixed tensor value.
  * @extends Node
  */
-class FixedNode extends Node {
+export class FixedNode extends Node {
     /**
      * @param {Object} params - Parameters for FixedNode.
      * @param {CPUTensor} params.tensor - The fixed tensor.

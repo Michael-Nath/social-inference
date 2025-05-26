@@ -23,8 +23,6 @@ llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weigh
     
 model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp()
-print("built llama graph with following partitions:")
-print(llama_graph._partitions.keys())
 pipeline = ComputePipeline(llama_graph)
 # pipeline, llama_graph = tests.test_softmax()
 worker_manager = WorkerManager(llama_graph)
