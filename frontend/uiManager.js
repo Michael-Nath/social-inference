@@ -25,6 +25,68 @@ export class UIManager {
         }
     }
 
+    displayProfiling(profiler) {
+        const profilingContainer = document.getElementById('profiling');
+        profilingContainer.innerHTML = '';
+        
+        const totalTime = profiler.getWorkTime();
+        const sessionTimes = profiler.getSessionTimes();
+        const [cpuKernelTimes, gpuKernelTimes] = profiler.getKernelTimes();
+        
+        // Total time
+        profilingContainer.innerHTML += `<h2>Total Time: ${totalTime.toFixed(3)}ms</h2>`;
+        
+        // Session breakdown
+        profilingContainer.innerHTML += '<h2>Sessions</h2>';
+        if (sessionTimes.size === 0) {
+            profilingContainer.innerHTML += '<div>No sessions recorded</div>';
+        } else {
+            // Filter sessions with >1% and sort by time (descending)
+            const filteredSessions = Array.from(sessionTimes.entries())
+                .filter(([_, time]) => totalTime > 0 && (time / totalTime * 100) > 1)
+                .sort((a, b) => b[1] - a[1]);
+            
+            if (filteredSessions.length === 0) {
+                profilingContainer.innerHTML += '<div>No sessions with >1% of total time</div>';
+            } else {
+                for (const [sessionName, time] of filteredSessions) {
+                    const percentage = (time / totalTime * 100).toFixed(3);
+                    profilingContainer.innerHTML += `<div>${sessionName}: ${time.toFixed(3)}ms (${percentage}%)</div>`;
+                }
+            }
+        }
+        
+        // CPU kernels
+        profilingContainer.innerHTML += '<h2>CPU Kernels</h2>';
+        if (cpuKernelTimes.size === 0) {
+            profilingContainer.innerHTML += '<div>No CPU kernels recorded</div>';
+        } else {
+            // Sort by time (descending)
+            const sortedCpuKernels = Array.from(cpuKernelTimes.entries())
+                .sort((a, b) => b[1] - a[1]);
+            
+            for (const [kernelName, time] of sortedCpuKernels) {
+                const percentage = totalTime > 0 ? (time / totalTime * 100).toFixed(3) : '0.000';
+                profilingContainer.innerHTML += `<div>${kernelName}: ${time.toFixed(3)}ms (${percentage}%)</div>`;
+            }
+        }
+        
+        // GPU kernels
+        profilingContainer.innerHTML += '<h2>GPU Kernels</h2>';
+        if (gpuKernelTimes.size === 0) {
+            profilingContainer.innerHTML += '<div>No GPU kernels recorded</div>';
+        } else {
+            // Sort by time (descending)
+            const sortedGpuKernels = Array.from(gpuKernelTimes.entries())
+                .sort((a, b) => b[1] - a[1]);
+            
+            for (const [kernelName, time] of sortedGpuKernels) {
+                const percentage = totalTime > 0 ? (time / totalTime * 100).toFixed(3) : '0.000';
+                profilingContainer.innerHTML += `<div>${kernelName}: ${time.toFixed(3)}ms (${percentage}%)</div>`;
+            }
+        }
+    }
+
     displayDecodedText(text) {
         if (this.currentPartitionElement && text && text.trim()) {
             // Create or get the decoded text container
