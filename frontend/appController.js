@@ -3,6 +3,7 @@ import { Coordinator, PartitionWorkResult, OutputAssignment, SingleStepChunk } f
 import { KernelCompiler } from "./compiler.js"; // Assuming compiler.js path
 import { SessionExecutor } from "./executor.js"; // Assuming executor.js path
 import { SafeTensorCache } from "./tensorcache.js";
+import { Profiler } from "./utils/profiler.js";
 
 export class AppController {
     device;
@@ -30,6 +31,7 @@ export class AppController {
             this.uiManager.displayCurrentPartition(registration.partition);
 
             const cache = new SafeTensorCache();
+            const profiler = new Profiler();
 
             while (true) {
                 if (registration.partition == "p0") {
@@ -63,7 +65,7 @@ export class AppController {
                 this.uiManager.renderSessionGraph(sessionGraph);
 
                 console.log("AppController: Starting execution...");
-                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache, work.shouldTrace);
+                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache, profiler, work.shouldTrace);
                 const { finalOutputs, trace } = await this.executor.execute(work); // Pass work for initial inputs
                 console.log("AppController: Execution complete. Final outputs:", finalOutputs);
 
@@ -115,6 +117,9 @@ export class AppController {
                 console.log("Decoded text:", decodedText);
                 if (decodedText && decodedText.trim()) {
                     this.decodedTokens += decodedText;
+                }
+                if (profiler) {
+                    this.uiManager.displayProfiling(profiler);
                 }
                 // Optionally display a success message via UIManager
             }

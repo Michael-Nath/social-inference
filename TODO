@@ -1,6 +1,10 @@
+We need some kind of profiling...
+
 Optimization Wishlist
 - Better session scheduling
 - More CPU/GPU kernels (helps with above)
 - Fusion
 - WebGPU limits
 - Improve kernels (tile many untiled kernels)
+- Shape-only/Stride-only kernels (unsqueeze, broadcast, reshape, etc.)
+- Cleanup internal buffers after execution

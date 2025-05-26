@@ -96,12 +96,14 @@ export class SessionExecutor {
      * @param {SessionGraph} sessionGraph - The compiled and annotated session graph.
      * @param {import('./uiManager.js').UIManager} uiManager - The UI manager instance.
      * @param {SafeTensorCache | null} safetensorCache - The safetensor cache.
+     * @param {Profiler | null} profiler - The profiler instance.
      * @param {boolean} tracing - Whether to run in tracing mode.
      */
-    constructor(device, sessionGraph, uiManager, safetensorCache = null, tracing = false) {
+    constructor(device, sessionGraph, uiManager, safetensorCache = null, profiler = null, tracing = false) {
         if (!device || !sessionGraph) {
             throw new Error("SessionExecutor requires a GPUDevice and a SessionGraph.");
         }
+        this.profiler = profiler;
         this.device = device;
         this.sessionGraph = sessionGraph;
         this.uiManager = uiManager;
@@ -155,6 +157,10 @@ export class SessionExecutor {
      */
     async execute(partitionWork) {
         console.log("SessionExecutor: Starting execution...");
+        let workTicket = null;
+        if (this.profiler) {
+            workTicket = this.profiler.enterWork();
+        }
         await this._initializeState(partitionWork);
 
         const promises = [];
@@ -202,6 +208,9 @@ export class SessionExecutor {
 
         const finalOutputs = this._gatherFinalOutputs();
         const trace = this.tracing ? new SessionExecutionTrace(this.cpuOutputs) : null;
+        if (this.profiler) {
+            this.profiler.exitWork(workTicket);
+        }
         return { finalOutputs, trace };
     }
 
@@ -213,36 +222,6 @@ export class SessionExecutor {
     async _initializeState(partitionWork) {
         console.group("Initialization");
         this.buffers.clear();
-
-
-        /*
-        this.sessionStatus.clear();
-        this.readyQueue = [];
-        this.sessionInDegree.clear();
-
-        // Initialize status and calculate in-degrees
-        const sessions = this.sessionGraph.sessions;
-        sessions.forEach(s => {
-            this.sessionStatus.set(s, 'pending');
-            this.sessionInDegree.set(s, 0); // Initialize in-degree to 0
-        });
-
-        // Calculate actual in-degrees by traversing edges
-        sessions.forEach(sourceSession => {
-            const dependentSessions = this.sessionGraph.getDependentSessions(sourceSession);
-            dependentSessions.forEach(targetSession => {
-                this.sessionInDegree.set(targetSession, this.sessionInDegree.get(targetSession) + 1);
-            });
-        });
-
-        // Find initial sessions (in-degree 0) and add to ready queue
-        sessions.forEach(s => {
-            if (this.sessionInDegree.get(s) === 0) {
-                this.readyQueue.push(s);
-                console.log(`Session ${sessions.indexOf(s)} added to initial ready queue (in-degree 0).`);
-            }
-        });
-        */
 
         // --- Store Initial Inputs --- 
         console.group("Loading Inputs");
@@ -264,36 +243,15 @@ export class SessionExecutor {
     }
 
     /** 
-     * Updates the ready queue after a session completes by decrementing dependent in-degrees.
-     * @param {ComputeSession} completedSession
-     * @private
-     */
-    _updateReadyQueue(completedSession) {
-        const dependentSessions = this.sessionGraph.getDependentSessions(completedSession);
-
-        console.log(` Session ${this.sessionGraph.sessions.indexOf(completedSession)} completed. Checking dependents: ${dependentSessions.map(s => this.sessionGraph.sessions.indexOf(s)).join(', ')}`);
-
-        for (const dependent of dependentSessions) {
-            const currentInDegree = this.sessionInDegree.get(dependent);
-            if (currentInDegree > 0) { // Should always be > 0 if it's a dependent
-                const newInDegree = currentInDegree - 1;
-                this.sessionInDegree.set(dependent, newInDegree);
-
-                // If all dependencies are now met (in-degree is 0), add to ready queue
-                if (newInDegree === 0 && this.sessionStatus.get(dependent) === 'pending') {
-                    this.readyQueue.push(dependent);
-                    console.log(`  Session ${this.sessionGraph.sessions.indexOf(dependent)} added to ready queue (all dependencies met).`);
-                }
-            }
-        }
-    }
-
-    /** 
      * @param {GPUSession} session 
      * @private 
      * @returns {Promise<void>} 
      */
     async _executeGPUSession(session) {
+        let sessionTicket = null;
+        if (this.profiler) {
+            sessionTicket = this.profiler.enterSession(session);
+        }
         pushErrorScopes(this.device, ALL_SCOPES);
         const start = performance.now();
         console.groupCollapsed(`Executing GPUSession ${session.index}`);
@@ -323,12 +281,18 @@ export class SessionExecutor {
                 this.uiManager.onNodeStart(session.id, session.index, node.id || node.name, nodeIndexInSession);
             }
 
+            /** @type {GPUKernel} */
+            const rawKernel = await node.getGPUKernel();
+            const kernelKey = rawKernel.key();
+            const kernel = KernelCompiler.getKernel(kernelKey);
+
+            let kernelTicket = null;
+            if (this.profiler) {
+                kernelTicket = this.profiler.enterKernel(kernel);
+            }
+
             let success = false;
             try {
-                /** @type {GPUKernel} */
-                const rawKernel = await node.getGPUKernel();
-                const kernelKey = rawKernel.key();
-                const kernel = KernelCompiler.getKernel(kernelKey);
                 console.log(`Kernel: ${kernel.name} (${kernelKey})`);
 
                 if (!kernel) {
@@ -526,6 +490,9 @@ export class SessionExecutor {
                 success = false;
                 throw e; // Re-throw to be caught by session-level error handling
             } finally {
+                if (this.profiler) {
+                    this.profiler.exitKernel(kernelTicket);
+                }
                 if (this.uiManager) {
                     this.uiManager.onNodeEnd(session.id, session.index, node.id || node.name, nodeIndexInSession, success);
                 }
@@ -627,6 +594,10 @@ export class SessionExecutor {
         const end = performance.now();
         console.log(`Prep done in ${prepEnd - start}ms, work done in ${workEnd - prepEnd}ms, cleanup in ${end - workEnd}ms, total in ${end - start}ms.`);
         console.groupEnd(); // End of console.group for GPUSession execution
+
+        if (this.profiler) {
+            this.profiler.exitSession(sessionTicket);
+        }
         
     }
     /** 
@@ -635,6 +606,11 @@ export class SessionExecutor {
      * @returns {Promise<void>} 
      */
     async _executeCPUSession(session) {
+        let sessionTicket = null;
+        if (this.profiler) {
+            sessionTicket = this.profiler.enterSession(session);
+        }
+
         pushErrorScopes(this.device, ALL_SCOPES);
         console.groupCollapsed(`Executing CPUSession ${session.index}`);
         console.log(`Session ID: ${session.id}, Session Index: ${session.index}`);
@@ -647,8 +623,13 @@ export class SessionExecutor {
                 this.uiManager.onNodeStart(session.id, session.index, node.id || node.name, nodeIndexInSession);
             }
             let success = false;
+
+            let kernelTicket = null;
             try {
                 const kernel = await node.getCPUKernel(); // Ensure kernel is awaited if getKernel is async
+                if (this.profiler) {
+                    kernelTicket = this.profiler.enterKernel(kernel);
+                }
                 console.log(`Executing CPU node ${node.name}, kernel:`, kernel);
 
                 const inputCPUTensors = new Map();
@@ -721,23 +702,25 @@ export class SessionExecutor {
                         throw new Error(`Kernel ${kernel.name} produced invalid output type for ${outputName}: ${typeof outputTensor}`);
                     }
                 }
-                // Annotate session.resourcePlan usage here later
-                await new Promise(r => setTimeout(r, 10));
                 success = true;
             } catch (e) {
                 console.error(`Error during CPU kernel execution for node ${node.name} in session ${session.index}:`, e);
                 success = false;
                 throw e; // Re-throw to be caught by session-level error handling
             } finally {
+                if (this.profiler) {
+                    this.profiler.exitKernel(kernelTicket);
+                }
                 if (this.uiManager) {
                     this.uiManager.onNodeEnd(session.id, session.index, node.id || node.name, nodeIndexInSession, success);
                 }
                 console.groupEnd(); // End Node group
             }
         }
-        // Annotate session.resourcePlan usage here later
-        await new Promise(r => setTimeout(r, 10));
         console.groupEnd();
+        if (this.profiler) {
+            this.profiler.exitSession(sessionTicket);
+        }
         popErrorScopes(this.device, ALL_SCOPES);
     }
     /** 
