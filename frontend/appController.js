@@ -85,7 +85,7 @@ export class AppController {
                     console.warn("AppController: No final outputs were gathered by the executor or finalOutputs is empty.");
                 }
                
-                if(false && work.shouldTrace) {
+                if(work.shouldTrace) {
                     console.log("AppController: Checking work...")
                     const chunks = trace.getChunks(1024 * 200);
                     for(let i = 0; i < chunks.length; i++) {

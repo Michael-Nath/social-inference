@@ -27,9 +27,7 @@ llama_graph = build_llaam_causal_mp()
 print("built llama graph with following partitions:")
 print(llama_graph._partitions.keys())
 pipeline = ComputePipeline(llama_graph)
-# position_ids = torch.tensor([0], dtype=torch.int32).reshape(1,1)
-# input_tokens = torch.tensor([0], dtype=torch.int32).reshape(1,1)
-# pipeline.enqueue_input(PipelineInput("0", {"position_ids": Tensor.from_torch(position_ids), "input_tokens": Tensor.from_torch(input_tokens)}))
+# pipeline, llama_graph = tests.test_softmax()
 worker_manager = WorkerManager(llama_graph)
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
 
@@ -128,7 +126,7 @@ async def get_work(partition_name: PartitionName):
     """
     w = pipeline.get_partition_work(partition_name)
     if w is not None:
-        w.should_trace = False
+        w.should_trace = True
         inflight_work[(w.partition, w.correlation_id)] = w
         tensor_bytes = bytearray(size_encoded_partition_work(w))
         write_encoded_partition_work(tensor_bytes, 0, w)

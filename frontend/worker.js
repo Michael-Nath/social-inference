@@ -2700,8 +2700,11 @@ export class Graph {
         [nodeName, offset] = readEncodedString(view, offset);
         [nodePartition, offset] = readEncodedString(view, offset);
         [nodeType, offset] = readEncodedString(view, offset);
+        console.log(nodeType);
         if (nodeType === "matmul") {
             return MatmulNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "masked_fill") {
+            return MaskedFillNode.decode(view, offset, nodeName, nodePartition, nodeType);
         } else if (nodeType === "safetensor") {
             return SafetensorNode.decode(view, offset, nodeName, nodePartition, nodeType);
         } else if (nodeType === "softmax") {
@@ -2728,6 +2731,8 @@ export class Graph {
             return ShapeNode.decode(view, offset, nodeName, nodePartition, nodeType);
         } else if (nodeType === "transpose") {
             return TransposeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "upper_triangular_mask") { // Add this line back
+            return UpperTriangularMaskNode.decode(view, offset, nodeName, nodePartition, nodeType);
         } else if (nodeType === "add") {
             return AddNode.decode(view, offset, nodeName, nodePartition, nodeType);
         } else if (nodeType === "div") {
@@ -3998,3 +4003,235 @@ export class PipelineInput {
     }
 }
 
+class UpperTriangularMaskNode extends Node {
+    dimension;
+    output_dtype;
+
+    constructor(options) {
+        super(options);
+        if (options.dimension === undefined) {
+            throw new Error(`UpperTriangularMaskNode (${this.name}): Must provide 'dimension'.`);
+        }
+        this.dimension = options.dimension;
+        this.output_dtype = options.output_dtype || "uint8";
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: false });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let dimension, output_dtype_str;
+        [dimension, offset] = readBEInt(view, offset);
+        [output_dtype_str, offset] = readEncodedString(view, offset);
+        return [new UpperTriangularMaskNode({ name, partition, type, dimension, output_dtype: output_dtype_str }), offset];
+    }
+
+    estimateWeight(inputsMap) {
+        return this.dimension * this.dimension;
+    }
+
+    get_inputs() { return []; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        return [this.dimension, this.dimension];
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'upper_triangular_mask_cpu',
+            func: (executionContext) => {
+                const outputTensor = CPUTensor.uninitialized([this.dimension, this.dimension], this.output_dtype);
+                const outputView = outputTensor.getTypedArray();
+                for (let r = 0; r < this.dimension; r++) {
+                    for (let c = 0; c < this.dimension; c++) {
+                        outputView[r * this.dimension + c] = (c > r) ? 1 : 0; // Reverted condition
+                    }
+                }
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            },
+            inputs: [],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: `upper_triangular_mask_gpu<${this.dimension}>`,
+            shader: `
+                struct Params {
+                    dim: u32,
+                };
+                @group(0) @binding(0) var<storage, read_write> output_buffer: array<u32>;
+                @group(0) @binding(1) var<uniform> params: Params;
+
+                @compute @workgroup_size(16, 16, 1)
+                fn main(@global_id(global_invocation_id) id: vec3<u32>) {
+                    let r = id.x;
+                    let c = id.y;
+
+                    if (r >= params.dim || c >= params.dim) {
+                        return;
+                    }
+                    let val = select(0u, 1u, c > r); // Reverted condition
+                    output_buffer[r * params.dim + c] = val;
+                }
+            `,
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    return new Uint32Array([this.dimension]);
+                },
+                index: 1,
+            },
+            workgroupFunction: (executionContext) => {
+                const workgroupSizeX = 16;
+                const workgroupSizeY = 16;
+                return {
+                    x: Math.ceil(this.dimension / workgroupSizeX),
+                    y: Math.ceil(this.dimension / workgroupSizeY),
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 0 } },
+            ],
+        });
+    }
+}
+
+class MaskedFillNode extends Node {
+    static INPUT = "input";
+    static MASK = "mask";
+    static VALUE = "value";
+
+    constructor(options) {
+        super(options);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: false });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new MaskedFillNode({ name, partition, type }), offset];
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(MaskedFillNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [MaskedFillNode.INPUT, MaskedFillNode.MASK, MaskedFillNode.VALUE]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(MaskedFillNode.INPUT) || executionContext.gpu(MaskedFillNode.INPUT);
+        if (!inputTensor || !inputTensor.shape) {
+            throw new Error(`MaskedFillNode (${this.name}): Missing input tensor or shape for 'input'.`);
+        }
+        return [...inputTensor.shape];
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'masked_fill_cpu',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(MaskedFillNode.INPUT);
+                const maskTensor = executionContext.cpu(MaskedFillNode.MASK);
+                const valueTensor = executionContext.cpu(MaskedFillNode.VALUE);
+
+                if (!inputTensor || !maskTensor || !valueTensor) {
+                    throw new Error(`MaskedFillNode (${this.name}) CPU kernel: Missing one or more input tensors.`);
+                }
+
+                const outputTensor = CPUTensor.uninitialized(inputTensor.shape, inputTensor.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputView = inputTensor.getTypedArray();
+                const maskView = maskTensor.getTypedArray();
+                const fillValue = valueTensor.getTypedArray()[0];
+
+                if (inputView.length !== maskView.length) {
+                    throw new Error(`MaskedFillNode (${this.name}) CPU kernel: Input and mask tensors must have the same number of elements. Input: ${inputView.length}, Mask: ${maskView.length}.`);
+                }
+
+                for (let i = 0; i < inputView.length; i++) {
+                    outputView[i] = maskView[i] === 1 ? fillValue : inputView[i];
+                }
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            },
+            inputs: [MaskedFillNode.INPUT, MaskedFillNode.MASK, MaskedFillNode.VALUE],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: 'masked_fill_gpu',
+            shader: `
+                struct Params {
+                    num_elements: u32,
+                    fill_value: f32,
+                };
+
+                @group(0) @binding(0) var<storage, read> input_buffer: array<f32>;
+                @group(0) @binding(1) var<storage, read> mask_buffer: array<u32>;
+                @group(0) @binding(2) var<storage, read_write> output_buffer: array<f32>;
+                @group(0) @binding(3) var<uniform> params: Params;
+
+                @compute @workgroup_size(256)
+                fn main(@global_id(global_invocation_id) id: vec3<u32>) {
+                    let idx = id.x;
+                    if (idx >= params.num_elements) {
+                        return;
+                    }
+                    output_buffer[idx] = select(input_buffer[idx], params.fill_value, mask_buffer[idx] == 1u);
+                }
+            `,
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(MaskedFillNode.INPUT);
+                    const valueTensor = executionContext.cpu(MaskedFillNode.VALUE);
+
+                    if (!inputTensor) {
+                        throw new Error(`MaskedFillNode (${this.name}) GPU kernel: Missing input GPU tensor.`);
+                    }
+                    if (!valueTensor) {
+                        throw new Error(`MaskedFillNode (${this.name}) GPU kernel: Missing value CPU tensor.`);
+                    }
+                    const num_elements = inputTensor.shape.reduce((acc, val) => acc * val, 1);
+                    const fill_value_float = valueTensor.getTypedArray()[0];
+
+                    const buffer = new ArrayBuffer(8);
+                    const u32View = new Uint32Array(buffer);
+                    const f32View = new Float32Array(buffer);
+                    
+                    u32View[0] = num_elements;
+                    f32View[1] = fill_value_float;
+                    
+                    return new Uint32Array(buffer);
+                },
+                index: 3,
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(MaskedFillNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`MaskedFillNode (${this.name}) GPU kernel: Missing input GPU tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.reduce((acc, val) => acc * val, 1);
+                const workgroupSizeX = 256;
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [
+                { name: MaskedFillNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } },
+                { name: MaskedFillNode.MASK, cpu: false, binding: { type: "read-only-storage", index: 1 } },
+                { name: MaskedFillNode.VALUE, cpu: true }
+            ],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 2 } },
+            ],
+        });
+    }
+}

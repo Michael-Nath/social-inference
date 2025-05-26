@@ -7,7 +7,8 @@ from .graph import (
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
     HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
     FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode, SquaredNode, ReduceMeanNode, RsqrtNode,
-    SiluNode, CosNode, SinNode, IndexSelectNode, SafetensorNode, FixedNode 
+    SiluNode, CosNode, SinNode, IndexSelectNode, SafetensorNode, FixedNode,
+    MaskedFillNode, UpperTriangularMaskNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache, ModelCache 
@@ -123,7 +124,11 @@ def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) ->
                 if lhs.shape[-1] != rhs.shape[-2]:
                     raise ValueError(f"Matmul lhs shape {lhs.shape} does not match rhs shape {rhs.shape}")
                 # Perform the matmul
-                output = lhs @ rhs
+                rhs = rhs.to(lhs.dtype)
+                try:
+                    output = lhs @ rhs
+                except:
+                    breakpoint()
                 # print("matmul", lhs.shape, rhs.shape, output.shape)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
@@ -346,6 +351,33 @@ def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) ->
                 dim = check_shape(dim_tensor, [1]).item()
                 
                 output = input_tensor[index_tensor]
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif isinstance(encoded_node, MaskedFillNode):
+                input_tensor = resolve_input(node, MaskedFillNode.INPUT)
+                mask_tensor = resolve_input(node, MaskedFillNode.MASK)
+                value_tensor = resolve_input(node, MaskedFillNode.VALUE)
+                
+                # Check that mask shape matches input shape
+                check_shapes_match(input_tensor, mask_tensor)
+                # Value should be a scalar tensor
+                check_shape(value_tensor, [1])
+                
+                output = input_tensor.masked_fill(mask_tensor.bool(), value_tensor.item())
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif isinstance(encoded_node, UpperTriangularMaskNode):
+                dimension = encoded_node.dimension
+                output_dtype = torch.int32
+                
+                # Create a square matrix of the specified dimension
+                indices = torch.arange(dimension)
+                # Create row and column indices
+                col_idx = indices.unsqueeze(0).expand(dimension, -1)
+                row_idx = indices.unsqueeze(1).expand(-1, dimension)
+                # Create mask where col_idx > row_idx (upper triangular, excluding diagonal)
+                output = (col_idx > row_idx).to(output_dtype)
+                
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             else:

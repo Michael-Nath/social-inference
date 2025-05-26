@@ -905,6 +905,65 @@ class IndexSelectNode(ComputeGraphNode):
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
 
+class MaskedFillNode(ComputeGraphNode):
+    """
+    Fills elements of a tensor with a value where a mask is true (1).
+    """
+    INPUT: NodeInput = "input"
+    MASK: NodeInput = "mask"
+    VALUE: NodeInput = "value" # Scalar tensor
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "masked_fill")
+        return offset
+    
+    def size_binary(self) -> int:
+        return super().size_binary() + size_encoded_string("masked_fill")
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT, self.MASK, self.VALUE}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class UpperTriangularMaskNode(ComputeGraphNode):
+    """
+    Generates a square mask tensor where elements (r, c) are 1 if c > r, else 0.
+    Diagonal is fixed to 0.
+    """
+    dimension: int
+    output_dtype: str
+
+    def __init__(self, name: NodeName, partition: PartitionName, dimension: int, output_dtype: str = "uint8"):
+        super().__init__(name, partition)
+        self.dimension = dimension
+        self.output_dtype = output_dtype
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "upper_triangular_mask")
+        offset = write_be_int(data, offset, self.dimension)
+        offset = write_encoded_string(data, offset, self.output_dtype)
+        return offset
+    
+    def size_binary(self) -> int:
+        return (
+            super().size_binary() +
+            size_encoded_string("upper_triangular_mask") +
+            4 +  # For dimension (int)
+            size_encoded_string(self.output_dtype)
+        )
+
+    def get_input_names(self) -> set[str]:
+        return set()
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 @dataclass(eq=True, frozen=True)
 class ComputeGraphEdge:
     """
@@ -1214,6 +1273,23 @@ class ComputeGraphBuilder:
         self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.INPUT)
         self._make_edge(dim_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.DIM)
         self._make_edge(index_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.INDEX)
+        return node
+
+    def masked_fill(self, name: NodeName, input_node: ComputeGraphNode, mask_node: ComputeGraphNode, value_node: ComputeGraphNode) -> MaskedFillNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = MaskedFillNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.INPUT)
+        self._make_edge(mask_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.MASK)
+        self._make_edge(value_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.VALUE)
+        return node
+
+    def upper_triangular_mask(self, name: NodeName, dimension: int, output_dtype: str = "uint8") -> UpperTriangularMaskNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = UpperTriangularMaskNode(name, self._active_partition, dimension, output_dtype)
+        self._nodes[name] = node
         return node
 
     def build(self, copy: bool = False) -> ComputeGraph:
@@ -1597,6 +1673,10 @@ class ComputeGraph:
                 nodes[node_name] = SinNodeEncoding(type="sin", name=node_name)
             elif isinstance(node, IndexSelectNode):
                 nodes[node_name] = IndexSelectNodeEncoding(type="index_select", name=node_name)
+            elif isinstance(node, MaskedFillNode):
+                nodes[node_name] = MaskedFillNodeEncoding(type="masked_fill", name=node_name)
+            elif isinstance(node, UpperTriangularMaskNode):
+                nodes[node_name] = UpperTriangularMaskNodeEncoding(type="upper_triangular_mask", name=node_name, dimension=node.dimension, output_dtype=node.output_dtype)
             elif isinstance(node, CastNode):
                 nodes[node_name] = CastNodeEncoding(type="cast", name=node_name, dtype=node.dtype)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):

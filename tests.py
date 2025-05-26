@@ -556,19 +556,19 @@ def test_llama_layernorm():
 def test_llama_attn():
     g = ComputeGraphBuilder()
     x = g.input("x")
-    head_dim = 128
+    head_dim = 64
     with g.partition("p0"):        
         w_q = g.safetensor("w_q", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.q_proj.weight")
         w_k = g.safetensor("w_k", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.k_proj.weight")
         w_v = g.safetensor("w_v", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.v_proj.weight")
         w_o = g.safetensor("w_o", "meta-llama/Llama-3.2-1B", "model.layers.0.self_attn.o_proj.weight")
-        cos = g.fixed("cos", torch.randn(1, 1, head_dim))
-        sin = g.fixed("sin", torch.randn(1, 1, head_dim))
+        cos = g.fixed("cos", torch.randn(1, 2, head_dim))
+        sin = g.fixed("sin", torch.randn(1, 2, head_dim))
         attn_out = llama_attn(g, x, head_dim, 4, w_q, w_k, w_v, w_o, (cos, sin)) 
     g.output("attn_output", attn_out)
     graph = g.build()
     pipeline = ComputePipeline(graph)
-    pipeline.enqueue_input(PipelineInput(correlation_id="test_0", inputs={"x": Tensor.from_torch(torch.rand(1, 1, 2048, dtype=torch.float32))}))
+    pipeline.enqueue_input(PipelineInput(correlation_id="test_0", inputs={"x": Tensor.from_torch(torch.rand(1, 2, 2048, dtype=torch.float32))}))
     return pipeline, graph
 
 def test_llama_layer(layer, model_name, idx):
@@ -694,6 +694,26 @@ def test_llama_causal():
 
     pipeline.enqueue_input(PipelineInput(correlation_id="test", inputs=inputs))
     return pipeline, g
+
+def test_softmax():
+    g = ComputeGraphBuilder()
+    x = g.input("x")
+    with g.partition("p0"):
+        three = g.fixed("two", torch.tensor([3], dtype=torch.int32))
+        softmax = g.softmax("softmax", x, three)
+    y = g.output("output", softmax)
+    g = g.build()
+
+    pipeline = ComputePipeline(g)
+    for i in range(1):
+        pipeline.enqueue_input(PipelineInput(
+            correlation_id=f"{i}",
+            inputs={
+                "x": Tensor.from_torch(torch.randn(1, 32, 2, 2)),
+            },
+        ))
+    return pipeline, g
+        
 
 def test_pipelining():
     g = ComputeGraphBuilder()

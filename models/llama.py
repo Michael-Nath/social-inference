@@ -159,6 +159,7 @@ def llama_attn(
         zero_node = just(b, 0)
         one_node  = just(b, 1)
         two_node  = just(b, 2)
+        three_node = just(b, 3)
     # assume the input shape is [batch_size, seq_len, hidden_dim]
     with NameScope.push_scope("input_shape_indices"):
         batch_size =  b.index("bsz", input_shape, zero_node) 
@@ -232,10 +233,15 @@ def llama_attn(
     with NameScope.push_scope("attn_weights"):
         k_T = b.transpose("transposed<2,3>", key_states, 2, 3)
         attn_weights = b.matmul("matmul", query_states, k_T)
-        scaling = b.fixed("attn_scaler", torch.tensor(0.125).broadcast_to((1, 32, 2, 2)))
-        attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)
-     
-    attn_scores = b.softmax("softmax", attn_weights, dim=two_node) 
+        # scaling = b.fixed("attn_scaler", torch.tensor(0.125).broadcast_to((1, 32, 2, 2)))
+        # attn_weights = b.hadamard("attn_scaled", attn_weights, scaling)
+    with NameScope.push_scope("causal"):
+        causal_mask = b.upper_triangular_mask("causal", 2, "int32")
+        mask_unsqz  = b.unsqueeze("causal_unsqz", causal_mask, zero_node) 
+        mask_unsqz  = b.unsqueeze("causal_unsqz_unsqz", mask_unsqz, zero_node)
+        causal_mask_bcast = b.broadcast("causal_bcast", mask_unsqz, one_node, nhead_node_q)
+        attn_masked = b.masked_fill("masked", attn_weights, causal_mask_bcast, just(b, -9999999))
+    attn_scores = b.softmax("softmax", attn_masked, dim=three_node)
     with NameScope.push_scope("attn_output"):
         attn_out = b.matmul("matmul", attn_scores, value_states)
         attn_out = b.transpose("transposed<1,2>", attn_out, 1, 2)
