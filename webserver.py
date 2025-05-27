@@ -125,23 +125,20 @@ async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs
     """
-    for p in pipeline.graph.get_partitions():
-        if p in [PARTITION_OUTPUT, PARTITION_INPUT]:
-            continue
-        w = pipeline.get_partition_work(p)
-        if w is not None:
-            w.should_trace = False 
-            inflight_work[(w.partition, w.correlation_id)] = w
-            tensor_bytes = bytearray(size_encoded_partition_work(w))
-            write_encoded_partition_work(tensor_bytes, 0, w)
-            tensor_bytes = bytes(tensor_bytes)
-            return StreamingResponse(
-                stream_bytes(tensor_bytes),
-                media_type="application/octet-stream",
-                headers={
-                    "Content-Length": str(len(tensor_bytes)),
-                } 
-            )
+    w = pipeline.get_partition_work(partition_name)
+    if w is not None:
+        w.should_trace = False 
+        inflight_work[(w.partition, w.correlation_id)] = w
+        tensor_bytes = bytearray(size_encoded_partition_work(w))
+        write_encoded_partition_work(tensor_bytes, 0, w)
+        tensor_bytes = bytes(tensor_bytes)
+        return StreamingResponse(
+            stream_bytes(tensor_bytes),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(len(tensor_bytes)),
+            } 
+        )
     return StreamingResponse(io.BytesIO(b""), status_code=404, media_type="application/octet-stream")
 
 @app.post("/work")

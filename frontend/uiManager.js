@@ -126,7 +126,6 @@ export class UIManager {
 
     // Renders the visual representation of the session graph
     renderSessionGraph(sessionGraph) {
-        return;
         console.log("UIManager: renderSessionGraph called with sessionGraph:", JSON.parse(JSON.stringify(sessionGraph))); // Log the input
 
         if (!this.sessionsContainer) {
@@ -153,13 +152,13 @@ export class UIManager {
         }
 
         sessionsToDisplay.forEach((session, sessionIndex) => {
-            console.log("UIManager: Processing session (index " + sessionIndex + "):", JSON.parse(JSON.stringify(session)));
+            // console.log("UIManager: Processing session (index " + sessionIndex + "):", JSON.parse(JSON.stringify(session)));
 
             const sessionIdForHTML = session.id !== undefined ? session.id : sessionIndex;
-            console.log(`UIManager: For session index ${sessionIndex}, sessionIdForHTML = '${sessionIdForHTML}' (type: ${typeof sessionIdForHTML})`);
+            // console.log(`UIManager: For session index ${sessionIndex}, sessionIdForHTML = '${sessionIdForHTML}' (type: ${typeof sessionIdForHTML})`);
 
             const sessionDivId = DomHighlighter.getSessionElementId(sessionIdForHTML, sessionIndex);
-            console.log(`UIManager: Calculated sessionDivId for session index ${sessionIndex} (using '${sessionIdForHTML}'): '${sessionDivId}'`);
+            // console.log(`UIManager: Calculated sessionDivId for session index ${sessionIndex} (using '${sessionIdForHTML}'): '${sessionDivId}'`);
 
             const sessionDiv = document.createElement('div');
             sessionDiv.className = 'session';
@@ -167,33 +166,33 @@ export class UIManager {
             sessionDiv.style.border = '1px solid #ccc';
             sessionDiv.style.marginBottom = '10px';
             sessionDiv.style.padding = '10px';
-            console.log("UIManager: Created sessionDiv with id:", sessionDiv.id, sessionDiv);
+            // console.log("UIManager: Created sessionDiv with id:", sessionDiv.id, sessionDiv);
 
             const sessionTitle = document.createElement('h3');
             sessionTitle.textContent = `Session ID: ${sessionIdForHTML}`; // Using the same determined ID
             sessionTitle.style.marginTop = '0';
-            console.log("UIManager: Appending sessionTitle to sessionDiv for session index " + sessionIndex);
+            // console.log("UIManager: Appending sessionTitle to sessionDiv for session index " + sessionIndex);
             sessionDiv.appendChild(sessionTitle);
 
             if (session.nodes && Array.isArray(session.nodes) && session.nodes.length > 0) {
                 const nodesList = document.createElement('ul');
                 nodesList.style.paddingLeft = '20px';
-                console.log("UIManager: Created nodesList for session index " + sessionIndex);
+                // console.log("UIManager: Created nodesList for session index " + sessionIndex);
 
                 session.nodes.forEach((node, nodeIndexInSession) => {
-                    console.log(`UIManager: Processing node (session index ${sessionIndex}, node index ${nodeIndexInSession}):`, JSON.parse(JSON.stringify(node)));
+                    // console.log(`UIManager: Processing node (session index ${sessionIndex}, node index ${nodeIndexInSession}):`, JSON.parse(JSON.stringify(node)));
 
                     const nodeIdentifier = node.name || node.id || `node_${nodeIndexInSession}`;
-                    console.log(`UIManager: For node (session index ${sessionIndex}, node index ${nodeIndexInSession}), nodeIdentifier = '${nodeIdentifier}'`);
+                    // console.log(`UIManager: For node (session index ${sessionIndex}, node index ${nodeIndexInSession}), nodeIdentifier = '${nodeIdentifier}'`);
 
                     const nodeItemId = DomHighlighter.getNodeElementId(sessionIdForHTML, sessionIndex, nodeIdentifier, nodeIndexInSession);
-                    console.log(`UIManager: Calculated nodeItemId for node '${nodeIdentifier}': '${nodeItemId}'`);
+                    // console.log(`UIManager: Calculated nodeItemId for node '${nodeIdentifier}': '${nodeItemId}'`);
 
                     const nodeItem = document.createElement('li');
                     nodeItem.className = 'node-item';
                     nodeItem.id = nodeItemId; // Assign ID here
                     nodeItem.textContent = `Node: ${nodeIdentifier}`;
-                    console.log("UIManager: Created nodeItem with id:", nodeItem.id, nodeItem);
+                    // console.log("UIManager: Created nodeItem with id:", nodeItem.id, nodeItem);
 
                     // Basic dependency display (can be enhanced)
                     if (node.dependencies && Array.isArray(node.dependencies) && node.dependencies.length > 0) {
@@ -210,18 +209,17 @@ export class UIManager {
                         });
                         nodeItem.appendChild(dependenciesList);
                     }
-                    console.log("UIManager: Appending nodeItem to nodesList for node " + nodeIdentifier);
+                    // console.log("UIManager: Appending nodeItem to nodesList for node " + nodeIdentifier);
                     nodesList.appendChild(nodeItem);
                 });
-                console.log("UIManager: Appending nodesList to sessionDiv for session index " + sessionIndex);
                 sessionDiv.appendChild(nodesList);
             } else {
                 const noNodesPara = document.createElement('p');
                 noNodesPara.textContent = 'No nodes in this session.';
                 sessionDiv.appendChild(noNodesPara);
-                console.log("UIManager: Added 'No nodes' paragraph for session index " + sessionIndex);
+                // console.log("UIManager: Added 'No nodes' paragraph for session index " + sessionIndex);
             }
-            console.log("UIManager: Appending sessionDiv to sessionsContainer for session index " + sessionIndex, sessionDiv);
+            // console.log("UIManager: Appending sessionDiv to sessionsContainer for session index " + sessionIndex, sessionDiv);
             this.sessionsContainer.appendChild(sessionDiv);
         });
         console.log("UIManager: renderSessionGraph completed.");

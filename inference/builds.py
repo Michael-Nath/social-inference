@@ -5,8 +5,8 @@ from transformers import AutoConfig
 from inference import NameScope
 import torch
 
-# MODEL_PATH = "meta-llama/Llama-3.2-1B"
-MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
+MODEL_PATH = "meta-llama/Llama-3.2-1B"
+#MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
 
 def build_llaam_causal_mp(MODEL_PATH):
   b = ComputeGraphBuilder() 
@@ -29,7 +29,7 @@ def build_llaam_causal_mp(MODEL_PATH):
       statics["embed_matrix_post"] = b.safetensor("embed_matrix", MODEL_PATH, "model.embed_tokens.weight")
 
   nodes = [statics]
-  num_layers = 4
+  num_layers = config.num_hidden_layers
 
   for p_idx in range(num_layers):
     with b.partition(f"layer{p_idx}"):
