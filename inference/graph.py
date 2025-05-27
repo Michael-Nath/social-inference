@@ -1559,11 +1559,10 @@ class ComputeGraph:
                 if self.is_protected_partition(p0):
                     continue
                 for p1 in reachibility[p0]:
-                    if p0 < p1:
-                        size = len(self._partitions[p0]) + len(self._partitions[p1])
-                        if size < min_size:
-                            min_pair = (p0, p1)
-                            min_size = size
+                    size = len(self._partitions[p0]) + len(self._partitions[p1])
+                    if size < min_size:
+                        min_pair = (p0, p1)
+                        min_size = size
 
             if min_pair is None:
                 raise ValueError("Cannot coalesce partitions")
