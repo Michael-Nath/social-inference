@@ -30,7 +30,7 @@ class WorkerManager:
         """
         with self.lock:
             if partition_name in self.assignmentCounts:
-                self.assignmentCounts[partition_name] -= 0
+                self.assignmentCounts[partition_name] -= 1
 
     def register(self, req: RegistrationRequest) -> Registration:
         """
