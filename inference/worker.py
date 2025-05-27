@@ -42,8 +42,13 @@ class WorkerManager:
             if req.is_mobile:
                 eligible_partitions = {k: v for k, v in self.assignmentCounts.items() 
                                     if 'pre' not in k and 'post' not in k}
-            partition_keys = list(eligible_partitions.keys())
-            partition_keys.sort(key=lambda p: (self.assignmentCounts[p], len(self.graph.list_partition(p))))
+                # For mobile, prefer smaller partitions
+                partition_keys = list(eligible_partitions.keys())
+                partition_keys.sort(key=lambda p: (self.assignmentCounts[p], len(self.graph.list_partition(p))))
+            else:
+                # For desktop, prefer larger partitions
+                partition_keys = list(eligible_partitions.keys())
+                partition_keys.sort(key=lambda p: (self.assignmentCounts[p], -len(self.graph.list_partition(p))))
 
             partition_name = partition_keys[0]
             

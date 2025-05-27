@@ -1533,45 +1533,38 @@ class ComputeGraph:
     
     def coalesce_partitions(self, n: int):
         """
-        Evenly merge partitions until there are at most n partitions.
+        Coalesce partitions of a model into n chunks. Expects a strict naming convention:
+        - pre
+        - layerN
+        - post
+        should be the only partitions.
         """
+        n_partitions = len(self._partitions) - 2
+        partitions_per_chunk = n_partitions // n
+        chunks = []
+        # Chunk unprotected partitions into n chunks
+        for i in range(n):
+            chunks.append(set())
+        
+        # Put pre in the first and post in the last
+        chunks[0].add("pre")
+        chunks[n - 1].add("post")
 
-        while len(self._partitions) - 4 > n:
-            # Build reachability table
-            reachibility = {}
-            for p in self._partitions:
-                if self.is_protected_partition(p):
-                    continue
-                reachibility[p] = set()
-                for node in self._partitions[p]:
-                    # Check forward edges
-                    for edge in self._forward_edges[node]:
-                        dst_partition = self._nodes[edge.dst].partition
-                        if self.is_protected_partition(dst_partition):
-                            continue
-                        if dst_partition != p:
-                            reachibility[p].add(dst_partition)
-                    
-            # Find smallest pair of adjacent partitions
-            min_pair = None
-            min_size = float('inf')
-            for p0 in self._partitions:
-                if self.is_protected_partition(p0):
-                    continue
-                for p1 in reachibility[p0]:
-                    if p0 < p1:
-                        size = len(self._partitions[p0]) + len(self._partitions[p1])
-                        if size < min_size:
-                            min_pair = (p0, p1)
-                            min_size = size
+        remaining_partitions = list(set(self.get_partitions()) - {"pre", "post", PARTITION_INPUT, PARTITION_OUTPUT})
+        remaining_partitions.sort(key=lambda p: int(p.split("layer")[1]))
 
-            if min_pair is None:
-                raise ValueError("Cannot coalesce partitions")
-            
-            # Merge the two partitions
-            self.merge_partitions(min_pair[0], min_pair[1])
-            
-    
+        subchunks = [remaining_partitions[i:i + partitions_per_chunk] for i in range(0, len(remaining_partitions), partitions_per_chunk)]
+        for i, subchunk in enumerate(subchunks):
+            chunks[i].update(subchunk)
+
+        # Merge chunks
+        for c in chunks:
+            partitions = list(c)
+            if len(partitions) > 1:
+                for i in range(1, len(partitions)):
+                    new_name = self.merge_partitions(partitions[0], partitions[i])
+                    partitions[0] = new_name
+
     def merge_partitions(self, name_0: PartitionName, name_1: PartitionName):
         new_name = f"{name_0}.{name_1}"
         partition_0 = self._partitions[name_0]
@@ -1583,6 +1576,8 @@ class ComputeGraph:
         self._partitions[new_name] = partition_0 | partition_1
         del self._partitions[name_0]
         del self._partitions[name_1]
+
+        return new_name
     
     def split_partition(self, name: PartitionName):
         """

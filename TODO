@@ -8,3 +8,8 @@ Optimization Wishlist
 - Improve kernels (tile many untiled kernels)
 - Shape-only/Stride-only kernels (unsqueeze, broadcast, reshape, etc.)
 - Cleanup internal buffers after execution
+
+Fixes:
+- Kernel WGSL fetching
+- Make frontend pretty
+- Reviving
