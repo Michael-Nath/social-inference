@@ -1,8 +1,6 @@
 from collections import defaultdict, deque
 import threading
 
-from pydantic import BaseModel
-
 from .graph import ComputeGraphEdge
 from .tensor import CorrelatedTensor
 
@@ -22,7 +20,7 @@ class CorrelatedQueue:
     """
 
 
-    def __init__(self, edges: list[ComputeGraphEdge]):
+    def __init__(self, edges: list[ComputeGraphEdge], lock: threading.Lock):
         """
         Initializes the CorrelatedQueue.
 
@@ -30,7 +28,7 @@ class CorrelatedQueue:
             edges: A list of edges (ComputeGraphEdge).
         """
         # self.inputs: dict[ComputeGraphEdge, Queue] = {edge: Queue() for edge in edges}
-        self.lock = threading.Lock()
+        self.lock = lock
         self.cond = threading.Condition(self.lock)
         # Stores partially collected elements for each correlation ID
         # Key: correlation_id (str)

@@ -1,109 +1,6 @@
 import { Node, Graph, Device, GPUDevice, CPUDevice } from "./worker.js";
-// We'll need Kernel eventually, assuming it's defined elsewhere (e.g., kernel_builder.js)
-// For now, let's stub it if it's not imported, or assume KernelBuilder provides it.
 import { GPUKernel } from "./kernel.js";
-
-// --- Utilities ---
-
-/**
- * Calculates the number of bytes required for a tensor.
- * @param {number[]} shape - The tensor shape.
- * @param {string} dtype - The data type (e.g., "float32", "int32").
- * @returns {number} The required byte size.
- * @throws {Error} If the dtype is unsupported.
- */
-function getByteSize(shape, dtype) {
-    const numElements = shape.reduce((a, b) => a * b, 1);
-    let bytesPerElement;
-    switch (dtype) {
-        case "float32":
-            bytesPerElement = 4;
-            break;
-        case "int32":
-        case "uint32":
-            bytesPerElement = 4;
-            break;
-        case "float16": // Note: Check JS/WebGPU handling for f16 data preparation
-            bytesPerElement = 2;
-            break;
-        case "int16":
-        case "uint16":
-            bytesPerElement = 2;
-            break;
-        case "int8":
-        case "uint8":
-            bytesPerElement = 1;
-            break;
-        default:
-            throw new Error(`Unsupported dtype for byte size calculation: ${dtype}`);
-    }
-    return numElements * bytesPerElement;
-}
-
-// --- Kernels --- 
-// Define reusable kernels used by the compiler/executor
-
-/** @type {GPUKernel} */
-const matmulKernel = new GPUKernel({
-    name: "matmul",
-    shaderPath: "kernels/matmul.wgsl",
-    entryPoint: "main",
-    workGroupSize: { x: 16, y: 16, z: 1 },
-    bindingConfig: [
-        {
-            name: "dimensions", // M, K, N
-            isPersistent: false,
-            isOutput: false,
-            type: "uniform",
-        },
-        {
-            name: "input", // Matrix A (M x K)
-            isPersistent: false,
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "weight", // Matrix B (K x N)
-            isPersistent: true, // Example: weights might persist across runs
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "result", // Matrix C (M x N)
-            isPersistent: false,
-            isOutput: true,
-            type: "storage"
-        }
-    ],
-});
-
-/** @type {GPUKernel} */
-const addKernel = new GPUKernel({
-    name: "add",
-    shaderPath: "kernels/add.wgsl",
-    entryPoint: "main",
-    workGroupSize: { x: 64, y: 1, z: 1 }, // Matches shader
-    bindingConfig: [
-        {
-            name: "inputA",
-            isPersistent: false,
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "inputB",
-            isPersistent: false,
-            isOutput: false,
-            type: "read-only-storage"
-        },
-        {
-            name: "result",
-            isPersistent: false,
-            isOutput: true,
-            type: "storage"
-        }
-    ],
-});
+import { SafetensorNode, FixedNode } from "./worker.js";
 
 // Base class for a computation session (a sequence of nodes on one device)
 export class ComputeSession {
@@ -120,9 +17,11 @@ export class ComputeSession {
 
     /**
       * @param {Device} device - The device (CPU or GPU) this session runs on
+      * @param {number} index - The unique index of this session
     */
     constructor(device, index) {
         this.index = index;
+        this.id = index;
         this.device = device;
         this.inputs = new Map();
         this.nodes = [];
@@ -212,11 +111,17 @@ export class SessionGraph {
     _sessionPredecessorEdges;
     /** @type {Map<string, Set<string>>} - Maps final output nodes to final outputs. node => output is only present if node:output is a final output */
     _finalOutputs;
+    /** @type {boolean} */
+    single_step;
+
+    /** @type {boolean} */
+    testMode;
 
     /**
      * @param {ComputeSession[]} sessions - List of compute sessions
+     * @param {boolean} [single_step=false] - Whether the graph is in single_step (trace) mode.
      */
-    constructor(sessions) {
+    constructor(sessions, single_step = false) {
         this.sessions = sessions;
         this._nodeToSession = new Map();
         this._outputDependencies = new Map();
@@ -225,6 +130,7 @@ export class SessionGraph {
         this._finalOutputs = new Map();
         // Initialize edge maps for all provided sessions
         sessions.forEach(session => this._initializeSessionEdges(session));
+        this.single_step = single_step;
     }
 
     /**
@@ -310,108 +216,194 @@ export class SessionGraph {
     }
 
     /**
-     * Builds a SessionGraph from a node graph.
-     * This involves creating sessions, assigning nodes, and establishing dependencies.
+     * Builds a SessionGraph from a node graph using a greedy approach to consolidate sessions.
+     * It maintains one active CPU session and one active GPU session, adding nodes to them
+     * if dependencies are met from within the same session, the other active session, or
+     * already finalized sessions. A new session is created if a node cannot be added to
+     * the current active session of its type.
      * @param {Graph} graph - The input graph of nodes.
+     * @param {boolean} [single_step=false] - Whether the graph is in single_step (trace) mode.
      * @returns {SessionGraph} - The constructed SessionGraph.
      */
-    static buildFromGraph(graph) {
+    static buildFromGraph(graph, single_step = false) {
         const sortedNodes = graph.topologicalSort();
-        const initialSessions = []; // Temporary list to hold sessions during creation
-        const nodeToSessionAssignment = new Map(); // Temporary map for node to session assignment
+        const finalSessionsList = [];
+        const nodeToSessionMap = new Map();
+        let currentCPUSession = null;
+        let currentGPUSession = null;
+        let nextSessionId = 0;
 
-        let currentSession = null;
+        // Helper function to get predecessor node objects
+        function getPredecessorNodeObjects(nodeName, currentGraph) {
+            const preds = [];
+            for (const edge of currentGraph.edges) {
+                if (edge.dst === nodeName) {
+                    if (currentGraph.nodes[edge.src]) {
+                        preds.push(currentGraph.nodes[edge.src]);
+                    } else {
+                        throw new Error(`Predecessor node ${edge.src} not found in graph nodes map for edge to ${nodeName}.`);
+                    }
+                }
+            }
+            return preds;
+        }
+
         for (const node of sortedNodes) {
-            let shouldStartNewSession = false;
-
             if (!node.devicePreference) {
-                 throw new Error(`Node ${node.name} has no devicePreference assigned.`);
+                throw new Error(`Node ${node.name} has no devicePreference assigned.`);
             }
             if (node.weight === undefined) {
                 throw new Error(`Weight not computed for node ${node.name} (${node.type}). Ensure _computeWeights runs before buildFromGraph.`);
             }
 
-            // Determine the target device ("gpu" or "cpu") for the current node using its weight.
             const targetDeviceName = node.devicePreference.pickDevice(node.weight);
-            let TargetDeviceClass;
+            let TargetDeviceClass; // Not used directly for instanceof, but for logic
             if (targetDeviceName === "gpu") {
                 TargetDeviceClass = GPUDevice;
             } else if (targetDeviceName === "cpu") {
                 TargetDeviceClass = CPUDevice;
             } else {
-                // This case should ideally be caught by pickDevice or earlier checks if neither is supported
                 throw new Error(`Node ${node.name}'s preference resolved to an unknown device type: ${targetDeviceName}`);
             }
 
-            if(targetDeviceName === "cpu" && node.weight > 10000) {
+            if (targetDeviceName === "cpu" && node.weight > 10000) {
                 console.warn(`Node ${node.name} has a weight of ${node.weight} and is being placed on the CPU.`);
             }
 
-            if (!currentSession || !(currentSession.device instanceof TargetDeviceClass)) {
-                shouldStartNewSession = true;
-            } else {
-                for (const edge of graph.edges) {
-                    if (edge.dst === node.name) {
-                        const srcNode = graph.nodes[edge.src];
-                        if (nodeToSessionAssignment.has(srcNode.name) && nodeToSessionAssignment.get(srcNode.name) !== currentSession) {
-                            shouldStartNewSession = true;
+            let canAddToExisting = false;
+            let targetSessionForAdding = null;
+            let dependencyViolated = false;
+            const predecessors = getPredecessorNodeObjects(node.name, graph);
+
+            if (targetDeviceName === "cpu") {
+                if (currentCPUSession) {
+                    targetSessionForAdding = currentCPUSession;
+                    let isCompatible = true;
+                    for (const predNode of predecessors) {
+                        const predSession = nodeToSessionMap.get(predNode.name);
+                        if (!predSession) { 
+                            throw new Error(`Session for predecessor ${predNode.name} of node ${node.name} not found.`); 
+                        }
+
+                        // Corrected logic:
+                        // If predecessor is in the *other* active session (currentGPUSession), it's incompatible for currentCPUSession.
+                        if (predSession === currentGPUSession) {
+                            dependencyViolated = true;
+                            isCompatible = false;
                             break;
                         }
+                        // Otherwise, predSession must be currentCPUSession itself or a finalized session.
+                        if (!(predSession === currentCPUSession || finalSessionsList.includes(predSession))) {
+                            isCompatible = false;
+                            break;
+                        }
+                    }
+                    if (isCompatible) {
+                        canAddToExisting = true;
+                    }
+                }
+            } else { // targetDeviceName === "gpu"
+                if (currentGPUSession) { // If there's an active GPU session
+                    targetSessionForAdding = currentGPUSession;
+                    let isCompatible = true;
+                    for (const predNode of predecessors) {
+                        const predSession = nodeToSessionMap.get(predNode.name);
+                        if (!predSession) {
+                            throw new Error(`Session for predecessor ${predNode.name} of node ${node.name} not found.`);
+                        }
+                        
+                        // Corrected logic:
+                        // If predecessor is in the *other* active session (currentCPUSession), it's incompatible for currentGPUSession.
+                        if (predSession === currentCPUSession) {
+                            dependencyViolated = true;
+                            isCompatible = false;
+                            break;
+                        }
+                        // Otherwise, predSession must be currentGPUSession itself or a finalized session.
+                        if (!(predSession === currentGPUSession || finalSessionsList.includes(predSession))) {
+                            isCompatible = false;
+                            break;
+                        }
+                    }
+                    if (isCompatible) {
+                        canAddToExisting = true;
                     }
                 }
             }
 
-            if (shouldStartNewSession) {
-                let chosenDevice;
-                if (targetDeviceName === "gpu") {
-                    chosenDevice = new GPUDevice();
-                } else { // targetDeviceName === "cpu"
-                    chosenDevice = new CPUDevice();
+            if (canAddToExisting && targetSessionForAdding) {
+                targetSessionForAdding.add(node);
+                nodeToSessionMap.set(node.name, targetSessionForAdding);
+            } else {
+                if (targetDeviceName === "cpu") {
+                    if (currentCPUSession) {
+                        if (currentGPUSession && dependencyViolated) {
+                            finalSessionsList.push(currentGPUSession);
+                            currentGPUSession = null;
+                        }
+                        finalSessionsList.push(currentCPUSession);
+                    }
+                    currentCPUSession = SessionGraph.createSession(new CPUDevice(), nextSessionId++);
+                    currentCPUSession.add(node);
+                    nodeToSessionMap.set(node.name, currentCPUSession);
+                } else { // targetDeviceName === "gpu"
+                    if (currentGPUSession) {
+                        if (currentCPUSession && dependencyViolated) {
+                            // Check if any node in currentCPUSession has a predecessor in currentGPUSession
+                            finalSessionsList.push(currentCPUSession);
+                            currentCPUSession= null
+                        }
+                        finalSessionsList.push(currentGPUSession);
+                    }
+                    currentGPUSession = SessionGraph.createSession(new GPUDevice(), nextSessionId++);
+                    currentGPUSession.add(node);
+                    nodeToSessionMap.set(node.name, currentGPUSession);
                 }
-                currentSession = SessionGraph.createSession(chosenDevice, initialSessions.length);
-                initialSessions.push(currentSession);
             }
-
-            currentSession.add(node); // Add node to the session
-            nodeToSessionAssignment.set(node.name, currentSession); // Map node name to its assigned session
         }
 
-        // Now that sessions are created and nodes assigned, instantiate the SessionGraph
-        const sessionGraphInstance = new SessionGraph(initialSessions);
-        sessionGraphInstance._nodeToSession = nodeToSessionAssignment; // Assign the populated map
+        if (currentCPUSession) {
+            finalSessionsList.push(currentCPUSession);
+        }
+        if (currentGPUSession) {
+            finalSessionsList.push(currentGPUSession);
+        }
+        finalSessionsList.sort((a, b) => a.id - b.id)
 
-        // Build session DAG edges (_sessionEdges and _sessionPredecessorEdges)
-        // initialSessions.forEach(s => sessionGraphInstance._initializeSessionEdges(s)); // Already done by constructor
+        const sessionGraphInstance = new SessionGraph(finalSessionsList, single_step);
+        sessionGraphInstance._nodeToSession = nodeToSessionMap;
 
         for (const edge of graph.edges) {
             const srcNode = graph.nodes[edge.src];
             const dstNode = graph.nodes[edge.dst];
 
-            const srcSession = nodeToSessionAssignment.get(srcNode.name);
-            const dstSession = nodeToSessionAssignment.get(dstNode.name);
+            if (srcNode && dstNode) {
+                const srcSession = nodeToSessionMap.get(srcNode.name);
+                const dstSession = nodeToSessionMap.get(dstNode.name);
 
-            if (srcSession && dstSession && srcSession !== dstSession) {
-                sessionGraphInstance._addSessionEdge(srcSession, dstSession);
-            } else if (!srcSession || !dstSession) {
-                console.warn(`Edge ${edge.src}->${edge.dst} links nodes not found in assigned sessions during SessionGraph construction.`);
+                if (srcSession && dstSession && srcSession !== dstSession) {
+                    sessionGraphInstance._addSessionEdge(srcSession, dstSession);
+                } else if (!srcSession || !dstSession) {
+                    console.warn(`Edge ${edge.src}->${edge.dst} links nodes not found in assigned sessions map during SessionGraph construction.`);
+                }
+            } else {
+                 console.warn(`Edge ${edge.src}->${edge.dst} refers to a non-existent node in graph.nodes during SessionGraph final edge construction.`);
             }
         }
 
-        // Build output dependencies (_outputDependencies)
-        // _outputDependencies is cleared in the constructor, so we build it fresh here.
         for (const edge of graph.edges) {
             const srcNode = graph.nodes[edge.src];
             const dstNode = graph.nodes[edge.dst];
-
-            if (nodeToSessionAssignment.has(srcNode.name) && nodeToSessionAssignment.has(dstNode.name)) {
-                const srcSession = nodeToSessionAssignment.get(srcNode.name);
-                const dstSession = nodeToSessionAssignment.get(dstNode.name);
-                if (srcSession !== dstSession) {
+            
+            if (srcNode && dstNode) {
+                const srcSession = nodeToSessionMap.get(srcNode.name);
+                const dstSession = nodeToSessionMap.get(dstNode.name);
+                if (srcSession && dstSession && srcSession !== dstSession) {
                     sessionGraphInstance._addOutputDependency(srcNode, dstSession);
                 }
             }
         }
-        console.log("Session Graph built by SessionGraph.buildFromGraph:", sessionGraphInstance);
+        console.log("Session Graph built by new SessionGraph.buildFromGraph algorithm:", sessionGraphInstance);
         return sessionGraphInstance;
     }
 }
@@ -505,12 +497,13 @@ export class KernelCompiler {
     /**
      * Creates a session graph (DAG) from a graph of nodes.
      * @param {Graph} graph - The input graph to create sessions from
+     * @param {boolean} partitionShouldTrace - Whether to enable single_step tracing for the session graph.
      * @returns {SessionGraph} - A graph of compute sessions representing the execution DAG.
      * @private // Keep static for now as it doesn't depend on this.device
      */
-    static createSessionsFrom(graph) {
+    static createSessionsFrom(graph, partitionShouldTrace) {
         // All logic is now encapsulated in SessionGraph.buildFromGraph
-        const sessionGraph = SessionGraph.buildFromGraph(graph);
+        const sessionGraph = SessionGraph.buildFromGraph(graph, partitionShouldTrace);
         console.log("Session Graph created via KernelCompiler.createSessionsFrom (delegated to SessionGraph.buildFromGraph):", sessionGraph);
         return sessionGraph;
     }
@@ -605,8 +598,9 @@ export class KernelCompiler {
 
                         // Readback if this output is a final output
                         if(
-                            sessionGraph._finalOutputs.has(node.name) &&
-                            sessionGraph._finalOutputs.get(node.name).has(outputName)
+                            (sessionGraph._finalOutputs.has(node.name) &&
+                            sessionGraph._finalOutputs.get(node.name).has(outputName)) ||
+                            sessionGraph.single_step
                         ) {
                             readback = true;
                         }
@@ -620,6 +614,32 @@ export class KernelCompiler {
 
             session.resourcePlan = resourcePlan;
             console.log("Planned resources:", resourcePlan);
+        }
+
+        // Find cacheable nodes
+        const topo = originalGraph.topologicalSort();
+        for (const node of topo) {
+            // Two always-cacheable nodes
+            if (node instanceof SafetensorNode || node instanceof FixedNode) {
+                node.cacheable = true;
+            }
+            // Check if all of the node's inputs are cacheable
+            node.cacheable = true;
+            for(const input of node.get_inputs()) {
+                // Backward edge to input node must exist (node must be attached to a node in this partition)
+                if(backwardEdges.has(node.name) && backwardEdges.get(node.name).has(input)) {
+                    const inputNode = backwardEdges.get(node.name).get(input).split(':')[0];
+                    const inputNodeObj = originalGraph.nodes[inputNode];
+                    // Node must exist and be cacheable
+                    if(!inputNodeObj || !inputNodeObj.cacheable) {
+                        node.cacheable = false;
+                        break;
+                    }
+                } else {
+                    node.cacheable = false;
+                    break;
+                }
+            }
         }
     }
 
@@ -745,7 +765,7 @@ export class KernelCompiler {
         }
 
         // 2. Create Session DAG (Static)
-        const sessionGraph = KernelCompiler.createSessionsFrom(graph);
+        const sessionGraph = KernelCompiler.createSessionsFrom(graph, partition.shouldTrace);
         console.log("Compile Step: Session Graph created:", sessionGraph);
 
         // 4. Prepare GPU Resources (Instance Method using this.device)

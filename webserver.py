@@ -1,30 +1,40 @@
 import base64
 import io
-import json
-from fastapi import FastAPI
-from fastapi.middleware.gzip import GZipMiddleware
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
 
 from inference import (
-    ModelCache, Registration, ComputePipeline, WorkerManager, 
-    PartitionWork, PartitionWorkResult, PartitionName, 
-    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder,
-    simulator
+    ModelCache, Registration, ComputePipeline, WorkerManager, NextTokenManager,
+    PartitionName, SingleStepChunk, Prompt,
+    PipelineOutput, Tensor, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
+    read_encoded_partition_work_result, simulator
 )
 
+from inference.graph import PARTITION_INPUT, PARTITION_OUTPUT
+from inference.builds import build_llaam_causal_mp
+
+from inference.pipeline import CorrelationResponse
+from inference.worker import RegistrationRequest
 import tests
 
-# Import test functions from tests.py
-import tests
 
-CHECK_WORK = True
+llama_model_param_keys = ['embed_tokens.weight', 'layers.0.self_attn.q_proj.weight', 'layers.0.self_attn.k_proj.weight', 'layers.0.self_attn.v_proj.weight', 'layers.0.self_attn.o_proj.weight', 'layers.0.mlp.gate_proj.weight', 'layers.0.mlp.up_proj.weight', 'layers.0.mlp.down_proj.weight', 'layers.0.input_layernorm.weight', 'layers.0.post_attention_layernorm.weight', 'layers.1.self_attn.q_proj.weight', 'layers.1.self_attn.k_proj.weight', 'layers.1.self_attn.v_proj.weight', 'layers.1.self_attn.o_proj.weight', 'layers.1.mlp.gate_proj.weight', 'layers.1.mlp.up_proj.weight', 'layers.1.mlp.down_proj.weight', 'layers.1.input_layernorm.weight', 'layers.1.post_attention_layernorm.weight', 'layers.2.self_attn.q_proj.weight', 'layers.2.self_attn.k_proj.weight', 'layers.2.self_attn.v_proj.weight', 'layers.2.self_attn.o_proj.weight', 'layers.2.mlp.gate_proj.weight', 'layers.2.mlp.up_proj.weight', 'layers.2.mlp.down_proj.weight', 'layers.2.input_layernorm.weight', 'layers.2.post_attention_layernorm.weight', 'layers.3.self_attn.q_proj.weight', 'layers.3.self_attn.k_proj.weight', 'layers.3.self_attn.v_proj.weight', 'layers.3.self_attn.o_proj.weight', 'layers.3.mlp.gate_proj.weight', 'layers.3.mlp.up_proj.weight', 'layers.3.mlp.down_proj.weight', 'layers.3.input_layernorm.weight', 'layers.3.post_attention_layernorm.weight', 'layers.4.self_attn.q_proj.weight', 'layers.4.self_attn.k_proj.weight', 'layers.4.self_attn.v_proj.weight', 'layers.4.self_attn.o_proj.weight', 'layers.4.mlp.gate_proj.weight', 'layers.4.mlp.up_proj.weight', 'layers.4.mlp.down_proj.weight', 'layers.4.input_layernorm.weight', 'layers.4.post_attention_layernorm.weight', 'layers.5.self_attn.q_proj.weight', 'layers.5.self_attn.k_proj.weight', 'layers.5.self_attn.v_proj.weight', 'layers.5.self_attn.o_proj.weight', 'layers.5.mlp.gate_proj.weight', 'layers.5.mlp.up_proj.weight', 'layers.5.mlp.down_proj.weight', 'layers.5.input_layernorm.weight', 'layers.5.post_attention_layernorm.weight', 'layers.6.self_attn.q_proj.weight', 'layers.6.self_attn.k_proj.weight', 'layers.6.self_attn.v_proj.weight', 'layers.6.self_attn.o_proj.weight', 'layers.6.mlp.gate_proj.weight', 'layers.6.mlp.up_proj.weight', 'layers.6.mlp.down_proj.weight', 'layers.6.input_layernorm.weight', 'layers.6.post_attention_layernorm.weight', 'layers.7.self_attn.q_proj.weight', 'layers.7.self_attn.k_proj.weight', 'layers.7.self_attn.v_proj.weight', 'layers.7.self_attn.o_proj.weight', 'layers.7.mlp.gate_proj.weight', 'layers.7.mlp.up_proj.weight', 'layers.7.mlp.down_proj.weight', 'layers.7.input_layernorm.weight', 'layers.7.post_attention_layernorm.weight', 'layers.8.self_attn.q_proj.weight', 'layers.8.self_attn.k_proj.weight', 'layers.8.self_attn.v_proj.weight', 'layers.8.self_attn.o_proj.weight', 'layers.8.mlp.gate_proj.weight', 'layers.8.mlp.up_proj.weight', 'layers.8.mlp.down_proj.weight', 'layers.8.input_layernorm.weight', 'layers.8.post_attention_layernorm.weight', 'layers.9.self_attn.q_proj.weight', 'layers.9.self_attn.k_proj.weight', 'layers.9.self_attn.v_proj.weight', 'layers.9.self_attn.o_proj.weight', 'layers.9.mlp.gate_proj.weight', 'layers.9.mlp.up_proj.weight', 'layers.9.mlp.down_proj.weight', 'layers.9.input_layernorm.weight', 'layers.9.post_attention_layernorm.weight', 'layers.10.self_attn.q_proj.weight', 'layers.10.self_attn.k_proj.weight', 'layers.10.self_attn.v_proj.weight', 'layers.10.self_attn.o_proj.weight', 'layers.10.mlp.gate_proj.weight', 'layers.10.mlp.up_proj.weight', 'layers.10.mlp.down_proj.weight', 'layers.10.input_layernorm.weight', 'layers.10.post_attention_layernorm.weight', 'layers.11.self_attn.q_proj.weight', 'layers.11.self_attn.k_proj.weight', 'layers.11.self_attn.v_proj.weight', 'layers.11.self_attn.o_proj.weight', 'layers.11.mlp.gate_proj.weight', 'layers.11.mlp.up_proj.weight', 'layers.11.mlp.down_proj.weight', 'layers.11.input_layernorm.weight', 'layers.11.post_attention_layernorm.weight', 'layers.12.self_attn.q_proj.weight', 'layers.12.self_attn.k_proj.weight', 'layers.12.self_attn.v_proj.weight', 'layers.12.self_attn.o_proj.weight', 'layers.12.mlp.gate_proj.weight', 'layers.12.mlp.up_proj.weight', 'layers.12.mlp.down_proj.weight', 'layers.12.input_layernorm.weight', 'layers.12.post_attention_layernorm.weight', 'layers.13.self_attn.q_proj.weight', 'layers.13.self_attn.k_proj.weight', 'layers.13.self_attn.v_proj.weight', 'layers.13.self_attn.o_proj.weight', 'layers.13.mlp.gate_proj.weight', 'layers.13.mlp.up_proj.weight', 'layers.13.mlp.down_proj.weight', 'layers.13.input_layernorm.weight', 'layers.13.post_attention_layernorm.weight', 'layers.14.self_attn.q_proj.weight', 'layers.14.self_attn.k_proj.weight', 'layers.14.self_attn.v_proj.weight', 'layers.14.self_attn.o_proj.weight', 'layers.14.mlp.gate_proj.weight', 'layers.14.mlp.up_proj.weight', 'layers.14.mlp.down_proj.weight', 'layers.14.input_layernorm.weight', 'layers.14.post_attention_layernorm.weight', 'layers.15.self_attn.q_proj.weight', 'layers.15.self_attn.k_proj.weight', 'layers.15.self_attn.v_proj.weight', 'layers.15.self_attn.o_proj.weight', 'layers.15.mlp.gate_proj.weight', 'layers.15.mlp.up_proj.weight', 'layers.15.mlp.down_proj.weight', 'layers.15.input_layernorm.weight', 'layers.15.post_attention_layernorm.weight', 'norm.weight']
+llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight', 'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight', 'input_layernorm.weight', 'post_attention_layernorm.weight']
+
+MODEL_PATH = "meta-llama/Llama-3.2-1B"
+# MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
 
 model_cache = ModelCache()
-pipeline, g = tests.test_safetensor()
-worker_manager = WorkerManager(g)
+llama_graph = build_llaam_causal_mp(MODEL_PATH)
+llama_graph.coalesce_partitions(4)
+pipeline = ComputePipeline(llama_graph)
+
+
+worker_manager = WorkerManager(llama_graph)
+next_tok_manager = NextTokenManager(MODEL_PATH, pipeline)
 
 app = FastAPI()
 
@@ -38,33 +48,46 @@ app = FastAPI()
 # )
 
 inflight_work = {}
-
-app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses larger than 1KB
+sim_results = {}
 
 @app.post("/register", response_model=Registration)
-async def register():
+async def register(req: RegistrationRequest):
     """
     Called by clients to register their capabilities and request assignment to work.
     """
-    return worker_manager.register()
+    return worker_manager.register(req)
 
-@app.post("/input")
-async def push_input(input: PipelineInput):
+@app.post("/revived/{partition_name}")
+async def revived(partition_name: PartitionName):
+    """
+    Called by clients when they observe a prior partition
+    """
+    worker_manager.revived(partition_name)
+
+@app.post("/input", response_model=CorrelationResponse)
+async def push_input(req: Prompt):
     """
     Called by clients to push inference inputs
     """
-    pipeline.enqueue_input(input)
+    return next_tok_manager.push(req)
 
-@app.get("/output", response_model=PipelineOutput | None)
-async def get_output():
+@app.get("/output/{cid}")
+async def get_output(cid: str):
     """
     Called by clients to get inference outputs
     """
-    return pipeline.dequeue_output(blocking=False)
+    return next_tok_manager.peek(cid)
 
 class SafetensorHeader(BaseModel):
     dtype: str
     shape: list[int]
+
+async def stream_bytes(bytes: bytes, chunk_size: int = 1024 * 500):
+    n_bytes = len(bytes)
+    for i in range(0, n_bytes, chunk_size):
+        start = i
+        end = min(i + chunk_size, n_bytes)
+        yield bytes[start:end]
 
 @app.get("/safetensor/{model_name}/{tensor_name}")
 async def get_safetensor(model_name: str, tensor_name: str):
@@ -89,41 +112,70 @@ async def get_safetensor(model_name: str, tensor_name: str):
             tensor = tensor.to(torch.float32)
         elif tensor.dtype == torch.float16:
             tensor = tensor.to(torch.float32)
-        bytes = tensor.detach().cpu().numpy().tobytes()
-        dtype_str = str(tensor.dtype)
-        if dtype_str.startswith('torch.'):
-            dtype_str = dtype_str[6:]  # Remove 'torch.' prefix
-        header = SafetensorHeader(
-            dtype=dtype_str,
-            shape=list(tensor.shape),
-        )
-        # Convert to JSON then prefix byte array
-        header_bytes = header.model_dump_json().encode('utf-8')
-        header_size = len(header_bytes).to_bytes(4, byteorder='big')
-        return StreamingResponse(io.BytesIO(header_size + header_bytes + bytes), media_type="application/octet-stream")
+        tensor = Tensor.from_torch(tensor)
+    tensorBytes = bytearray(size_encoded_tensor(tensor))
+    write_encoded_tensor(tensorBytes, 0, tensor)
+    tensorBytes = bytes(tensorBytes)
 
-@app.get("/work/{partition_name}", response_model=PartitionWork | None)
+    # For large files, use chunked transfer encoding
+    return StreamingResponse(
+        stream_bytes(tensorBytes),  # Send the entire buffer as one chunk
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(tensorBytes)),
+        }
+    )
+
+@app.get("/work/{partition_name}")
 async def get_work(partition_name: PartitionName):
     """
     Called by clients to request inference inputs
     """
     w = pipeline.get_partition_work(partition_name)
-    if CHECK_WORK:
-        inflight_work[(partition_name, w.correlation_id)] = w
-    return w
+    if w is not None:
+        w.should_trace = False 
+        inflight_work[(w.partition, w.correlation_id)] = w
+        tensor_bytes = bytearray(size_encoded_partition_work(w))
+        write_encoded_partition_work(tensor_bytes, 0, w)
+        tensor_bytes = bytes(tensor_bytes)
+        return StreamingResponse(
+            stream_bytes(tensor_bytes),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(len(tensor_bytes)),
+            } 
+        )
+    return StreamingResponse(io.BytesIO(b""), status_code=404, media_type="application/octet-stream")
 
 @app.post("/work")
-async def submit_work(work: PartitionWorkResult):
+async def submit_work(req: Request):
     """
     Called by clients to submit inference results
     """
-    # Check work
-    if CHECK_WORK:
-        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache)
-        gt.close_to(work)
-    return pipeline.submit_partition_work(work)
+    body = bytearray()
+    async for chunk in req.stream():
+        body.extend(chunk)
+    # Parse JSON
+    work, _ = read_encoded_partition_work_result(0, body)
+    pipeline.submit_partition_work(work)
+    next_tok_manager.submit_next_work()
 
-
+@app.post("/check-work")
+async def check_work(req: Request):
+    body = bytearray()
+    async for chunk in req.stream():
+        body.extend(chunk)
+    
+    work, _ = SingleStepChunk.decode(0, body)
+    if (work.partition, work.correlation_id) not in sim_results:
+        print("SIMULATING")
+        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache, True)
+        sim_results[(work.partition, work.correlation_id)] = gt
+        
+    gt = sim_results[(work.partition, work.correlation_id)]
+    work.consistent_with(gt)
+    if work.last_chunk:
+        print("All chunks have been verified :)")
 
 # Mount the frontend directory to serve static files
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -4,10 +4,22 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal, Union
 from copy import deepcopy
-from pydantic import BaseModel, Field
 import torch
+
+from inference.tensor import (
+    # Tensor
+    size_encoded_tensor,
+    write_encoded_tensor,
+    read_encoded_tensor,
+)
+from inference.encoding import (
+    # String
+    size_encoded_string,
+    write_encoded_string,
+    read_encoded_string,
+    write_be_int
+)
 
 from inference.tensor import Tensor
 from inference.name_scope import NameScope
@@ -43,6 +55,20 @@ class ComputeGraphNode(ABC):
         self.name = name
         self.partition = partition
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = write_encoded_string(data, offset, self.name)
+        offset = write_encoded_string(data, offset, self.partition)
+        return offset
+
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return size_encoded_string(self.name) + size_encoded_string(self.partition)
+
     @abstractmethod
     def get_input_names(self) -> set[str]:
         """
@@ -59,122 +85,63 @@ class ComputeGraphNode(ABC):
 
 type Node = ComputeGraphNode
 
-class DebugNodeEncoding(BaseModel):
-    """
-    API-encoded debug node.
-    """
-
-    type: Literal["debug"]
-    name: NodeName
-
-class SafetensorNodeEncoding(BaseModel):
-    """
-    API-encoded Safetensor node.
-    """
-    type: Literal["safetensor"]
-    name: NodeName
-    model_name: str
-    tensor_name: str
-
-class MatmulNodeEncoding(BaseModel):
-    """
-    API-encoded matmul node.
-    """
-    type: Literal["matmul"]
-    name: NodeName
-
-class SoftmaxNodeEncoding(BaseModel):
-    """
-    API-encoded softmax node.
-    """
-
-    type: Literal["softmax"]
-    name: NodeName
-
-class SliceNodeEncoding(BaseModel):
-    """
-    API-encoded slice node.
-    """
-    type: Literal["slice"]
-    name: NodeName
-
-class ReshapeNodeEncoding(BaseModel):
-    """
-    API-encoded reshape node.
-    """
-
-    type: Literal["reshape"]
-    name: NodeName
-
-class UnsqueezeNodeEncoding(BaseModel):
-    """
-    API-encoded unsqueeze node.
-    """
-    type: Literal["unsqueeze"]
-    name: NodeName
-
-class BroadcastNodeEncoding(BaseModel):
-    """
-    API-encoded broadcast node.
-    """
-    type: Literal["broadcast"]
-    name: NodeName
-
-class CatNodeEncoding(BaseModel):
-    """
-    API-encoded concatenation node.
-    """
-    type: Literal["cat"]
-    name: NodeName
-
-class FixedNodeEncoding(BaseModel):
-    """
-    API-encoded fixed tensor node.
-    """
-    type: Literal["fixed"]
-    name: NodeName
-    tensor: Tensor
-
-class HadamardNodeEncoding(BaseModel):
-    """
-    API-encoded hadamard product node.
-    """
-    type: Literal["hadamard"]
-    name: NodeName
-
-class IndexNodeEncoding(BaseModel):
-    """
-    API-encoded index node.
-    """
-    type: Literal["index"]
-    name: NodeName
-
-class ShapeNodeEncoding(BaseModel):
-    """
-    API-encoded shape node.
-    """
-    type: Literal["shape"]
-    name: NodeName
-
-class TransposeNodeEncoding(BaseModel):
-    """
-    API-encoded transpose node.
-    """
-    type: Literal["transpose"]
-    name: NodeName
-    dim0: int
-    dim1: int
-
 class DebugNode(ComputeGraphNode):
     INPUT : NodeInput = "input"
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "debug")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("debug")
 
     def get_input_names(self) -> set[str]:
         return { DebugNode.INPUT }
     
     def get_output_names(self) -> set[str]:
         return { DEFAULT_NODE_OUTPUT }
+    
+class CastNode(ComputeGraphNode):
+    """
+    Cast a tensor to a different dtype.
+    """
+    INPUT: NodeInput = "input"
+    dtype: str
+
+    def __init__(self, name: NodeName, partition: PartitionName, dtype: str):
+        super().__init__(name, partition)
+        self.dtype = dtype
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "cast")
+        offset = write_encoded_string(data, offset, self.dtype)
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("cast") + size_encoded_string(self.dtype)
+
+    def get_input_names(self) -> set[str]:
+        return {CastNode.INPUT}
+    
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
 
 class AddNode(ComputeGraphNode):
     """
@@ -186,25 +153,25 @@ class AddNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "add")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("add")
+
     def get_input_names(self) -> set[str]:
         return {AddNode.A, AddNode.B}
 
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
-
-class AddNodeEncoding(BaseModel):
-    """
-    API-encoded add node.
-    """
-    type: Literal["add"]
-    name: NodeName
-
-class DivNodeEncoding(BaseModel):
-    """
-    API-encoded division node.
-    """
-    type: Literal["div"]
-    name: NodeName
 
 class DivNode(ComputeGraphNode):
     """
@@ -216,126 +183,25 @@ class DivNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "div")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("div")
+
     def get_input_names(self) -> set[str]:
         return {self.A, self.B}
     
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
-
-class FloorNodeEncoding(BaseModel):
-    """
-    API-encoded floor node.
-    """
-    type: Literal["floor"]
-    name: NodeName
-
-class CeilNodeEncoding(BaseModel):
-    """
-    API-encoded ceil node.
-    """
-    type: Literal["ceil"]
-    name: NodeName
-
-class SquaredNodeEncoding(BaseModel):
-    """
-    API-encoded squared node.
-    """
-    type: Literal["squared"]
-    name: NodeName
-
-class ReduceMeanNodeEncoding(BaseModel):
-    """
-    API-encoded reduce_mean node.
-    """
-    type: Literal["reduce_mean"]
-    name: NodeName
-
-class RsqrtNodeEncoding(BaseModel):
-    """
-    API-encoded rsqrt node.
-    """
-    type: Literal["rsqrt"]
-    name: NodeName
-
-class SiluNodeEncoding(BaseModel):
-    """
-    API-encoded SiLU node.
-    """
-    type: Literal["silu"]
-    name: NodeName
-
-class CosNodeEncoding(BaseModel):
-    """
-    API-encoded Cosine node.
-    """
-    type: Literal["cos"]
-    name: NodeName
-
-class SinNodeEncoding(BaseModel):
-    """
-    API-encoded Sine node.
-    """
-    type: Literal["sin"]
-    name: NodeName
-
-class IndexSelectNodeEncoding(BaseModel):
-    """
-    API-encoded IndexSelect node.
-    """
-    type: Literal["index_select"]
-    name: NodeName
-
-type NodeEncoding = Annotated[
-    Union[
-        MatmulNodeEncoding,
-        SafetensorNodeEncoding,
-        SoftmaxNodeEncoding,
-        SliceNodeEncoding,
-        UnsqueezeNodeEncoding,
-        BroadcastNodeEncoding,
-        CatNodeEncoding,
-        FixedNodeEncoding,
-        HadamardNodeEncoding,
-        IndexNodeEncoding,
-        AddNodeEncoding,
-        ShapeNodeEncoding,
-        ReshapeNodeEncoding,
-        TransposeNodeEncoding,
-        DivNodeEncoding,
-        FloorNodeEncoding,
-        CeilNodeEncoding,
-        SquaredNodeEncoding,
-        ReduceMeanNodeEncoding,
-        RsqrtNodeEncoding,
-        DebugNodeEncoding,
-        SiluNodeEncoding,
-        CosNodeEncoding,
-        SinNodeEncoding,
-        IndexSelectNodeEncoding
-    ],
-    Field(discriminator="type")
-]
-"""
-API-encoded node.
-
-No Input/Output nodes since those are never sent to workers.
-"""
-
-class EdgeEncoding(BaseModel):
-    """
-    API-encoded edge.
-    """
-    src: NodeName
-    src_output: NodeOutput
-    dst: NodeName
-    dst_input: NodeInput
-
-class GraphEncoding(BaseModel):
-    """
-    API-encoded graph.
-    """
-    nodes: dict[NodeName, NodeEncoding]
-    edges: list[EdgeEncoding]
 
 class InputNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
@@ -374,6 +240,22 @@ class SafetensorNode(ComputeGraphNode):
         self.model_name = model_name
         self.tensor_name = tensor_name
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "safetensor")
+        offset = write_encoded_string(data, offset, self.model_name)
+        offset = write_encoded_string(data, offset, self.tensor_name)
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("safetensor") + size_encoded_string(self.model_name) + size_encoded_string(self.tensor_name)
+
     def get_input_names(self) -> set[str]:
         return set()
 
@@ -386,6 +268,20 @@ class MatmulNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "matmul")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("matmul")
 
     def get_input_names(self) -> set[str]:
         return {self.LHS, self.RHS}
@@ -400,6 +296,20 @@ class SoftmaxNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+    
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "softmax")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("softmax")
     
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.DIM}
@@ -420,6 +330,20 @@ class SliceNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "slice")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("slice")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.DIM, self.START, self.END} 
     
@@ -436,6 +360,20 @@ class UnsqueezeNode(ComputeGraphNode):
     
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "unsqueeze")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("unsqueeze")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.DIM}
@@ -455,6 +393,20 @@ class BroadcastNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "broadcast")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("broadcast")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.DIM, self.N}
     
@@ -473,6 +425,20 @@ class CatNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "cat")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("cat")
+
     def get_input_names(self) -> set[str]:
         return {self.A, self.B, self.DIM}
     
@@ -487,9 +453,27 @@ class FixedNode(ComputeGraphNode):
     """
     tensor: torch.Tensor
     
-    def __init__(self, name: NodeName, partition: PartitionName, tensor: torch.Tensor):
+    def __init__(self, name: NodeName, partition: PartitionName, tensor: torch.Tensor | Tensor):
         super().__init__(name, partition)
-        self.tensor = tensor
+        if isinstance(tensor, torch.Tensor):
+            self.tensor = Tensor.from_torch(tensor)
+        else:
+            self.tensor = tensor
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "fixed")
+        offset = write_encoded_tensor(data, offset, self.tensor)
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("fixed") + size_encoded_tensor(self.tensor)
 
     def get_input_names(self) -> set[str]:
         return {}
@@ -506,6 +490,20 @@ class HadamardNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "hadamard")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("hadamard")
 
     def get_input_names(self) -> set[str]:
         return {self.A, self.B}
@@ -527,6 +525,20 @@ class IndexNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
     
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "index")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("index")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.INDEX}
 
@@ -541,6 +553,20 @@ class ShapeNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "shape")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("shape")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
@@ -558,6 +584,20 @@ class ReshapeNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "reshape")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("reshape")
+
     def get_input_names(self) -> set[str]:
         return { self.INPUT, self.DIMS }
 
@@ -572,6 +612,20 @@ class FloorNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "floor")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("floor")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
@@ -588,6 +642,20 @@ class CeilNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "ceil")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("ceil")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
     
@@ -602,6 +670,20 @@ class SquaredNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "squared")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("squared")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
@@ -619,6 +701,20 @@ class ReduceMeanNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "reduce_mean")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("reduce_mean")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.DIM}
 
@@ -633,6 +729,20 @@ class RsqrtNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "rsqrt")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("rsqrt")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
@@ -654,6 +764,22 @@ class TransposeNode(ComputeGraphNode):
         self.dim0 = dim0
         self.dim1 = dim1
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "transpose")
+        offset = write_be_int(data, offset, self.dim0)
+        offset = write_be_int(data, offset, self.dim1)
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("transpose") + 8  # 4 bytes each for dim0 and dim1
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
     
@@ -668,6 +794,20 @@ class SiluNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "silu")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("silu")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
@@ -684,6 +824,20 @@ class CosNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "cos")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("cos")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
 
@@ -698,6 +852,20 @@ class SinNode(ComputeGraphNode):
 
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "sin")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("sin")
 
     def get_input_names(self) -> set[str]:
         return {self.INPUT}
@@ -717,8 +885,78 @@ class IndexSelectNode(ComputeGraphNode):
     def __init__(self, name: NodeName, partition: PartitionName):
         super().__init__(name, partition)
 
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the node into a binary format.
+        """
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "index_select")
+        return offset
+    
+    def size_binary(self) -> int:
+        """
+        Return the size of the node in bytes.
+        """
+        return super().size_binary() + size_encoded_string("index_select")
+
     def get_input_names(self) -> set[str]:
         return {self.INPUT, self.DIM, self.INDEX}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class MaskedFillNode(ComputeGraphNode):
+    """
+    Fills elements of a tensor with a value where a mask is true (1).
+    """
+    INPUT: NodeInput = "input"
+    MASK: NodeInput = "mask"
+    VALUE: NodeInput = "value" # Scalar tensor
+
+    def __init__(self, name: NodeName, partition: PartitionName):
+        super().__init__(name, partition)
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "masked_fill")
+        return offset
+    
+    def size_binary(self) -> int:
+        return super().size_binary() + size_encoded_string("masked_fill")
+
+    def get_input_names(self) -> set[str]:
+        return {self.INPUT, self.MASK, self.VALUE}
+
+    def get_output_names(self) -> set[str]:
+        return {DEFAULT_NODE_OUTPUT}
+
+class UpperTriangularMaskNode(ComputeGraphNode):
+    """
+    Generates a square mask tensor where elements (r, c) are 1 if c > r, else 0.
+    Diagonal is fixed to 0.
+    """
+    DIM: NodeInput = "dim"
+    output_dtype: str
+
+    def __init__(self, name: NodeName, partition: PartitionName, output_dtype: str = "uint8"):
+        super().__init__(name, partition)
+        self.output_dtype = output_dtype
+
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        offset = super().encode_binary(offset, data)
+        offset = write_encoded_string(data, offset, "upper_triangular_mask")
+        offset = write_encoded_string(data, offset, self.output_dtype)
+        return offset
+    
+    def size_binary(self) -> int:
+        return (
+            super().size_binary() +
+            size_encoded_string("upper_triangular_mask") +
+            size_encoded_string(self.output_dtype)
+        )
+
+    def get_input_names(self) -> set[str]:
+        return {UpperTriangularMaskNode.DIM}
 
     def get_output_names(self) -> set[str]:
         return {DEFAULT_NODE_OUTPUT}
@@ -885,10 +1123,25 @@ class ComputeGraphBuilder:
         self._make_edge(b.name, DEFAULT_NODE_OUTPUT, name, CatNode.B)
         self._make_edge(dim.name, DEFAULT_NODE_OUTPUT, name, CatNode.DIM)
         return self._nodes[name]
+    
+    def cast(self, name: NodeName, input: ComputeGraphNode, dtype: str) -> CastNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+
+        self._nodes[name] = CastNode(name=name, partition=self._active_partition, dtype=dtype)
+        self._make_edge(input.name, DEFAULT_NODE_OUTPUT, name, CastNode.INPUT)
+        return self._nodes[name]
 
     def fixed(self, name: NodeName, tensor: torch.Tensor) -> FixedNode:
         name = NameScope.name(name)
         self._check_node(name)
+
+        # Massage the dtype to something we can use in JavaScript, which does
+        # not give us 64 bits!
+        if tensor.dtype == torch.int64:
+            tensor = tensor.to(torch.int32)
+        elif tensor.dtype == torch.float64:
+            tensor = tensor.to(torch.float32)
     
         self._nodes[name] = FixedNode(name=name, partition=self._active_partition, tensor=tensor)
         return self._nodes[name]
@@ -1019,6 +1272,24 @@ class ComputeGraphBuilder:
         self._make_edge(index_node.name, DEFAULT_NODE_OUTPUT, name, IndexSelectNode.INDEX)
         return node
 
+    def masked_fill(self, name: NodeName, input_node: ComputeGraphNode, mask_node: ComputeGraphNode, value_node: ComputeGraphNode) -> MaskedFillNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = MaskedFillNode(name, self._active_partition)
+        self._nodes[name] = node
+        self._make_edge(input_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.INPUT)
+        self._make_edge(mask_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.MASK)
+        self._make_edge(value_node.name, DEFAULT_NODE_OUTPUT, name, MaskedFillNode.VALUE)
+        return node
+
+    def upper_triangular_mask(self, name: NodeName, dimension: ComputeGraphNode, output_dtype: str = "uint8") -> UpperTriangularMaskNode:
+        name = NameScope.name(name)
+        self._check_node(name)
+        node = UpperTriangularMaskNode(name, self._active_partition, output_dtype)
+        self._nodes[name] = node
+        self._make_edge(dimension.name, DEFAULT_NODE_OUTPUT, name, UpperTriangularMaskNode.DIM);
+        return node
+
     def build(self, copy: bool = False) -> ComputeGraph:
         """
         Build the compute graph.
@@ -1086,6 +1357,12 @@ class ComputeGraph:
 
         self._cached_forward_cuts = {}
         self._cached_backward_cuts = {}
+
+    def is_protected_partition(self, partition: PartitionName) -> bool:
+        """
+        Check if a partition is protected.
+        """
+        return partition == PARTITION_INPUT or partition == PARTITION_OUTPUT
 
     @contextmanager
     def partition(self, name: PartitionName):
@@ -1209,6 +1486,151 @@ class ComputeGraph:
         new_graph = ComputeGraph(partition_nodes, partition_edges)
         return new_graph
     
+    def dot(self) -> str:
+        """
+        Generate a dot graph of the compute graph.
+
+        Example:
+        digraph G {
+            rankdir=LR;
+            node [shape=box];
+            subgraph cluster_p0 {
+                label="p0";
+                style=filled;
+                color=lightgrey;
+                X[label="X"];
+                Y[label="Y"];
+                Z[label="Z"];
+            }
+            X -> Y[label="a"];
+            Y -> Z[label="b"];
+        }
+        """
+
+        dot = "digraph G {\n"
+        dot += "    rankdir=LR;\n"
+        dot += "    node [shape=box];\n"
+
+        # Add subgraphs for each partition
+        for partition_name, nodes in self._partitions.items():
+            dot += f"    subgraph \"cluster_{partition_name}\" {{\n"
+            dot += f"        label=\"{partition_name}\";\n"
+            dot += "        style=filled;\n"
+            dot += "        color=lightgrey;\n"
+            
+            # Add nodes in this partition
+            for node_name in nodes:
+                dot += f"        \"{node_name}\"[label=\"{node_name}\"];\n"
+            dot += "    }\n"
+
+        # Add edges
+        for src, edges in self._forward_edges.items():
+            for edge in edges:
+                dot += f"    \"{edge.src}\" -> \"{edge.dst}\"[label=\"{edge.dst_input}\"];\n"
+
+        dot += "}\n"
+        return dot
+    
+    def coalesce_partitions(self, n: int):
+        """
+        Coalesce partitions of a model into n chunks. Expects a strict naming convention:
+        - pre
+        - layerN
+        - post
+        should be the only partitions.
+        """
+        n_partitions = len(self._partitions) - 2
+        partitions_per_chunk = n_partitions // n
+        chunks = []
+        # Chunk unprotected partitions into n chunks
+        for i in range(n):
+            chunks.append(set())
+        
+        # Put pre in the first and post in the last
+        chunks[0].add("pre")
+        chunks[n - 1].add("post")
+
+        remaining_partitions = list(set(self.get_partitions()) - {"pre", "post", PARTITION_INPUT, PARTITION_OUTPUT})
+        remaining_partitions.sort(key=lambda p: int(p.split("layer")[1]))
+
+        subchunks = [remaining_partitions[i:i + partitions_per_chunk] for i in range(0, len(remaining_partitions), partitions_per_chunk)]
+        for i, subchunk in enumerate(subchunks):
+            chunks[i].update(subchunk)
+
+        # Merge chunks
+        for c in chunks:
+            partitions = list(c)
+            if len(partitions) > 1:
+                for i in range(1, len(partitions)):
+                    new_name = self.merge_partitions(partitions[0], partitions[i])
+                    partitions[0] = new_name
+
+    def merge_partitions(self, name_0: PartitionName, name_1: PartitionName):
+        new_name = f"{name_0}.{name_1}"
+        partition_0 = self._partitions[name_0]
+        partition_1 = self._partitions[name_1]
+
+        for node in partition_0 | partition_1:
+            self._nodes[node].partition = new_name
+
+        self._partitions[new_name] = partition_0 | partition_1
+        del self._partitions[name_0]
+        del self._partitions[name_1]
+
+        return new_name
+    
+    def split_partition(self, name: PartitionName):
+        """
+        Split a partition into two roughly equally sized partitions. The operation is performed in-place.
+
+        Args:
+            name: The name of the partition to split
+        """
+        # Get all nodes in the partition
+        partition_nodes = self._partitions[name]
+        if len(partition_nodes) < 2:
+            raise ValueError(f"Cannot split partition {name} with less than 2 nodes")
+
+        # Find input nodes (nodes with no incoming edges)
+        input_nodes = {node for node in partition_nodes if not self._backward_edges[node]}
+        if not input_nodes:
+            # If no input nodes, start from any node
+            start_node = next(iter(partition_nodes))
+        else:
+            start_node = next(iter(input_nodes))
+
+        # BFS to find roughly half the nodes
+        visited = set()
+        queue = [start_node]
+        target_size = len(partition_nodes) // 2
+
+        while queue and len(visited) < target_size:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+
+            # Add unvisited neighbors to queue
+            for edge in self._forward_edges[current]:
+                if edge.dst in partition_nodes and edge.dst not in visited:
+                    queue.append(edge.dst)
+
+        # Create new partition names
+        partition_0 = f"{name}.0"
+        partition_1 = f"{name}.1"
+
+        # Update partition assignments
+        for node in partition_nodes:
+            if node in visited:
+                self._nodes[node].partition = partition_0
+            else:
+                self._nodes[node].partition = partition_1
+
+        # Update partition sets
+        self._partitions[partition_0] = visited
+        self._partitions[partition_1] = partition_nodes - visited
+        del self._partitions[name]
+
     def identify_forward_cuts(self, partition: PartitionName) -> set[ComputeGraphEdge]:
         """
         Returns a list of forward edges (edges flowing *into* the partition) that are cut by a partition.
@@ -1303,6 +1725,12 @@ class ComputeGraph:
                 nodes[node_name] = SinNodeEncoding(type="sin", name=node_name)
             elif isinstance(node, IndexSelectNode):
                 nodes[node_name] = IndexSelectNodeEncoding(type="index_select", name=node_name)
+            elif isinstance(node, MaskedFillNode):
+                nodes[node_name] = MaskedFillNodeEncoding(type="masked_fill", name=node_name)
+            elif isinstance(node, UpperTriangularMaskNode):
+                nodes[node_name] = UpperTriangularMaskNodeEncoding(type="upper_triangular_mask", name=node_name, dimension=node.dimension, output_dtype=node.output_dtype)
+            elif isinstance(node, CastNode):
+                nodes[node_name] = CastNodeEncoding(type="cast", name=node_name, dtype=node.dtype)
             elif isinstance(node, InputNode) or isinstance(node, OutputNode):
                 pass
             else:
@@ -1316,7 +1744,51 @@ class ComputeGraph:
                 if edge.src in nodes and edge.dst in nodes:
                     edges.append(EdgeEncoding(src=edge.src, src_output=edge.src_output, dst=edge.dst, dst_input=edge.dst_input))
         return GraphEncoding(nodes=nodes, edges=edges)
+    
+    def encode_binary(self, offset: int, data: bytearray) -> int:
+        """
+        Encode the graph into a binary format.
+        """
+        # Number of nodes
+        offset = write_be_int(data, offset, len(self._nodes))
+        # Nodes
+        n = 0
+        for node_name, node in self._nodes.items():
+            n += 1
+            offset = node.encode_binary(offset, data)
+        # Number of edges
+        num_edges = 0
+        for src, edges in self._forward_edges.items():
+            for edge in edges:
+                if edge.src in self._nodes and edge.dst in self._nodes:
+                    num_edges += 1
+        offset = write_be_int(data, offset, num_edges)
+        # Edges
+        for src, edges in self._forward_edges.items():
+            for edge in edges:
+                if edge.src in self._nodes and edge.dst in self._nodes:
+                    offset = write_encoded_string(data, offset, edge.src)
+                    offset = write_encoded_string(data, offset, edge.src_output)
+                    offset = write_encoded_string(data, offset, edge.dst)
+                    offset = write_encoded_string(data, offset, edge.dst_input)
+        return offset
 
+    def size_binary(self) -> int:
+        """
+        Return the size of the graph in bytes.
+        """
+        size = 4 # for the number of nodes
+        for node in self._nodes.values():
+            size += node.size_binary()
+        size += 4 # for the number of edges
+        for src, edges in self._forward_edges.items():
+            for edge in edges:
+                size += size_encoded_string(edge.src)
+                size += size_encoded_string(edge.src_output)
+                size += size_encoded_string(edge.dst)
+                size += size_encoded_string(edge.dst_input)
+        return size
+    
     def validate_graph(self) -> list[str]:
         """
         Validates the graph structure and returns a list of errors found.

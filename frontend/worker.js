@@ -2,7 +2,13 @@
  * Library to handle interfacing with coordination server
  */
 
-import { CPUKernel, CPUTensor, GPUKernel, GPUTensor } from "./kernel.js";
+import { 
+    readBEInt, sizeEncodedString, readEncodedString, 
+    writeBEInt, writeEncodedString, 
+    writeBool,
+    readBool
+} from "./encoding.js";
+import { CPUKernel, CPUTensor, GPUKernel, GPUTensor, Tensor } from "./kernel.js";
 import { SafeTensorCache } from "./tensorcache.js";
 
 /*
@@ -141,21 +147,35 @@ class APITensor {
  */
 class Edge {
     /**
-     * @param {Object} api_response
-     * @param {string} api_response.src
-     * @param {string} api_response.src_output
-     * @param {string} api_response.dst
-     * @param {string} api_response.dst_input
+     * @param {Object} options
+     * @param {string} options.src
+     * @param {string} options.src_output
+     * @param {string} options.dst
+     * @param {string} options.dst_input
      */
-    constructor(api_response) {
+    constructor(options) {
         /** @type {string} */
-	this.src = api_response.src;
+	this.src = options.src;
         /** @type {string} */
-	this.src_output = api_response.src_output;
+	this.src_output = options.src_output;
         /** @type {string} */
-	this.dst = api_response.dst;
+	this.dst = options.dst;
         /** @type {string} */
-	this.dst_input = api_response.dst_input;
+	this.dst_input = options.dst_input;
+    }
+
+    /**
+     * @param {DataView} view
+     * @param {number} offset
+     * @returns {[Edge, number]}
+     */
+    static decode(view, offset) {
+        let src, src_output, dst, dst_input;
+        [src, offset] = readEncodedString(view, offset);
+        [src_output, offset] = readEncodedString(view, offset);
+        [dst, offset] = readEncodedString(view, offset);
+        [dst_input, offset] = readEncodedString(view, offset);
+        return [new Edge({ src, src_output, dst, dst_input }), offset];
     }
 }
 
@@ -165,27 +185,25 @@ class Edge {
  */
 export class Node {
     /** 
-     * @param {Object} api_response - Node response from server
-     * @param {string} api_response.type - Type of node
-     * @param {string} api_response.name - Name of node
-     * @property {Device} device - the device in which this node should be executed on
+     * @param {Object} options - Parameters for Node.
+     * @param {string} options.type - Type of node
+     * @param {string} options.name - Name of node
      */
-    constructor(api_response) {
+    constructor(options) {
         /** @type {string} */
-        this.type = api_response.type;
+        this.type = options.type;
         /** @type {string} */
-        this.name = api_response.name;
-        /** @type {DevicePreference | null} */
-        this.devicePreference = null;
+        this.name = options.name;
         
-        // Copy any additional properties from the API response
-        for (const [key, value] of Object.entries(api_response)) {
+        // Copy any additional properties from the options
+        for (const [key, value] of Object.entries(options)) {
             if (key !== "type" && key !== "name") {
                 this[key] = value;
             }
         }
     }
 
+    
     /**
      * Estimates the weight of the node, typically the number of elements it produces.
      * @param {Map<string, number>} inputsMap - A map of input names to their weights.
@@ -308,10 +326,13 @@ class MatmulNode extends Node {
     static RHS = "rhs";
     
     /**
-     * @param {Object} api_response - API response for MatmulNode.
+     * @param {Object} options - Options for MatmulNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
     }
 
@@ -327,6 +348,11 @@ class MatmulNode extends Node {
     get_inputs() { return [MatmulNode.LHS, MatmulNode.RHS]; }
 
     get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    static decode(view, offset, name, partition, type) {
+        return [new MatmulNode({ name, partition, type }), offset];
+    }
+
 
     /**
      * @returns {Promise<GPUKernel>}
@@ -345,23 +371,73 @@ class MatmulNode extends Node {
                     if (!lhsTensor || !rhsTensor) {
                         throw new Error(`MatmulNode (${this.name}): Missing GPU tensors for dimensionBuffer calculation.`);
                     }
-                    return new Uint32Array([
-                        lhsTensor.shape[0],
-                        lhsTensor.shape[1],
-                        rhsTensor.shape[1],
-                    ]);
+                    const lhsShape = lhsTensor.shape;
+                    const rhsShape = rhsTensor.shape;
+                    let B, M, K, N;
+
+                    if (lhsShape.length === 2 && rhsShape.length === 2) { // 2D case
+                        B = 1;
+                        M = lhsShape[0];
+                        K = lhsShape[1];
+                        N = rhsShape[1];
+                    } else if (
+                        lhsShape.length > 2 && // more than 2D
+                        lhsShape.length === rhsShape.length && // equal ranks
+                        lhsShape.slice(0, -2).every((dim, i) => dim === rhsShape.slice(0, -2)[i]) // equal batch dimensions
+                    ) { 
+                        B = lhsShape.slice(0, -2).reduce((a, b) => a * b, 1);
+                        M = lhsShape[lhsShape.length - 2];
+                        K = lhsShape[lhsShape.length - 1];
+                        N = rhsShape[rhsShape.length - 1];
+                    } else {
+                        throw new Error(`MatmulNode (${this.name}): Incompatible input tensor dimensions for dimensionBuffer. Both must be 2D or both ND with matching batch dimensions. Got ${lhsShape} and ${rhsShape}`);
+                    }
+                    return new Uint32Array([B, M, K, N]);
                 },
                 index: 0,
             },
             workgroupFunction: (executionContext) => {
                 const lhsTensor = executionContext.gpu(MatmulNode.LHS);
-                if (!lhsTensor) {
-                    throw new Error(`MatmulNode (${this.name}): Missing LHS GPU tensor for workgroupFunction.`);
+                const rhsTensor = executionContext.gpu(MatmulNode.RHS);
+
+                if (!lhsTensor || !rhsTensor) {
+                    throw new Error(`MatmulNode (${this.name}): Missing GPU tensors for workgroupFunction.`);
                 }
+
+                const lhsShape = lhsTensor.shape;
+                const rhsShape = rhsTensor.shape;
+                let M_dim, N_dim, B_dim;
+
+                if (lhsShape.length === 2 && rhsShape.length === 2) { // 2D case
+                    M_dim = lhsShape[0];
+                    N_dim = rhsShape[1];
+                    B_dim = 1;
+                } else if (
+                    lhsShape.length > 2 &&
+                    lhsShape.length === rhsShape.length &&
+                    lhsShape.slice(0, -2).every((dim, i) => dim === rhsShape.slice(0, -2)[i])
+                ) { // N-D case
+                    B_dim = lhsShape.slice(0, -2).reduce((a, b) => a * b, 1);
+                    M_dim = lhsShape[lhsShape.length - 2];
+                    N_dim = rhsShape[rhsShape.length - 1];
+                } else {
+                    throw new Error(`MatmulNode (${this.name}): Incompatible input tensor dimensions for workgroupFunction. Both must be 2D or both ND with matching batch dimensions. Got ${lhsShape} and ${rhsShape}`);
+                }
+
+                const TILE_DIM = 4; // Corresponds to TILE_M, TILE_N in WGSL shader
+                const WORKGROUP_XY_DIM = 16; // Corresponds to BLOCKSIZE in WGSL @workgroup_size(BLOCKSIZE, BLOCKSIZE, 1)
+
+                const num_tiles_m = Math.ceil(M_dim / TILE_DIM);
+                const num_tiles_n = Math.ceil(N_dim / TILE_DIM);
+
+                const workgroupsX = Math.ceil(num_tiles_n / WORKGROUP_XY_DIM);
+                const workgroupsY = Math.ceil(num_tiles_m / WORKGROUP_XY_DIM);
+                const workgroupsZ = B_dim;
+                
                 return {
-                    x: Math.ceil(lhsTensor.shape[0] / 16),
-                    y: Math.ceil(lhsTensor.shape[1] / 16),
-                    z: 1,
+                    x: workgroupsX,
+                    y: workgroupsY,
+                    z: workgroupsZ,
                 };
             },
             entryPoint: "main",
@@ -383,28 +459,46 @@ class MatmulNode extends Node {
      * @throws {Error} If input shapes are missing, invalid, or incompatible.
      */
     getOutputShape(executionContext) {
-        const shapeA = executionContext.gpu(MatmulNode.LHS)?.shape;
-        const shapeB = executionContext.gpu(MatmulNode.RHS)?.shape;
+        const shapeA = executionContext.gpu(MatmulNode.LHS)?.shape || executionContext.cpu(MatmulNode.LHS)?.shape;
+        const shapeB = executionContext.gpu(MatmulNode.RHS)?.shape || executionContext.cpu(MatmulNode.RHS)?.shape;
 
         if (!shapeA || !shapeB) {
-            throw new Error(`MatmulNode (${this.name}): Missing required input shapes ('input' or 'weight').`);
+            throw new Error(`MatmulNode (${this.name}): Missing required input shapes for LHS or RHS.`);
         }
 
-        if (shapeA.length !== 2 || shapeB.length !== 2) {
-            // TODO: Handle batch dimensions if necessary (e.g., [Batch, M, K])
-            throw new Error(`MatmulNode (${this.name}): Currently only supports 2D matrices. Got shapes ${shapeA} and ${shapeB}.`);
+        const rankA = shapeA.length;
+        const rankB = shapeB.length;
+
+        if (rankA === 2 && rankB === 2) {
+            const M = shapeA[0];
+            const K_A = shapeA[1];
+            const K_B = shapeB[0];
+            const N = shapeB[1];
+
+            if (K_A !== K_B) {
+                throw new Error(`MatmulNode (${this.name}): Inner dimensions for 2D matmul do not match. LHS K=${K_A}, RHS K=${K_B}. Shapes: ${shapeA} and ${shapeB}.`);
+            }
+            return [M, N];
+        } else if (rankA > 2 && rankA === rankB) {
+            const batchDimsA = shapeA.slice(0, -2);
+            const batchDimsB = shapeB.slice(0, -2);
+
+            if (!batchDimsA.every((dim, i) => dim === batchDimsB[i])) {
+                throw new Error(`MatmulNode (${this.name}): Batch dimensions for ND matmul do not match. LHS Batch: ${batchDimsA}, RHS Batch: ${batchDimsB}. Shapes: ${shapeA} and ${shapeB}.`);
+            }
+
+            const M = shapeA[rankA - 2];
+            const K_A = shapeA[rankA - 1];
+            const K_B = shapeB[rankB - 2];
+            const N = shapeB[rankB - 1];
+
+            if (K_A !== K_B) {
+                throw new Error(`MatmulNode (${this.name}): Inner dimensions for ND matmul do not match. LHS K=${K_A}, RHS K=${K_B}. Shapes: ${shapeA} and ${shapeB}.`);
+            }
+            return [...batchDimsA, M, N];
+        } else {
+            throw new Error(`MatmulNode (${this.name}): Inputs must both be 2D or both be ND tensors of the same rank with matching batch dimensions. Got shapes A: ${shapeA} (rank ${rankA}) and B: ${shapeB} (rank ${rankB}).`);
         }
-
-        const M = shapeA[0];
-        const K_A = shapeA[1];
-        const K_B = shapeB[0];
-        const N = shapeB[1];
-
-        if (K_A !== K_B) {
-            throw new Error(`MatmulNode (${this.name}): Incompatible shapes for matrix multiplication. Inner dimensions do not match: ${shapeA} and ${shapeB}.`);
-        }
-
-        return [M, N];
     }
 }
 
@@ -413,19 +507,27 @@ class MatmulNode extends Node {
  * @classdesc Represents a node that outputs a safetensor.
  * @extends Node
  */
-class SafetensorNode extends Node {
+export class SafetensorNode extends Node {
     /**
-     * @param {Object} api_response - API response for SafetensorNode.
-     * @param {string} api_response.tensor_name - Name of the tensor.
-     * @param {string} api_response.model_name - Name of the model.
+     * @param {Object} options - Options for SafetensorNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
+     * @param {string} options.tensor_name - Name of the tensor.
+     * @param {string} options.model_name - Name of the model.
      */
-    constructor(api_response) {
-        super(api_response);
-        /** @type {string} */
-        this.tensor_name = api_response.tensor_name;
-        /** @type {string} */
-        this.model_name = api_response.model_name;
+    constructor(options) {
+        super(options);
+        this.tensor_name = options.tensor_name;
+        this.model_name = options.model_name;
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let tensor_name, model_name;
+        [model_name, offset] = readEncodedString(view, offset);
+        [tensor_name, offset] = readEncodedString(view, offset);
+        return [new SafetensorNode({ name, partition, type, tensor_name, model_name }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -444,11 +546,16 @@ class SafetensorNode extends Node {
         return new CPUKernel({
             name: 'safetensor',
             func: async (executionContext) => {
-                const cache = executionContext.cache();
-                const tensor = await cache.getTensor(this.model_name, this.tensor_name);
-                if (!tensor) {
-                    throw new Error(`SafetensorNode (${this.name}): Tensor not found in cache.`);
+                const encodedModelName = btoa(this.model_name);
+                const response = await fetch(`/safetensor/${encodedModelName}/${this.tensor_name}`);
+        
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch tensor: ${response.status} ${response.statusText}`);
                 }
+        
+                const buffer = await response.arrayBuffer();
+                const view = new DataView(buffer);
+                const [tensor] = CPUTensor.decode(view, 0);
                 return {
                     [DEFAULT_NODE_OUTPUT]: tensor,
                 };
@@ -485,11 +592,18 @@ class SoftmaxNode extends Node {
     static DIM = "dim"; // Name for the input tensor that will hold the dimension scalar
     
     /**
-     * @param {Object} api_response - API response for SoftmaxNode.
+     * @param {Object} options - Options for SoftmaxNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SoftmaxNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -676,17 +790,160 @@ class SliceNode extends Node {
     static END = "end";
     
     /**
-     * @param {Object} api_response - API response for SliceNode.
+     * @param {Object} options - Options for SliceNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SliceNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
         // Estimate: output elements are same as input (overestimate if not full slice).
         // A more accurate estimate would need slice parameters (start, end, dim sizes).
         return inputsMap.get(SliceNode.INPUT) || 0;
+    }
+
+    _calculateOutputShape(inputTensor, dimTensor, startTensor, endTensor) {
+        if (!inputTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing input tensor.`);
+        }
+        if (!dimTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing dim tensor.`);
+        }
+        if (!startTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing start tensor.`);
+        }
+        if (!endTensor) {
+            throw new Error(`SliceNode (${this.name}): Missing end tensor.`);
+        }
+
+        const inputShape = inputTensor.shape;
+        const rank = inputShape.length;
+
+        if (dimTensor.shape.length !== 1 || dimTensor.shape[0] !== 1) {
+            throw new Error(`SliceNode (${this.name}): Dimension ('dim') must be a scalar tensor. Got shape ${dimTensor.shape}`);
+        }
+        let dim = dimTensor.getTypedArray()[0];
+        if (dim < 0) {
+            dim = rank + dim;
+        }
+        if (dim < 0 || dim >= rank) {
+            throw new Error(`SliceNode (${this.name}): Dimension out of range. Got dim ${dimTensor.getTypedArray()[0]} for input rank ${rank}`);
+        }
+
+        if (startTensor.shape.length !== 1 || startTensor.shape[0] !== 1) {
+            throw new Error(`SliceNode (${this.name}): Start index ('start') must be a scalar tensor. Got shape ${startTensor.shape}`);
+        }
+        let start = startTensor.getTypedArray()[0];
+
+        if (endTensor.shape.length !== 1 || endTensor.shape[0] !== 1) {
+            throw new Error(`SliceNode (${this.name}): End index ('end') must be a scalar tensor. Got shape ${endTensor.shape}`);
+        }
+        let end = endTensor.getTypedArray()[0];
+
+        const dimSize = inputShape[dim];
+
+        // Normalize start and end
+        if (start < 0) {
+            start = dimSize + start;
+        }
+        if (end < 0) {
+            end = dimSize + end;
+        }
+
+        // Clamp start and end to valid range
+        start = Math.max(0, Math.min(start, dimSize));
+        end = Math.max(0, Math.min(end, dimSize));
+
+        if (end < start) {
+            end = start; // Produces an empty slice along this dimension
+        }
+
+        const outputShape = [...inputShape];
+        outputShape[dim] = end - start;
+        return outputShape;
+    }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(SliceNode.INPUT);
+        const dimTensor = executionContext.cpu(SliceNode.DIM);
+        const startTensor = executionContext.cpu(SliceNode.START);
+        const endTensor = executionContext.cpu(SliceNode.END);
+        return this._calculateOutputShape(inputTensor, dimTensor, startTensor, endTensor);
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'slice',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(SliceNode.INPUT);
+                const dimTensor = executionContext.cpu(SliceNode.DIM);
+                const startTensor = executionContext.cpu(SliceNode.START);
+                const endTensor = executionContext.cpu(SliceNode.END);
+
+                if (!inputTensor || !dimTensor || !startTensor || !endTensor) {
+                    throw new Error(`SliceNode (${this.name}) kernel: Missing one or more input tensors.`);
+                }
+
+                const outputShape = this._calculateOutputShape(inputTensor, dimTensor, startTensor, endTensor);
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputView = inputTensor.getTypedArray();
+
+                const inputShape = inputTensor.shape;
+                const rank = inputShape.length;
+                let sliceDim = dimTensor.getTypedArray()[0];
+                if (sliceDim < 0) {
+                    sliceDim = rank + sliceDim;
+                }
+                let sliceStart = startTensor.getTypedArray()[0];
+                let sliceEnd = endTensor.getTypedArray()[0];
+                
+                const dimSize = inputShape[sliceDim];
+                if (sliceStart < 0) sliceStart = dimSize + sliceStart;
+                if (sliceEnd < 0) sliceEnd = dimSize + sliceEnd;
+                sliceStart = Math.max(0, Math.min(sliceStart, dimSize));
+                sliceEnd = Math.max(0, Math.min(sliceEnd, dimSize));
+                if (sliceEnd < sliceStart) sliceEnd = sliceStart;
+
+
+                const inputStrides = calculateStrides(inputShape);
+                const outputStrides = calculateStrides(outputShape);
+                
+                let outputFlatIndex = 0;
+                const totalOutputElements = outputShape.reduce((acc, val) => acc * val, 1);
+
+                for (outputFlatIndex = 0; outputFlatIndex < totalOutputElements; outputFlatIndex++) {
+                    let inputFlatIndex = 0;
+                    let currentOutputFlatIndex = outputFlatIndex;
+                    
+                    for (let d = 0; d < rank; d++) {
+                        const outputCoord = Math.floor(currentOutputFlatIndex / outputStrides[d]) % outputShape[d];
+                        currentOutputFlatIndex %= outputStrides[d];
+
+                        let inputCoord = outputCoord;
+                        if (d === sliceDim) {
+                            inputCoord += sliceStart;
+                        }
+                        inputFlatIndex += inputCoord * inputStrides[d];
+                    }
+                    outputView[outputFlatIndex] = inputView[inputFlatIndex];
+                }
+
+                return {
+                    [DEFAULT_NODE_OUTPUT]: outputTensor,
+                };
+            },
+            inputs: [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
     }
 
     get_inputs() { return [SliceNode.INPUT, SliceNode.DIM, SliceNode.START, SliceNode.END]; }
@@ -706,11 +963,18 @@ class ReshapeNode extends Node {
     static DIMS = "dims";
     
     /**
-     * @param {Object} api_response - API response for ReshapeNode.
+     * @param {Object} options - Options for ReshapeNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new ReshapeNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -839,11 +1103,18 @@ class UnsqueezeNode extends Node {
     static DIM = "dim";
     
     /**
-     * @param {Object} api_response - API response for UnsqueezeNode.
+     * @param {Object} options - Options for UnsqueezeNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new UnsqueezeNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -942,11 +1213,18 @@ class BroadcastNode extends Node {
     static N = "n";
     
     /**
-     * @param {Object} api_response - API response for BroadcastNode.
+     * @param {Object} options - Options for BroadcastNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new BroadcastNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1094,11 +1372,18 @@ class CatNode extends Node {
     static DIM = "dim";
     
     /**
-     * @param {Object} api_response - API response for CatNode.
+     * @param {Object} options - Options for CatNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new CatNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1251,16 +1536,31 @@ class CatNode extends Node {
  * @classdesc Represents a node with a fixed tensor value.
  * @extends Node
  */
-class FixedNode extends Node {
+export class FixedNode extends Node {
     /**
-     * @param {Object} api_response - API response for FixedNode.
-     * @param {APITensor} api_response.tensor - The fixed tensor.
+     * @param {Object} params - Parameters for FixedNode.
+     * @param {CPUTensor} params.tensor - The fixed tensor.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(params) {
+        super(params);
         /** @type {CPUTensor} */
-        this.tensor = (new APITensor(api_response.tensor)).toCPU();
+        this.tensor = params.tensor;
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    /**
+     * Decodes a FixedNode from a DataView.
+     * @param {DataView} view - The DataView to decode from.
+     * @param {number} offset - The offset to start decoding from.
+     * @param {string} name - The name of the node.
+     * @param {string} partition - The partition of the node.
+     * @param {string} type - The type of the node.
+     * @returns {[FixedNode, number]} A tuple containing the decoded FixedNode and the new offset.
+     */
+    static decode(view, offset, name, partition, type) {
+        let tensor;
+        [tensor, offset] = CPUTensor.decode(view, offset);
+        return [new FixedNode({ name, partition, type, tensor }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1305,11 +1605,18 @@ class HadamardNode extends Node {
     static B = "b";
     
     /**
-     * @param {Object} api_response - API response for HadamardNode.
+     * @param {Object} options - Options for HadamardNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new HadamardNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1408,11 +1715,18 @@ class IndexNode extends Node {
     static INDEX = "index";
     
     /**
-     * @param {Object} api_response - API response for IndexNode.
+     * @param {Object} options - Options for IndexNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new IndexNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1459,6 +1773,9 @@ class IndexNode extends Node {
         // Output shape is the input shape with the first dimension removed.
         // If input is 1D, output is 0D (scalar).
         const outputShape = inputShape.slice(1);
+        if (outputShape.length == 0) {
+            return [1]
+        }
         return outputShape; // Effectively [] for 1D input after slice(1)
     }
 
@@ -1551,11 +1868,18 @@ class ShapeNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for ShapeNode.
+     * @param {Object} options - Options for ShapeNode.
+     * @param {string} options.name - Name of the node.
+     * @param {string} options.partition - Partition of the node.
+     * @param {string} options.type - Type of the node.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new ShapeNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1595,6 +1919,62 @@ class ShapeNode extends Node {
 }
 
 /**
+ * @class CastNode
+ * @classdesc Represents a tensor cast operation node.
+ * @extends Node
+ */
+class CastNode extends Node {
+    /** @type {string} */
+    static INPUT = "input";
+    
+    constructor(options) {
+        super(options);
+        this.dtype = options.dtype;
+        this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let dtype;
+        [dtype, offset] = readEncodedString(view, offset);
+        return [new CastNode({ name, partition, type, dtype }), offset];
+    }
+
+    get_inputs() { return [CastNode.INPUT]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(CastNode.INPUT);
+        if (!inputTensor) {
+            throw new Error(`CastNode (${this.name}): Missing input tensor.`);
+        }
+        return inputTensor.shape;
+    }
+    
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'cast',
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(CastNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`CastNode (${this.name}) kernel: Missing input tensor.`);
+                }
+                console.debug(`CastNode (${this.name}) kernel: inputTensor.shape: ${inputTensor.shape}, dtype: ${inputTensor.dtype}, casting to: ${this.dtype}`);
+                const outputTensor = CPUTensor.uninitialized(inputTensor.shape, this.dtype);
+                const outputView = outputTensor.getTypedArray();
+                const inputView = inputTensor.getTypedArray();
+                for (let i = 0; i < inputView.length; i++) {
+                    outputView[i] = inputView[i];
+                }
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            },
+            inputs: [CastNode.INPUT],
+            outputs: [DEFAULT_NODE_OUTPUT],
+        });
+    }
+}
+
+/**
  * @class TransposeNode
  * @classdesc Represents a tensor transpose operation node.
  * @extends Node
@@ -1602,19 +1982,34 @@ class ShapeNode extends Node {
 class TransposeNode extends Node {
     /** @type {string} */
     static INPUT = "input";
+
+    /** @type {number} */
+    dim0;
+    /** @type {number} */
+    dim1;
     
     /**
-     * @param {Object} api_response - API response for TransposeNode.
-     * @param {number} api_response.dim0 - First dimension to transpose.
-     * @param {number} api_response.dim1 - Second dimension to transpose.
+     * @param {Object} options - Options for TransposeNode.
+     * @param {number} options.dim0 - First dimension to transpose.
+     * @param {number} options.dim1 - Second dimension to transpose.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         /** @type {number} */
-        this.dim0 = api_response.dim0;
+        this.dim0 = options.dim0;
         /** @type {number} */
-        this.dim1 = api_response.dim1;
+        this.dim1 = options.dim1;
         this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let dim0, dim1;
+        [dim0, offset] = readBEInt(view, offset);
+        [dim1, offset] = readBEInt(view, offset);
+        console.log(`creating transpose node ${name} with following dim`)
+        console.log(dim0);
+        console.log(dim1);
+        return [new TransposeNode({ name, partition, type, dim0, dim1 }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1658,8 +2053,9 @@ class TransposeNode extends Node {
     }
 
     async getGPUKernel() {
+        const MAX_DIMS = 8; // Define explicitly here for clarity, should match WGSL
         return new GPUKernel({
-            name: 'transpose',
+            name: `transpose<${this.dim0}, ${this.dim1}>`,
             shader: await fetch('kernels/transpose.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
@@ -1673,12 +2069,12 @@ class TransposeNode extends Node {
                     const d0 = this._normalize_dim(this.dim0, rank);
                     const d1 = this._normalize_dim(this.dim1, rank);
 
-                    if (rank > MAX_DIMS_SOFTMAX) {
-                        throw new Error(`TransposeNode (${this.name}): Input tensor rank (${rank}) exceeds MAX_DIMS_SOFTMAX (${MAX_DIMS_SOFTMAX}).`);
+                    if (rank > MAX_DIMS) { 
+                        throw new Error(`TransposeNode (${this.name}): Input tensor rank (${rank}) exceeds MAX_DIMS (${MAX_DIMS}).`);
                     }
 
-                    const paddedInputShape = new Array(MAX_DIMS_SOFTMAX).fill(1);
-                    const paddedInputStrides = new Array(MAX_DIMS_SOFTMAX).fill(0);
+                    const paddedInputShape = new Array(MAX_DIMS).fill(1);
+                    const paddedInputStrides = new Array(MAX_DIMS).fill(0);
                     
                     if (rank > 0) {
                         for (let i = 0; i < rank; i++) {
@@ -1689,17 +2085,50 @@ class TransposeNode extends Node {
                             paddedInputStrides[i] = inputStrides[i];
                         }
                     }
-                    // For 0D tensor, shape [1,...], strides [0,...], rank 0 is fine.
-
                     const num_elements = rank > 0 ? inputShape.reduce((acc, val) => acc * val, 1) : 1;
 
-                    // Uniform buffer layout: input_shape_vecs, input_strides_vecs, rank, dim0, dim1, num_elements, padding
-                    // Padded sizes: 8 (shape) + 8 (strides) + 1 (rank) + 1 (d0) + 1 (d1) + 1 (num_elements) = 20 u32s
-                    // Total 20 * 4 = 80 bytes. This is a multiple of 16, so no extra padding u32s needed if aligned.
-                    const uniformData = new Uint32Array(MAX_DIMS_SOFTMAX * 2 + 4); 
-                    uniformData.set(paddedInputShape, 0);
-                    uniformData.set(paddedInputStrides, MAX_DIMS_SOFTMAX);
-                    uniformData.set([rank, d0, d1, num_elements], MAX_DIMS_SOFTMAX * 2);
+                    // Calculate dispatch grid and invocation parameters locally
+                    const workgroupSizeX = 8; // Match shader
+                    const workgroupSizeY = 8; // Match shader
+                    const workgroupSizeZ = 4; // Match shader (not used for grid_invocations_per_row/slice directly but for totalWorkgroupsNeeded)
+                    const invocationsPerWorkgroup = workgroupSizeX * workgroupSizeY * workgroupSizeZ;
+
+                    let dispatchGridX = 1;
+                    let dispatchGridY = 1;
+                    // dispatchGridZ is not needed for these specific params
+
+                    if (num_elements > 0) {
+                        const totalWorkgroupsNeeded = Math.ceil(num_elements / invocationsPerWorkgroup);
+                        const maxDispatchDim = 65535; // device.limits.maxComputeWorkgroupsPerDimension
+
+                        if (totalWorkgroupsNeeded <= maxDispatchDim) {
+                            dispatchGridX = totalWorkgroupsNeeded;
+                        } else if (totalWorkgroupsNeeded <= maxDispatchDim * maxDispatchDim) {
+                            dispatchGridX = maxDispatchDim;
+                            dispatchGridY = Math.ceil(totalWorkgroupsNeeded / maxDispatchDim);
+                        } else { // If totalWorkgroupsNeeded > maxDispatchDim^2, it implies a Z dimension or error for 2D grid calc.
+                                      // For calculating grid_invocations_per_row/slice, we primarily care about X and Y dispatches.
+                                      // If it goes to 3D dispatch for workgroups, grid_invocations_per_slice reflects that.
+                            dispatchGridX = maxDispatchDim;
+                            dispatchGridY = maxDispatchDim;
+                            // We don't need to calculate dispatchGridZ here for these two params
+                        }
+                    }
+
+                    const gridInvocationsPerRow = dispatchGridX * workgroupSizeX;
+                    const gridInvocationsPerSlice = dispatchGridX * workgroupSizeX * dispatchGridY * workgroupSizeY;
+                    
+                    console.log(`TransposeNode (${this.name}) dimensionBuffer: gridInvocationsPerRow = ${gridInvocationsPerRow}, gridInvocationsPerSlice = ${gridInvocationsPerSlice}`);
+
+                    // Shader's Params struct: 8 (shape) + 8 (strides) + 1 (rank) + 1 (d0) + 1 (d1) + 1 (num_elements) + 1 (grid_row) + 1 (grid_slice) + 2 (padding) = 24 u32s
+                    const uniformData = new Uint32Array(MAX_DIMS * 2 + 4 + 2 + 2); // 16 (shape/strides based on MAX_DIMS) + 4 (rank,d0,d1,num_el) + 2 (grid_invocations) + 2 (padding)
+                    let offset = 0;
+                    uniformData.set(paddedInputShape, offset); offset += MAX_DIMS;
+                    uniformData.set(paddedInputStrides, offset); offset += MAX_DIMS;
+                    uniformData.set([rank, d0, d1, num_elements], offset); offset += 4;
+                    uniformData.set([gridInvocationsPerRow, gridInvocationsPerSlice], offset); offset += 2;
+                    uniformData.set([0, 0], offset); // padding0, padding1
+                    
                     return uniformData;
                 },
                 index: 2, // Binding for params uniform buffer
@@ -1710,11 +2139,53 @@ class TransposeNode extends Node {
                     throw new Error(`TransposeNode (${this.name}): Missing GPU input tensor for workgroupFunction.`);
                 }
                 const num_elements = inputTensor.shape.length > 0 ? inputTensor.shape.reduce((acc, val) => acc * val, 1) : 1;
-                const workgroupSizeX = 256; // Must match shader
+
+                // Match shader workgroup sizes
+                const workgroupSizeX = 8;
+                const workgroupSizeY = 8;
+                const workgroupSizeZ = 4;
+                const invocationsPerWorkgroup = workgroupSizeX * workgroupSizeY * workgroupSizeZ;
+
+                if (num_elements === 0) {
+                    return { x: 0, y: 0, z: 0 };
+                }
+
+                const totalWorkgroupsNeeded = Math.ceil(num_elements / invocationsPerWorkgroup);
+
+                // Get device limits
+                // const device = executionContext.device;
+                // const maxDispatchDim = device.limits.maxComputeWorkgroupsPerDimension;
+                const maxDispatchDim = 65535;
+
+                let dispatchGridX = 1;
+                let dispatchGridY = 1;
+                let dispatchGridZ = 1;
+
+                if (totalWorkgroupsNeeded <= maxDispatchDim) {
+                    dispatchGridX = totalWorkgroupsNeeded;
+                } else if (totalWorkgroupsNeeded <= maxDispatchDim * maxDispatchDim) {
+                    dispatchGridX = maxDispatchDim;
+                    dispatchGridY = Math.ceil(totalWorkgroupsNeeded / maxDispatchDim);
+                } else if (totalWorkgroupsNeeded <= maxDispatchDim * maxDispatchDim * maxDispatchDim){
+                    dispatchGridX = maxDispatchDim;
+                    dispatchGridY = maxDispatchDim;
+                    dispatchGridZ = Math.ceil(totalWorkgroupsNeeded / (maxDispatchDim * maxDispatchDim));
+                } else {
+                    throw new Error(`TransposeNode (${this.name}): num_elements (${num_elements}) is too large to dispatch with current WebGPU limits.`);
+                }
+
+                // Store these for uniform buffer population if your setup needs them pre-calculated
+                // These are used by the shader to reconstruct flat_index from global_invocation_id
+                // if (!executionContext.params) {
+                //     executionContext.params = {};
+                // }
+                // executionContext.params.grid_invocations_per_row = dispatchGridX * workgroupSizeX;
+                // executionContext.params.grid_invocations_per_slice = dispatchGridX * workgroupSizeX * dispatchGridY * workgroupSizeY;
+
                 return {
-                    x: Math.ceil(num_elements / workgroupSizeX),
-                    y: 1,
-                    z: 1,
+                    x: dispatchGridX,
+                    y: dispatchGridY,
+                    z: dispatchGridZ,
                 };
             },
             entryPoint: "main",
@@ -1740,15 +2211,15 @@ class AddNode extends Node {
     static B = "b";
     
     /**
-     * @param {Object} api_response - API response for AddNode.
+     * @param {Object} options - Options for AddNode.
      */
-    constructor(api_response) {
-        super(api_response);
-        // Add nodes typically run on CPU by default unless specified otherwise
-        // Or they could be fused into GPU kernels. Let's assume CPU for now.
-        if (!this.devicePreference) {
-             this.devicePreference = new DevicePreferences({ supportsGPU: true });
-        } 
+    constructor(options) {
+        super(options);
+        this.devicePreference = new DevicePreferences({ supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new AddNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1847,11 +2318,15 @@ class DivNode extends Node {
     static B = "b";
     
     /**
-     * @param {Object} api_response - API response for DivNode.
+     * @param {Object} options - Options for DivNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new DivNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -1901,9 +2376,18 @@ class DivNode extends Node {
                     throw new Error(`DivNode (${this.name}) kernel: Missing input tensors.`);
                 }
 
+                // Figure out output dtype
+                let outputDtype;
+                outputDtype = 'float32';
+                // if(tensorA.dtype === 'int32' || tensorB.dtype === 'int32') {
+                //     outputDtype = 'int32';
+                // } else {
+                //     outputDtype = 'float32';
+                // }
+
                 const outputShape = this._calculateOutputShape(tensorA, tensorB);
                 // Division output is set to float32 to handle mixed types and general expectations.
-                const outputTensor = CPUTensor.uninitialized(outputShape, 'float32');
+                const outputTensor = CPUTensor.uninitialized(outputShape, outputDtype);
                 const outputView = outputTensor.getTypedArray(); // This will be a Float32Array
 
                 const dataA = tensorA.getTypedArray();
@@ -1982,11 +2466,15 @@ class FloorNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for FloorNode.
+     * @param {Object} options - Options for FloorNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new FloorNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2049,11 +2537,15 @@ class CeilNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for CeilNode.
+     * @param {Object} options - Options for CeilNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new CeilNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2115,10 +2607,14 @@ class DebugNode extends Node {
     static INPUT = "input";
     
     /**
-     * @param {Object} api_response - API response for DebugNode.
+     * @param {Object} options - Options for DebugNode.
      */
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new DebugNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2136,73 +2632,14 @@ class DebugNode extends Node {
  * @classdesc Represents a computation graph.
  */
 export class Graph {
-    /*
-     * @param {Object} api_response
-     * @param {Object.<string, Object>} api_response.nodes - A map of node names to node API responses.
-     * @param {Array<Object>} api_response.edges - An array of edge API responses.
+    /**
+     * @param {Object} options
+     * @param {Object.<string, Object>} options.nodes - A map of node names to node API responses.
+     * @param {Array<Object>} options.edges - An array of edge API responses.
      */
-    constructor(api_response) {
-        /** @type {Object.<string, Node>} */
-        this.nodes = {};
-        for (const [key, value] of Object.entries(api_response.nodes)) {
-            // Create the appropriate node type based on the value.type
-            if (value.type === "matmul") {
-                this.nodes[key] = new MatmulNode(value);
-            } else if (value.type === "safetensor") {
-                this.nodes[key] = new SafetensorNode(value);
-            } else if (value.type === "softmax") {
-                this.nodes[key] = new SoftmaxNode(value);
-            } else if (value.type === "slice") {
-                this.nodes[key] = new SliceNode(value);
-            } else if (value.type === "reshape") {
-                this.nodes[key] = new ReshapeNode(value);
-            } else if (value.type === "unsqueeze") {
-                this.nodes[key] = new UnsqueezeNode(value);
-            } else if (value.type === "broadcast") {
-                this.nodes[key] = new BroadcastNode(value);
-            } else if (value.type === "cat") {
-                this.nodes[key] = new CatNode(value);
-            } else if (value.type === "fixed") {
-                this.nodes[key] = new FixedNode(value);
-            } else if (value.type === "hadamard") {
-                this.nodes[key] = new HadamardNode(value);
-            } else if (value.type === "index") {
-                this.nodes[key] = new IndexNode(value);
-            } else if (value.type === "shape") {
-                this.nodes[key] = new ShapeNode(value);
-            } else if (value.type === "transpose") {
-                this.nodes[key] = new TransposeNode(value);
-            } else if (value.type === "add") {
-                this.nodes[key] = new AddNode(value);
-            } else if (value.type === "div") {
-                this.nodes[key] = new DivNode(value);
-            } else if (value.type === "floor") {
-                this.nodes[key] = new FloorNode(value);
-            } else if (value.type === "ceil") {
-                this.nodes[key] = new CeilNode(value);
-            } else if (value.type === "cos") {
-                this.nodes[key] = new CosNode(value);
-            } else if (value.type === "debug") {
-                this.nodes[key] = new DebugNode(value);            
-            } else if (value.type === "index_select") {
-                this.nodes[key] = new IndexSelectNode(value);
-            } else if (value.type === "reduce_mean") {
-                this.nodes[key] = new ReduceMeanNode(value);
-            } else if (value.type === "rsqrt") {
-                this.nodes[key] = new RsqrtNode(value);
-            } else if (value.type === "silu") {
-                this.nodes[key] = new SiluNode(value);
-            } else if (value.type === "sin") {
-                this.nodes[key] = new SinNode(value);
-            } else if (value.type === "squared") {
-                this.nodes[key] = new SquaredNode(value);
-            } else {
-                // Throw error for unknown node types
-                throw new Error(`Unknown node type: ${value.type}`);
-            }
-        }
-        /** @type {Edge[]} */
-        this.edges = api_response.edges.map((e) => new Edge(e));
+    constructor(options) {
+        this.nodes = options.nodes;
+        this.edges = options.edges;
     }
 
     /*
@@ -2262,6 +2699,99 @@ export class Graph {
 
         return result;
     }
+
+    static decodeNode(view, offset) {
+        let nodeName, nodePartition, nodeType;
+        [nodeName, offset] = readEncodedString(view, offset);
+        [nodePartition, offset] = readEncodedString(view, offset);
+        [nodeType, offset] = readEncodedString(view, offset);
+        console.log(nodeType);
+        if (nodeType === "matmul") {
+            return MatmulNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "masked_fill") {
+            return MaskedFillNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "safetensor") {
+            return SafetensorNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "softmax") {
+            return SoftmaxNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "slice") {
+            return SliceNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "reshape") {
+            return ReshapeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "unsqueeze") {
+            return UnsqueezeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "broadcast") {
+            return BroadcastNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "cat") {
+            return CatNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "cast") {
+            return CastNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "fixed") {
+            return FixedNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "hadamard") {
+            return HadamardNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "index") {
+            return IndexNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "shape") {
+            return ShapeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "transpose") {
+            return TransposeNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "upper_triangular_mask") { // Add this line back
+            return UpperTriangularMaskNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "add") {
+            return AddNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "div") {
+            return DivNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "floor") {
+            return FloorNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "ceil") {
+            return CeilNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "cos") {
+            return CosNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "debug") {
+            return DebugNode.decode(view, offset, nodeName, nodePartition, nodeType);            
+        } else if (nodeType === "index_select") {
+            return IndexSelectNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "reduce_mean") {
+            return ReduceMeanNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "rsqrt") {
+            return RsqrtNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "silu") {
+            return SiluNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "sin") {
+            return SinNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else if (nodeType === "squared") {
+            return SquaredNode.decode(view, offset, nodeName, nodePartition, nodeType);
+        } else {
+            // Throw error for unknown node types
+            throw new Error(`Unknown node type: ${nodeType}`);
+        }
+    }
+
+    /**
+     * Decodes a graph from a DataView
+     * @param {DataView} view - The DataView to decode from
+     * @param {number} offset - The offset to start decoding from
+     * @returns {[Graph, number]} A tuple containing the decoded graph and the new offset
+     */
+    static decode(view, offset) {
+        let numNodes, numEdges;
+        [numNodes, offset] = readBEInt(view, offset);
+        let nodes = {};
+        for (let i = 0; i < numNodes; i++) {
+            let node;
+            [node, offset] = Graph.decodeNode(view, offset);
+            nodes[node.name] = node;
+        }
+        [numEdges, offset] = readBEInt(view, offset);
+        let edges = [];
+        for (let i = 0; i < numEdges; i++) {
+            let edge;
+            [edge, offset] = Edge.decode(view, offset);
+            edges.push(edge);
+        }
+        return [new Graph({ nodes, edges }), offset];
+    }
 }
 
 /**
@@ -2277,17 +2807,31 @@ class InputAssignment {
     tensor;
 
     /**
-     * @param {Object} api_response - Input assignment response from server
-     * @param {string} api_response.node - Node to assign input to
-     * @param {string} api_response.input - Input to assign
-     * @param {APITensor} api_response.tensor - Tensor to assign
+     * @param {Object} options - Input assignment options
+     * @param {string} options.node - Node to assign input to
+     * @param {string} options.input - Input to assign
+     * @param {CPUTensor} options.tensor - Tensor to assign
      */
-    constructor(api_response) {
-        this.node = api_response.node;
-        this.input = api_response.input;
+    constructor(options) {
+        this.node = options.node;
+        this.input = options.input;
         // Directly create CPUTensor from the raw tensor data in the API response
-        this.tensor = (new APITensor(api_response.tensor)).toCPU();
+        this.tensor = options.tensor;
         console.log("constructed", this)
+    }
+
+    /**
+     * Reads an input assignment from the DataView.
+     * @param {DataView} view The DataView to read from.
+     * @param {number} offset The offset to start reading at.
+     * @returns {[InputAssignment, number]} A tuple containing the decoded input assignment and new offset.
+     */
+    static decode(view, offset) {
+        let node, inputName, tensorData;
+        [node, offset] = readEncodedString(view, offset);
+        [inputName, offset] = readEncodedString(view, offset);
+        [tensorData, offset] = CPUTensor.decode(view, offset);
+        return [new InputAssignment({ node, input: inputName, tensor: tensorData }), offset];
     }
 }
 
@@ -2315,12 +2859,27 @@ export class OutputAssignment {
         this.tensor = options.tensor;
     }
 
-    toAPI() {
-        return {
-            node: this.node,
-            output: this.output,
-            tensor: APITensor.fromCPU(this.tensor),
-        };
+    /**
+     * Calculates the size of an encoded output assignment.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        return sizeEncodedString(this.node) +
+               sizeEncodedString(this.output) +
+               this.tensor.encodedSize();
+    }
+
+    /**
+     * Writes an output assignment to the DataView.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.node);
+        offset = writeEncodedString(view, offset, this.output);
+        offset = this.tensor.encode(view, offset);
+        return offset;
     }
 }
 
@@ -2337,19 +2896,107 @@ export class PartitionWork {
     graph;
     /** @type {InputAssignment[]} */
     inputs;
+    /** @type {boolean} */
+    shouldTrace;
 
     /**
-     * @param {Object} api_response - Partition work response from server
-     * @param {string} api_response.correlation_id - Correlation ID of the work
-     * @param {string} api_response.partition - Partition to get work for
-     * @param {Object} api_response.graph - Graph to execute
-     * @param {Array<Object>} api_response.inputs - Inputs to the graph, as API responses.
+     * @param {Object} options - Partition work options
+     * @param {string} options.correlation_id - Correlation ID of the work
+     * @param {string} options.partition - Partition to get work for
+     * @param {Graph} options.graph - Graph to execute
+     * @param {Array<InputAssignment>} options.inputs - Inputs to the graph.
+     * @param {boolean} options.shouldTrace - Whether to trace the execution of the graph.
      */
-    constructor(api_response) {
-        this.correlation_id = api_response.correlation_id;
-        this.partition = api_response.partition;
-        this.graph = new Graph(api_response.graph);
-        this.inputs = api_response.inputs.map(ia => new InputAssignment(ia));
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.partition = options.partition;
+        this.graph = options.graph;
+        this.inputs = options.inputs;
+        this.shouldTrace = options.shouldTrace;
+    }
+
+    /**
+     * Reads a PartitionWork object from the DataView.
+     * @param {DataView} view The DataView to read from.
+     * @param {number} offset The offset to start reading at.
+     * @returns {[PartitionWork, number]} A tuple containing the decoded PartitionWork and new offset.
+     */
+    static decode(view, offset) {
+        let correlation_id, partition, graph, inputsLength, shouldTrace;
+        const inputs = [];
+        [correlation_id, offset] = readEncodedString(view, offset);
+        [partition, offset] = readEncodedString(view, offset);
+        [graph, offset] = Graph.decode(view, offset);
+        [shouldTrace, offset] = readBool(view, offset);
+        [inputsLength, offset] = readBEInt(view, offset);
+        for (let i = 0; i < inputsLength; i++) {
+            let inputAssignment;
+            [inputAssignment, offset] = InputAssignment.decode(view, offset);
+            inputs.push(inputAssignment);
+        }
+        return [new PartitionWork({ correlation_id, partition, graph, inputs, shouldTrace }), offset];
+    }
+}
+
+/**
+ * @class SingleStepChunk
+ * @classdesc Represents a chunk of output assignments for single-step debugging.
+ */
+export class SingleStepChunk {
+    /** @type {string} */
+    correlation_id;
+    /** @type {string} */ // PartitionName is a string
+    partition;
+    /** @type {Array<OutputAssignment>} */
+    outputs;
+    /** @type {boolean} */
+    last_chunk
+
+
+    /**
+     * @param {Object} options
+     * @param {string} options.correlation_id
+     * @param {string} options.partition
+     * @param {Array<OutputAssignment>} options.outputs - Array of OutputAssignment instances.
+     * * @param {boolean} options.last_chunk - whetehr this is the last result chunk of its partition
+     */
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.partition = options.partition;
+        this.outputs = options.outputs;
+        this.last_chunk = options.last_chunk;
+    }
+
+    /**
+     * Calculates the size of an encoded SingleStepChunk.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        let size = sizeEncodedString(this.correlation_id);
+        size += sizeEncodedString(this.partition);
+        size += 4; // outputs_length
+        for (const output of this.outputs) {
+            size += output.encodedSize();
+        }
+        size += 1 // for the boolean
+        return size;
+    }
+
+    /**
+     * Writes a PartitionWorkResult object to the DataView.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.correlation_id);
+        offset = writeEncodedString(view, offset, this.partition);
+        offset = writeBEInt(view, offset, this.outputs.length);
+        for (const output of this.outputs) {
+            offset = output.encode(view, offset);
+        }
+        offset = writeBool(view, offset, this.last_chunk);
+        return offset;
     }
 }
 
@@ -2377,12 +3024,35 @@ export class PartitionWorkResult {
         this.outputs = options.outputs;
     }
 
-    toAPI() {
-        return {
-            correlation_id: this.correlation_id,
-            partition: this.partition,
-            outputs: this.outputs.map((m) => m.toAPI()),
-        };
+    /**
+     * Calculates the size of an encoded PartitionWorkResult.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        let size = sizeEncodedString(this.correlation_id);
+        size += sizeEncodedString(this.partition);
+        size += 4; // outputs_length
+        for (const output of this.outputs) {
+            size += output.encodedSize();
+        }
+        return size;
+    }
+
+    /**
+     * Writes a PartitionWorkResult object to the DataView.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @param {PartitionWorkResult} result The PartitionWorkResult object.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.correlation_id);
+        offset = writeEncodedString(view, offset, this.partition);
+        offset = writeBEInt(view, offset, this.outputs.length);
+        for (const output of this.outputs) {
+            offset = output.encode(view, offset);
+        }
+        return offset;
     }
 }
 
@@ -2407,20 +3077,94 @@ export class Coordinator {
     async register() {
         const response = await fetch(`${this.url}/register`, {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify({
+                is_mobile: navigator.maxTouchPoints > 0
+            }),
+            headers: {
+                ["Content-Type"]: 'application/json'
+            }
         });
         return new Registration(await response.json());
+    }
+
+    async revived(partition_name) {
+        await fetch(`${this.url}/revived/${partition_name}`, {
+            method: "POST",
+        });
+    }
+
+    async push_input(i, tokens) {
+        // const tokens = [128000, 13347, 856, 836, 374, 8388];
+        // const tokens = [128000, 13347];
+        const pos = Array.from({length: tokens.length}, (_, i) => i);
+        const correlation_id = `${i}`
+        const inputs = {
+            "input_tokens": new CPUTensor({
+                data: new Uint32Array(tokens).buffer,
+                shape: [1,tokens.length],
+                dtype: "int32"
+            }),
+            "position_ids": new CPUTensor({
+                shape: [1,tokens.length],
+                data: new Uint32Array(pos).buffer,
+                dtype: "int32"
+            })
+        };
+        const pInput = new PipelineInput({correlation_id, inputs})
+        
+        const size = pInput.encodedSize();
+        const buffer = new ArrayBuffer(size);
+        const view = new DataView(buffer);
+        pInput.encode(view, 0);
+        const response = await fetch(`${this.url}/input`, {
+            method: "POST",
+            body: buffer,
+            headers: {
+                ["Content-Type"]: 'application/octet-stream'
+            }
+        });
     }
 
     /**
      * Gets the next partition work from the coordination server
      * @param {string} partition_name - Partition to get work for
-     * @returns {PartitionWork | null} - Partition work from server, or null if no work is available
+     * @returns {Promise<PartitionWork | null>} - Partition work from server, or null if no work is available
      */
     async get_work(partition_name) {
         const response = await fetch(`${this.url}/work/${partition_name}`);
-        return new PartitionWork(await response.json());
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength === 0) {
+            return null;
+        }
+        console.debug("got work", buffer);
+        const view = new DataView(buffer);
+        const [work] = PartitionWork.decode(view, 0);
+        return work;
     }
+
+    /**
+     * Submits some work to the coordination server to be checked
+     * @param {SingleStepChunk} work - Partition chunk to submit.
+     * @returns {Promise<void>}
+     */
+    async check_work(work) {
+
+        const size = work.encodedSize();
+        const buffer = new ArrayBuffer(size);
+        const view = new DataView(buffer);
+        const start = performance.now();
+        work.encode(view, 0);
+        const encodeEnd = performance.now();
+        console.log(`encode took ${encodeEnd - start}ms`);
+        await fetch(`${this.url}/check-work`, {
+            method: "POST",
+            body: buffer,
+            headers: {
+                ["Content-Type"]: 'application/octet-stream'
+            }
+        });
+        const end = performance.now();
+        }
 
     /**
      * Submits the partition work to the coordination server
@@ -2428,23 +3172,20 @@ export class Coordinator {
      * @returns {Promise<void>}
      */
     async submit_work(work) {
-	await fetch(`${this.url}/work`, {
-	    method: "POST",
-	    body: JSON.stringify(work.toAPI()),
-        headers: {
-            ["Content-Type"]: 'application/json'
-        }
-	});
+        const size = work.encodedSize();
+        const buffer = new ArrayBuffer(size);
+        const view = new DataView(buffer);
+        work.encode(view, 0);
+        
+        const response = await fetch(`${this.url}/work`, {
+            method: "POST",
+            body: buffer,
+            // headers: {
+            //     ["Content-Type"]: 'application/octet-stream'
+            // }
+        });
+        return await response.json();
     }
-}
-
-/**
- * @class PreparedGraph
- * @classdesc Represents a graph that has been prepared for execution.
- *  (Currently a placeholder)
- */
-class PreparedGraph {
-
 }
 
 /**
@@ -2519,9 +3260,13 @@ class CosNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new CosNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2586,9 +3331,13 @@ class IndexSelectNode extends Node {
     /** @type {string} */
     static INDEX = "index";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsCPU: true });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new IndexSelectNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2720,9 +3469,13 @@ class ReduceMeanNode extends Node {
     /** @type {string} */
     static DIM = "dim"; // This will be a CPUTensor containing the dimension(s) to reduce
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 }); 
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new ReduceMeanNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2909,9 +3662,13 @@ class RsqrtNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new RsqrtNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -2972,9 +3729,13 @@ class SiluNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SiluNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3035,9 +3796,13 @@ class SinNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SinNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3098,9 +3863,13 @@ class SquaredNode extends Node {
     /** @type {string} */
     static INPUT = "input";
 
-    constructor(api_response) {
-        super(api_response);
+    constructor(options) {
+        super(options);
         this.devicePreference = new DevicePreferences({ supportsGPU: true, supportsCPU: true, gpuWeightThreshold: 512 });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new SquaredNode({ name, partition, type }), offset];
     }
 
     estimateWeight(inputsMap) {
@@ -3176,6 +3945,291 @@ class SquaredNode extends Node {
             },
             inputs: [{ name: SquaredNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } }],
             outputs: [{ name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 1 } }],
+        });
+    }
+}
+
+/**
+ * @class PipelineInput
+ * @classdesc Represents an input to the pipeline, mirroring inference.pipeline.PipelineInput.
+ */
+export class PipelineInput {
+    /** @type {string} */
+    correlation_id;
+    /** @type {Object.<string, CPUTensor>} */ // NodeName (string) to CPUTensor
+    inputs;
+
+    /**
+     * @param {Object} options
+     * @param {string} options.correlation_id
+     * @param {Object.<string, CPUTensor>} options.inputs
+     */
+    constructor(options) {
+        this.correlation_id = options.correlation_id;
+        this.inputs = options.inputs; // Should be an object like { "nodeName1": CPUTensor1, "nodeName2": CPUTensor2 }
+    }
+
+    /**
+     * Calculates the size of an encoded PipelineInput.
+     * This matches the structure decoded by `PipelineInput.decode` in `pipeline.py`
+     * and `size_encoded_pipeline_input` in `pipeline.py`.
+     * @returns {number} The size in bytes.
+     */
+    encodedSize() {
+        let size = sizeEncodedString(this.correlation_id);
+        size += 4; // For inputs_length (integer, 4 bytes)
+
+        for (const nodeName in this.inputs) {
+            if (this.inputs.hasOwnProperty(nodeName)) {
+                size += sizeEncodedString(nodeName);
+                const tensor = this.inputs[nodeName];
+                if (!(tensor instanceof CPUTensor)) {
+                    console.error("PipelineInput.encodedSize: Input tensor is not a CPUTensor", nodeName, tensor);
+                    throw new Error("PipelineInput.encodedSize expects CPUTensor instances in inputs map.");
+                }
+                size += tensor.encodedSize();
+            }
+        }
+        return size;
+    }
+
+    /**
+     * Writes a PipelineInput object to the DataView.
+     * This matches the structure decoded by `PipelineInput.decode` in `pipeline.py`
+     * and `write_encoded_pipeline_input` in `pipeline.py`.
+     * @param {DataView} view The DataView to write to.
+     * @param {number} offset The offset to start writing at.
+     * @returns {number} The new offset after writing.
+     */
+    encode(view, offset) {
+        offset = writeEncodedString(view, offset, this.correlation_id);
+        
+        const inputKeys = Object.keys(this.inputs);
+        offset = writeBEInt(view, offset, inputKeys.length); // inputs_length
+
+        for (const nodeName of inputKeys) {
+            offset = writeEncodedString(view, offset, nodeName);
+            const tensor = this.inputs[nodeName];
+            if (!(tensor instanceof CPUTensor)) {
+                console.error("PipelineInput.encode: Input tensor is not a CPUTensor", nodeName, tensor);
+                throw new Error("PipelineInput.encode expects CPUTensor instances in inputs map.");
+            }
+            offset = tensor.encode(view, offset);
+        }
+        return offset;
+    }
+}
+
+class UpperTriangularMaskNode extends Node {
+    static DIM = "dim"
+    // dimension;
+    output_dtype;
+
+    constructor(options) {
+        super(options);
+        this.output_dtype = "int32";
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: false });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        let output_dtype_str;
+        [output_dtype_str, offset] = readEncodedString(view, offset);
+        return [new UpperTriangularMaskNode({ name, partition, type, output_dtype: output_dtype_str }), offset];
+    }
+
+    estimateWeight(inputsMap) {
+        // return this.dimension * this.dimension;
+        return 0;
+    }
+
+    get_inputs() { return [UpperTriangularMaskNode.DIM]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        return [this.dimension, this.dimension];
+        return executionContext.output_dtype
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'upper_triangular_mask_cpu',
+            inputs: [UpperTriangularMaskNode.DIM],
+            outputs: [DEFAULT_NODE_OUTPUT],
+            func: (executionContext) => {
+                const dimTensor = executionContext.cpu(UpperTriangularMaskNode.DIM);
+                const dim = dimTensor.data[0];
+                console.log(dim);
+                const outputTensor = CPUTensor.uninitialized([dim, dim], this.output_dtype);
+                const outputView = outputTensor.getTypedArray();
+                for (let r = 0; r < this.dimension; r++) {
+                    for (let c = 0; c < this.dimension; c++) {
+                        outputView[r * this.dimension + c] = c > r ? 1 : 0;
+                    }
+                }
+                console.log(outputTensor);
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            }
+        });
+    }
+
+    async getGPUKernel() {
+        const code = `
+            @group(0) @binding(0) var<storage, read_write> output: array<${this.output_dtype}>;
+            @group(0) @binding(1) var<uniform> params: vec2<u32>; // dimension
+
+            @compute @workgroup_size(16, 16)
+            fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+                let dim = params[0];
+                let r = global_id.x;
+                let c = global_id.y;
+                if (r >= dim || c >= dim) {
+                    return;
+                }
+                let idx = r * dim + c;
+                output[idx] = select(${this.output_dtype}(0), ${this.output_dtype}(1), c > r);
+            }
+        `;
+
+        return new GPUKernel({
+            code,
+            uniforms: [{ name: "params", data: new Uint32Array([this.dimension]) }],
+            outputs: [{ name: DEFAULT_NODE_OUTPUT, dimensions: [this.dimension, this.dimension], dtype: this.output_dtype }],
+            workgroupSize: [16, 16],
+            workloadSize: [this.dimension, this.dimension]
+        });
+    }
+}
+
+class MaskedFillNode extends Node {
+    static INPUT = "input";
+    static MASK = "mask";
+    static VALUE = "value";
+
+    constructor(options) {
+        super(options);
+        this.devicePreference = new DevicePreferences({ supportsCPU: true, supportsGPU: false });
+    }
+
+    static decode(view, offset, name, partition, type) {
+        return [new MaskedFillNode({ name, partition, type }), offset];
+    }
+
+    estimateWeight(inputsMap) {
+        return inputsMap.get(MaskedFillNode.INPUT) || 0;
+    }
+
+    get_inputs() { return [MaskedFillNode.INPUT, MaskedFillNode.MASK, MaskedFillNode.VALUE]; }
+
+    get_outputs() { return [DEFAULT_NODE_OUTPUT]; }
+
+    getOutputShape(executionContext) {
+        const inputTensor = executionContext.cpu(MaskedFillNode.INPUT) || executionContext.gpu(MaskedFillNode.INPUT);
+        if (!inputTensor || !inputTensor.shape) {
+            throw new Error(`MaskedFillNode (${this.name}): Input tensor or its shape is undefined.`);
+        }
+        return inputTensor.shape;
+    }
+
+    getCPUKernel() {
+        return new CPUKernel({
+            name: 'masked_fill_cpu',
+            inputs: [MaskedFillNode.INPUT, MaskedFillNode.MASK, MaskedFillNode.VALUE],
+            outputs: [DEFAULT_NODE_OUTPUT],
+            func: (executionContext) => {
+                const inputTensor = executionContext.cpu(MaskedFillNode.INPUT);
+                const maskTensor = executionContext.cpu(MaskedFillNode.MASK);
+                const valueTensor = executionContext.cpu(MaskedFillNode.VALUE);
+
+                if (!inputTensor || !maskTensor || !valueTensor) {
+                    throw new Error(`MaskedFillNode (${this.name}): Missing one or more input tensors in CPUKernel.`);
+                }
+
+                const outputShape = this.getOutputShape(executionContext)
+                const outputTensor = CPUTensor.uninitialized(outputShape, inputTensor.dtype);
+                const outputData = outputTensor.getTypedArray();
+                const inputData = inputTensor.getTypedArray();
+                const maskData = maskTensor.getTypedArray();
+                const fillValue = valueTensor.data[0];
+
+                for (let i = 0; i < inputData.length; i++) {
+                    outputData[i] = maskData[i] ? fillValue : inputData[i];
+                }
+                return { [DEFAULT_NODE_OUTPUT]: outputTensor };
+            }
+        });
+    }
+
+    async getGPUKernel() {
+        return new GPUKernel({
+            name: 'masked_fill_gpu',
+            shader: `
+                struct Params {
+                    num_elements: u32,
+                    fill_value: f32,
+                };
+
+                @group(0) @binding(0) var<storage, read> input_buffer: array<f32>;
+                @group(0) @binding(1) var<storage, read> mask_buffer: array<u32>;
+                @group(0) @binding(2) var<storage, read_write> output_buffer: array<f32>;
+                @group(0) @binding(3) var<uniform> params: Params;
+
+                @compute @workgroup_size(256)
+                fn main(@global_id(global_invocation_id) id: vec3<u32>) {
+                    let idx = id.x;
+                    if (idx >= params.num_elements) {
+                        return;
+                    }
+                    output_buffer[idx] = select(input_buffer[idx], params.fill_value, mask_buffer[idx] == 1u);
+                }
+            `,
+            dimensionBuffer: {
+                func: (executionContext) => {
+                    const inputTensor = executionContext.gpu(MaskedFillNode.INPUT);
+                    const valueTensor = executionContext.cpu(MaskedFillNode.VALUE);
+
+                    if (!inputTensor) {
+                        throw new Error(`MaskedFillNode (${this.name}) GPU kernel: Missing input GPU tensor.`);
+                    }
+                    if (!valueTensor) {
+                        throw new Error(`MaskedFillNode (${this.name}) GPU kernel: Missing value CPU tensor.`);
+                    }
+                    const num_elements = inputTensor.shape.reduce((acc, val) => acc * val, 1);
+                    const fill_value_float = valueTensor.getTypedArray()[0];
+
+                    const buffer = new ArrayBuffer(8);
+                    const u32View = new Uint32Array(buffer);
+                    const f32View = new Float32Array(buffer);
+                    
+                    u32View[0] = num_elements;
+                    f32View[1] = fill_value_float;
+                    
+                    return new Uint32Array(buffer);
+                },
+                index: 3,
+            },
+            workgroupFunction: (executionContext) => {
+                const inputTensor = executionContext.gpu(MaskedFillNode.INPUT);
+                if (!inputTensor) {
+                    throw new Error(`MaskedFillNode (${this.name}) GPU kernel: Missing input GPU tensor for workgroupFunction.`);
+                }
+                const num_elements = inputTensor.shape.reduce((acc, val) => acc * val, 1);
+                const workgroupSizeX = 256;
+                return {
+                    x: Math.ceil(num_elements / workgroupSizeX),
+                    y: 1,
+                    z: 1,
+                };
+            },
+            entryPoint: "main",
+            inputs: [
+                { name: MaskedFillNode.INPUT, cpu: false, binding: { type: "read-only-storage", index: 0 } },
+                { name: MaskedFillNode.MASK, cpu: false, binding: { type: "read-only-storage", index: 1 } },
+                { name: MaskedFillNode.VALUE, cpu: true }
+            ],
+            outputs: [
+                { name: DEFAULT_NODE_OUTPUT, binding: { type: "storage", index: 2 } },
+            ],
         });
     }
 }

@@ -11,7 +11,17 @@ def load_model(path: str):
   )
   return model
 
-def prepare_llama_model_statics(model, b: ComputeGraphBuilder) -> dict:
+
+# Layer 0
+layer_params = [
+    'self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight',
+    'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight',
+    'mlp.down_proj.weight', 'input_layernorm.weight', 'post_attention_layernorm.weight'
+]
+
+model_params = [layer_params]
+        
+def prepare_llama_model_statics(config, model_path, b: ComputeGraphBuilder) -> dict:
     """
     Fetches static configuration values and prepares static graph nodes for a Llama model.
     The caller is responsible for setting the partition context on the ComputeGraphBuilder.
@@ -24,7 +34,6 @@ def prepare_llama_model_statics(model, b: ComputeGraphBuilder) -> dict:
         A dictionary containing scalar static values (head_dim, n_kv_heads, mlp_act)
         and FixedNodes (inv_freq, attn_scaling, embed_matrix).
     """
-    config = model.config
 
     # Fetch scalar static values
     all_statics = {
@@ -33,38 +42,26 @@ def prepare_llama_model_statics(model, b: ComputeGraphBuilder) -> dict:
       "mlp_act": config.hidden_act
     }
 
-    # Prepare tensor-based static nodes using the builder passed by the caller
-    # The caller must ensure 'b' is in the desired partition context.
-    try:
-        hf_rope_module = LlamaRotaryEmbedding(config, device=None)
-        inv_freq_torch = hf_rope_module.inv_freq.clone()
-        attention_scaling_torch = torch.tensor(hf_rope_module.attention_scaling)
-    except ImportError:
-        raise ImportError("Could not import LlamaRotaryEmbedding for RoPE parameters.")
+    hf_rope_module = LlamaRotaryEmbedding(config, device=None)
+    inv_freq_torch = hf_rope_module.inv_freq.clone()
+    attention_scaling_torch = torch.tensor(hf_rope_module.attention_scaling).unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(1,1,config.head_dim)
 
-    all_statics["inv_freq"] = b.fixed("static/inv_freq", inv_freq_torch)
-    all_statics["attn_scaling"] = b.fixed("static/attn_scaling", attention_scaling_torch)
+    all_statics["inv_freq"] = b.fixed("inv_freq", inv_freq_torch)
+    all_statics["attn_scaling"] = b.fixed("attn_scaling", attention_scaling_torch)
     
-    embed_matrix_data = model.model.embed_tokens.weight.data.clone()
-    all_statics["embed_matrix"] = b.fixed("static/embed_matrix", embed_matrix_data)
+    embed_matrix = b.safetensor("embed_matrix", model_path, "model.embed_tokens.weight")
+    all_statics["embed_matrix"] = embed_matrix
 
     # Fetch final layernorm weights and epsilon (from model.model.norm)
-    if hasattr(model, 'model') and hasattr(model.model, 'norm'):
-        final_norm_weight_data = model.model.norm.weight.data.clone()
-        all_statics["final_norm_weight"] = b.fixed("static/final_norm.weight", final_norm_weight_data)
-        
-        final_norm_eps_torch = torch.tensor(model.model.norm.variance_epsilon, dtype=torch.float32)
-        all_statics["final_norm_eps"] = b.fixed("static/final_norm.eps", final_norm_eps_torch.unsqueeze(0))
-    else:
-        # This case should ideally not be hit if 'model' is a standard LlamaForCausalLM
-        print("Warning: model.model.norm not found. Final layernorm parameters not fetched.")
+    final_norm_weight = b.safetensor("final_norm.weight", model_path, "model.norm.weight")
+    all_statics["final_norm_weight"] = final_norm_weight
+    final_norm_eps_torch = torch.tensor(1e-5, dtype=torch.float32)
+    all_statics["final_norm_eps"] = b.fixed("final_norm.eps", final_norm_eps_torch.unsqueeze(0))
+    
     
     return all_statics
 
-def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGraphBuilder, prefix: str, model_name: str) -> dict:
-    """
-    Extracts weights from a PyTorch LlamaDecoderLayer and packages them as graph nodes.
-    """
+def package_llama_decoder_layer_weights(layer: list[str], b: ComputeGraphBuilder, prefix: str, model_name: str) -> dict:
     packaged_weights = {
         "input_layernorm": {},
         "self_attn": {},
@@ -74,20 +71,16 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
     all_param_nodes = {} # Temporary dict to hold nodes by their original HF names
 
     # Create graph nodes for all learnable parameters
-    for name, param in layer.named_parameters():
-        data = param.data.clone()
-        if len(data.shape) == 2:
-            data = data.T
+    for name in layer:
         tensor_name = prefix + name
         complete_name = model_name + tensor_name
         node = b.safetensor(complete_name, model_name, tensor_name)
-        # node = b.fixed(tensor_name, param.data.detach())
         all_param_nodes[tensor_name] = node
 
     # Handle input layernorm
     if f"{prefix}input_layernorm.weight" in all_param_nodes:
         packaged_weights["input_layernorm"]["weight"] = all_param_nodes[f"{prefix}input_layernorm.weight"]
-    ln_eps_tensor = torch.tensor(layer.input_layernorm.variance_epsilon, dtype=torch.float32)
+    ln_eps_tensor = torch.tensor(1e-5, dtype=torch.float32)
     packaged_weights["input_layernorm"]["eps"] = b.fixed("params/input_layernorm.eps", ln_eps_tensor.unsqueeze(0))
 
 
@@ -118,6 +111,6 @@ def package_llama_decoder_layer_weights(layer: LlamaDecoderLayer, b: ComputeGrap
     # Handle post-attention layernorm
     if f"{prefix}post_attention_layernorm.weight" in all_param_nodes:
         packaged_weights["post_layernorm"]["weight"] = all_param_nodes[f"{prefix}post_attention_layernorm.weight"]
-    post_ln_eps_tensor = torch.tensor(layer.post_attention_layernorm.variance_epsilon, dtype=torch.float32)
+    post_ln_eps_tensor = torch.tensor(1e-5, dtype=torch.float32)
     packaged_weights["post_layernorm"]["eps"] = b.fixed("params/post_attention_layernorm.eps", post_ln_eps_tensor.unsqueeze(0))
     return packaged_weights

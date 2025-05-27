@@ -1,17 +1,19 @@
+from dataclasses import dataclass
 import torch
 
 from .tensor import Tensor
 from .graph import (
-    EdgeEncoding, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
+    ComputeGraphEdge, CastNode, NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,
     HadamardNode, AddNode, IndexNode, ShapeNode, SoftmaxNode, DivNode,
     FloorNode, CeilNode, ReshapeNode, TransposeNode, DebugNode, SquaredNode, ReduceMeanNode, RsqrtNode,
-    SiluNode, CosNode, SinNode, IndexSelectNode
+    SiluNode, CosNode, SinNode, IndexSelectNode, SafetensorNode, FixedNode,
+    MaskedFillNode, UpperTriangularMaskNode
 )
 from .pipeline import OutputAssignment, PartitionWork, PartitionWorkResult
 from .cache import SafeTensorCache, ModelCache 
 
-def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResult:
+def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) -> PartitionWorkResult:
     """
     Simulates a worker.
 
@@ -30,10 +32,10 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
 
     # Convert edges to forwards & backwards tables
     # All edges attached to an input
-    forward_edges: dict[NodeName, dict[NodeInput, EdgeEncoding]] = {}
+    forward_edges: dict[NodeName, dict[NodeInput, ComputeGraphEdge]] = {}
     # All edges attached to an output
-    backward_edges: dict[NodeName, dict[NodeOutput, EdgeEncoding]] = {}
-    for edge in graph.edges:
+    backward_edges: dict[NodeName, dict[NodeOutput, ComputeGraphEdge]] = {}
+    for edge in graph.get_edges():
         if edge.dst not in forward_edges:
             forward_edges[edge.dst] = {}
         forward_edges[edge.dst][edge.dst_input] = edge
@@ -45,7 +47,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
     
     # Also include all nodes with no forward edges (outputs)
     output_nodes: list[NodeName] = []
-    for node in graph.nodes.keys():
+    for node in graph.list_nodes():
         if node not in backward_edges:
             output_nodes.append(node)
 
@@ -71,12 +73,10 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
             If shape[i] = -1, it means "don't care" about that dimension.
             """
             if len(tensor.shape) != len(shape):
-                breakpoint()
                 raise ValueError(f"Tensor rank {len(tensor.shape)} does not match expected rank {len(shape)}")
             
             for i, (actual, expected) in enumerate(zip(tensor.shape, shape)):
                 if expected != -1 and actual != expected:
-                    breakpoint()
                     raise ValueError(f"Tensor shape {tensor.shape} does not match expected shape {shape} (mismatch at dimension {i})")
             return tensor
         
@@ -101,9 +101,9 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
         if (node, output) in output_table:
             return output_table[(node, output)]
 
-        encoded_node = graph.nodes[node]
+        encoded_node = graph.get_node(node)
         try:
-            if encoded_node.type == "safetensor":
+            if isinstance(encoded_node, SafetensorNode):
                 tensor_cache = model_cache.get_cache(encoded_node.model_name)
                 with tensor_cache.get_tensor(encoded_node.tensor_name) as tensor:   
                     if tensor.dtype == torch.bfloat16:
@@ -113,15 +113,44 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                     else:
                         output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
                 return output_table[(node, DEFAULT_NODE_OUTPUT)]
-            elif encoded_node.type == "matmul":
+            elif isinstance(encoded_node, MatmulNode):
                 lhs = resolve_input(node, MatmulNode.LHS)
                 rhs = resolve_input(node, MatmulNode.RHS)
                 # check_shapes_match(lhs, rhs)
-                assert lhs.shape[-1] == rhs.shape[-2], breakpoint()
-                output = lhs @ rhs
+                # All but the last two dimensions must match
+                if lhs.shape[:-2] != rhs.shape[:-2]:
+                    raise ValueError(f"Matmul lhs shape {lhs.shape} does not match rhs shape {rhs.shape}")
+                # Last two must be compatible
+                if lhs.shape[-1] != rhs.shape[-2]:
+                    raise ValueError(f"Matmul lhs shape {lhs.shape} does not match rhs shape {rhs.shape}")
+                # Perform the matmul
+                rhs = rhs.to(lhs.dtype)
+                try:
+                    output = lhs @ rhs
+                except:
+                    breakpoint()
+                # print("matmul", lhs.shape, rhs.shape, output.shape)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "slice":
+            elif isinstance(encoded_node, CastNode):
+                input_tensor = resolve_input(node, CastNode.INPUT)
+
+                # Decode dtype
+                if encoded_node.dtype == "int32":
+                    dtype = torch.int32
+                elif encoded_node.dtype == "int64":
+                    dtype = torch.int64
+                elif encoded_node.dtype == "float32":
+                    dtype = torch.float32
+                elif encoded_node.dtype == "float64":
+                    dtype = torch.float64
+                else:
+                    raise ValueError(f"Unknown dtype: {encoded_node.dtype}. You probably have to add it to simulator.simulate.evaluate_output")
+
+                output = input_tensor.to(dtype=dtype)
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif isinstance(encoded_node, SliceNode):
                 input_tensor = resolve_input(node, SliceNode.INPUT)
                 dim = check_shape(resolve_input(node, SliceNode.DIM), [1]).item()
                 start = check_shape(resolve_input(node, SliceNode.START), [1]).item()
@@ -130,7 +159,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output = input_tensor.narrow(dim, start, end - start)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "unsqueeze":
+            elif isinstance(encoded_node, UnsqueezeNode):
                 input_tensor = resolve_input(node, UnsqueezeNode.INPUT)
                 # Resolve dim dynamically, ensure it's a 1-element tensor, and get the integer value
                 dim_tensor = resolve_input(node, UnsqueezeNode.DIM)
@@ -138,7 +167,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output = input_tensor.unsqueeze(dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "broadcast":
+            elif isinstance(encoded_node, BroadcastNode):
                 input_tensor = resolve_input(node, BroadcastNode.INPUT)
                 # Resolve dim dynamically
                 dim_tensor = resolve_input(node, BroadcastNode.DIM)
@@ -148,35 +177,42 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 n = check_shape(n_tensor, [1]).item() # n is the new dimension size
                 assert int(n) == n, "bruh"
 
-                output = input_tensor.expand(*[int(n) if i == dim else -1 for i in range(input_tensor.dim())])
+                # Create a new shape list with the target size at the broadcast dimension
+                new_shape = list(input_tensor.shape)
+                new_shape[dim] = int(n)
+                output = input_tensor.expand(new_shape)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "cat":
+            elif isinstance(encoded_node, CatNode):
                 a = resolve_input(node, CatNode.A)
                 b = resolve_input(node, CatNode.B)
                 # Resolve dim dynamically
                 dim_tensor = resolve_input(node, CatNode.DIM)
                 dim = check_shape(dim_tensor, [1]).item()
                 check_shapes_match(a, b, except_dim=dim)
+
+                # Check dtypes
+                if a.dtype != b.dtype:
+                    raise ValueError(f"CatNode {node}: a.dtype {a.dtype} does not match b.dtype {b.dtype}")
                 
                 output = torch.cat([a, b], dim=dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "fixed":
+            elif isinstance(encoded_node, FixedNode):
                 output = encoded_node.tensor.to_torch()
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "hadamard":
+            elif isinstance(encoded_node, HadamardNode):
                 a = resolve_input(node, HadamardNode.A)
                 b = resolve_input(node, HadamardNode.B)
-                # check_shapes_match(a,b)
+                check_shapes_match(a,b)
                 try:
                     output = a * b
                 except:
                     breakpoint()
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "debug":
+            elif isinstance(encoded_node, DebugNode):
                 tensor = resolve_input(node, DebugNode.INPUT)
                 print(f"DEBUG<{node}>:")
                 print("=================================")
@@ -185,7 +221,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 print("=================================")
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = tensor
                 return tensor 
-            elif encoded_node.type == "softmax":
+            elif isinstance(encoded_node, SoftmaxNode):
                 input_tensor = resolve_input(node, SoftmaxNode.INPUT) 
                 # Resolve dim dynamically
                 dim_tensor = resolve_input(node, SoftmaxNode.DIM)
@@ -194,7 +230,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 # Need to return the output here
                 return output
-            elif encoded_node.type == "add":
+            elif isinstance(encoded_node, AddNode):
                 a = resolve_input(node, AddNode.A)
                 b = resolve_input(node, AddNode.B)
                 check_shapes_match(a,b)
@@ -202,7 +238,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output = a + b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "div":
+            elif isinstance(encoded_node, DivNode):
                 a = resolve_input(node, DivNode.A)
                 b = resolve_input(node, DivNode.B)
                 check_shapes_match(a,b)
@@ -210,7 +246,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output = a / b
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "index":
+            elif isinstance(encoded_node, IndexNode):
                 input_tensor = resolve_input(node, IndexNode.INPUT)
                 index_tensor = resolve_input(node, IndexNode.INDEX)
 
@@ -240,33 +276,34 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                         indexing.append(idx)
                 
                 output = input_tensor[tuple(indexing)]
-                print(f"{input_tensor}[{index_tensor}] => {output}")
+                # print(f"{input_tensor}[{index_tensor}] => {output}")
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "shape":
+            elif isinstance(encoded_node, ShapeNode):
                 input_tensor = resolve_input(node, ShapeNode.INPUT)
-                output = torch.tensor(input_tensor.shape, dtype=torch.long)
+                output = torch.tensor(input_tensor.shape, dtype=torch.int32)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "reshape":
+            elif isinstance(encoded_node, ReshapeNode):
                 input_tensor = resolve_input(node, ReshapeNode.INPUT)
                 shape = resolve_input(node, ReshapeNode.DIMS).int()
+                # print(f"{node}: reshape {input_tensor.shape} -> {tuple(shape.tolist())}")
                 output = torch.reshape(input_tensor, tuple(shape.tolist()))
                 output_table[((node, DEFAULT_NODE_OUTPUT))] = output
                 return output
-            elif encoded_node.type == "transpose":
+            elif isinstance(encoded_node, TransposeNode):
                 input_tensor = resolve_input(node, TransposeNode.INPUT)
                 dim0 = encoded_node.dim0
                 dim1 = encoded_node.dim1
                 output = torch.transpose(input_tensor, dim0, dim1)
                 output_table[(((node, DEFAULT_NODE_OUTPUT)))] = output
                 return output
-            elif encoded_node.type == "squared":
+            elif isinstance(encoded_node, SquaredNode):
                 input_tensor = resolve_input(node, SquaredNode.INPUT)
                 output = input_tensor ** 2
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "reduce_mean":
+            elif isinstance(encoded_node, ReduceMeanNode):
                 input_tensor = resolve_input(node, ReduceMeanNode.INPUT)
                 dim_tensor = resolve_input(node, ReduceMeanNode.DIM)
                 resolved_dim = check_shape(dim_tensor, [1]).item()
@@ -275,37 +312,37 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output = torch.mean(input_tensor, dim=resolved_dim)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "rsqrt":
+            elif isinstance(encoded_node, RsqrtNode):
                 input_tensor = resolve_input(node, RsqrtNode.INPUT)
                 output = torch.rsqrt(input_tensor)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "floor":
+            elif isinstance(encoded_node, FloorNode):
                 input_tensor = resolve_input(node, FloorNode.INPUT)
                 output = torch.floor(input_tensor).to(torch.int32)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "ceil":
+            elif isinstance(encoded_node, CeilNode):
                 input_tensor = resolve_input(node, CeilNode.INPUT)
                 output = torch.ceil(input_tensor).to(torch.int32)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "silu":
+            elif isinstance(encoded_node, SiluNode):
                 input_tensor = resolve_input(node, SiluNode.INPUT)
                 output = torch.nn.functional.silu(input_tensor)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "cos":
+            elif isinstance(encoded_node, CosNode):
                 input_tensor = resolve_input(node, CosNode.INPUT)
                 output = torch.cos(input_tensor)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "sin":
+            elif isinstance(encoded_node, SinNode):
                 input_tensor = resolve_input(node, SinNode.INPUT)
                 output = torch.sin(input_tensor)
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
-            elif encoded_node.type == "index_select":
+            elif isinstance(encoded_node, IndexSelectNode):
                 input_tensor = resolve_input(node, IndexSelectNode.INPUT)
                 dim_tensor = resolve_input(node, IndexSelectNode.DIM)
                 index_tensor = resolve_input(node, IndexSelectNode.INDEX)
@@ -316,8 +353,40 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
                 output = input_tensor[index_tensor]
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
+            elif isinstance(encoded_node, MaskedFillNode):
+                input_tensor = resolve_input(node, MaskedFillNode.INPUT)
+                mask_tensor = resolve_input(node, MaskedFillNode.MASK)
+                value_tensor = resolve_input(node, MaskedFillNode.VALUE)
+                
+                # Check that mask shape matches input shape
+                check_shapes_match(input_tensor, mask_tensor)
+                # Value should be a scalar tensor
+                check_shape(value_tensor, [1])
+                
+                output = input_tensor.masked_fill(mask_tensor.bool(), value_tensor.item())
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
+            elif isinstance(encoded_node, UpperTriangularMaskNode):
+                dimension = encoded_node.dimension
+                output_dtype_str = encoded_node.output_dtype
+                if output_dtype_str == "uint8":
+                    output_dtype = torch.uint8
+                elif output_dtype_str == "int32":
+                    output_dtype = torch.int32
+                elif output_dtype_str == "float32":
+                    output_dtype = torch.float32
+                else:
+                    raise ValueError(f"Unsupported dtype {output_dtype_str} for UpperTriangularMaskNode in simulator")
+                
+                indices = torch.arange(dimension)
+                col_idx = indices.unsqueeze(0).expand(dimension, -1)
+                row_idx = indices.unsqueeze(1).expand(-1, dimension)
+                output = (col_idx > row_idx).to(output_dtype)
+                
+                output_table[(node, DEFAULT_NODE_OUTPUT)] = output
+                return output
             else:
-                raise ValueError(f"Unknown node type: {encoded_node.type}")
+                raise ValueError(f"Unknown node type: {encoded_node.__class__.__name__}")
         except Exception as e:
             print(f"Error evaluating {node} {output}: {e}")
             # Print output table for debugging
@@ -331,18 +400,26 @@ def simulate(work: PartitionWork, model_cache: ModelCache) -> PartitionWorkResul
     for node in output_nodes:
         evaluate_output(node, DEFAULT_NODE_OUTPUT)
 
-    # Build result
     output_assignments: list[OutputAssignment] = []
-    for node in output_nodes:
-        output_assignments.append(OutputAssignment(
-            node=node,
-            output=DEFAULT_NODE_OUTPUT,
-                tensor=Tensor.from_torch(output_table[(node, DEFAULT_NODE_OUTPUT)])
+    if single_step:
+        # build the result from the entire output table
+        for (node, output), tensor in output_table.items():
+            output_assignments.append(OutputAssignment(
+                node = node,
+                output = output,
+                tensor = Tensor.from_torch(tensor)
             ))
+    else:
+        for node in output_nodes:
+            output_assignments.append(OutputAssignment(
+                node=node,
+                output=DEFAULT_NODE_OUTPUT,
+                    tensor=Tensor.from_torch(output_table[(node, DEFAULT_NODE_OUTPUT)])
+                ))
     
     result = PartitionWorkResult(
         correlation_id=work.correlation_id,
         partition=work.partition,
-        outputs=output_assignments
+        outputs=output_assignments,
     )
     return result
