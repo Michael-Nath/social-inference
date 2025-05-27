@@ -20,11 +20,17 @@ class WorkerManager:
         for p in (graph.get_partitions() - {PARTITION_INPUT, PARTITION_OUTPUT}):
             self.assignmentCounts[p] = 0
 
-        
-
         if not self.assignmentCounts:
             raise ValueError("No partitions to assign")
         self.lock = threading.Lock()
+
+    def revived(self, partition_name: PartitionName):
+        """
+        Called when a worker observes a prior partition
+        """
+        with self.lock:
+            if partition_name in self.assignmentCounts:
+                self.assignmentCounts[partition_name] -= 1
 
     def register(self, req: RegistrationRequest) -> Registration:
         """

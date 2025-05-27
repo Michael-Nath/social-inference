@@ -3087,6 +3087,12 @@ export class Coordinator {
         return new Registration(await response.json());
     }
 
+    async revived(partition_name) {
+        await fetch(`${this.url}/revived/${partition_name}`, {
+            method: "POST",
+        });
+    }
+
     async push_input(i, tokens) {
         // const tokens = [128000, 13347, 856, 836, 374, 8388];
         // const tokens = [128000, 13347];

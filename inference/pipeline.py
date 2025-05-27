@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import threading
 import time
+from typing import Callable
 
 from pydantic import BaseModel
 
@@ -316,11 +317,12 @@ class ComputePipeline:
         Gets the next partition work for a partition, or None if no work is available.
         """
 
-        # with self.lock:
-        #     next_overdue_work = self.inflight_work_manager.next_overdue_work(partition)
-        #     if next_overdue_work is not None:
-        #         self.inflight_work_manager.mark_sent(next_overdue_work)
-        #         return next_overdue_work
+        with self.lock:
+            next_overdue_work = self.inflight_work_manager.next_overdue_work(partition)
+            if next_overdue_work is not None:
+                print(f"Work {next_overdue_work.correlation_id} for {partition} declared dead, re-sending")
+                self.inflight_work_manager.mark_sent(next_overdue_work)
+                return next_overdue_work
 
         elements = self.partition_queues[partition].pop(blocking=False)
         if elements is None:
@@ -355,10 +357,10 @@ class ComputePipeline:
         Submits partition work to the pipeline.
         """
 
-        # with self.lock:
-        #     # If the work was not alive, discard it
-        #     if not self.inflight_work_manager.acknowledge_work(work):
-        #         return
+        with self.lock:
+            # If the work was not alive, discard it
+            if not self.inflight_work_manager.acknowledge_work(work):
+                return
         for output in work.outputs:
             forward_edges = self.graph.get_forward_edges(output.node, src_output=output.output)
             for edge in forward_edges:

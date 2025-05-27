@@ -57,6 +57,13 @@ async def register(req: RegistrationRequest):
     """
     return worker_manager.register(req)
 
+@app.post("/revived/{partition_name}")
+async def revived(partition_name: PartitionName):
+    """
+    Called by clients when they observe a prior partition
+    """
+    worker_manager.revived(partition_name)
+
 @app.post("/input", response_model=CorrelationResponse)
 async def push_input(req: Prompt):
     """

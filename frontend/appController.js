@@ -35,10 +35,19 @@ export class AppController {
     async runMainWorkflow() {
         this.uiManager.clearError();
         try {
+            console.log("AppController: Getting partition from local storage...");
+            const partition = localStorage.getItem('partition');
+            if(partition) {
+                await this.coordinator.revived(partition);
+            }
+
             console.log("AppController: Registering with coordinator...");
             const registration = await this.coordinator.register();
             console.log("AppController: Registered for partition:", registration.partition);
             this.uiManager.displayCurrentPartition(registration.partition);
+
+            // Store partition in local storage
+            localStorage.setItem('partition', registration.partition);
 
             const cache = new SafeTensorCache();
             const outputCache = new OutputCache();
