@@ -13,3 +13,4 @@ Fixes:
 - Kernel WGSL fetching
 - Make frontend pretty
 - Reviving
+- Test cache eviction

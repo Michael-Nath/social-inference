@@ -1,5 +1,6 @@
 import base64
 import io
+import aiohttp
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -7,7 +8,7 @@ from pydantic import BaseModel
 import torch
 
 from inference import (
-    ModelCache, Registration, ComputePipeline, WorkerManager, NextTokenManager,
+    AsyncModelCache, Registration, ComputePipeline, WorkerManager, NextTokenManager,
     PartitionName, SingleStepChunk, Prompt,
     PipelineOutput, Tensor, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
     read_encoded_partition_work_result, simulator
@@ -27,9 +28,9 @@ llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weigh
 MODEL_PATH = "meta-llama/Llama-3.2-1B"
 # MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
 
-model_cache = ModelCache()
+model_cache = AsyncModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
-llama_graph.coalesce_partitions(4)
+llama_graph.coalesce_partitions(1)
 pipeline = ComputePipeline(llama_graph)
 
 
@@ -37,15 +38,6 @@ worker_manager = WorkerManager(llama_graph)
 next_tok_manager = NextTokenManager(MODEL_PATH, pipeline)
 
 app = FastAPI()
-
-# Configure CORS
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],  # Allows all origins
-#     allow_credentials=True,
-#     allow_methods=["*"],  # Allows all methods
-#     allow_headers=["*"],  # Allows all headers
-# )
 
 inflight_work = {}
 sim_results = {}
@@ -99,14 +91,14 @@ async def get_safetensor(model_name: str, tensor_name: str):
     tensor_cache = model_cache.get_cache(model_name)
 
     # Pretty print cache statistics
-    stats = tensor_cache.get_stats()
+    stats = await tensor_cache.get_stats()
     print(f"Cache Statistics for {model_name}:")
     print(f"  Hits: {stats.hits} ({stats.hits_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Misses: {stats.misses} ({stats.misses_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Evictions: {stats.evictions} ({stats.evictions_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Present: {stats.present} ({stats.present_bytes / (1024 * 1024):.2f} MB)")
 
-    with tensor_cache.get_tensor(tensor_name) as tensor:
+    async with tensor_cache.get_tensor(tensor_name) as tensor:
         # tensor is torch.Tensor
         if tensor.dtype == torch.bfloat16:
             tensor = tensor.to(torch.float32)

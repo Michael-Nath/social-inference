@@ -5,7 +5,7 @@ __all__ = [
     'WorkerManager', 'NodeName', 'MatmulNode', 'DEFAULT_NODE_OUTPUT', 'Prompt',
     'NodeInput', 'NodeOutput', 'SliceNode', 'UnsqueezeNode', 'BroadcastNode', 'CatNode',
     'FixedNode', 'HadamardNode', 'AddNode', 'IndexNode', 'ShapeNode', 'SoftmaxNode', 'DivNode',
-    'FloorNode', 'CeilNode', 'SingleStepChunk', "NextTokenManager",
+    'FloorNode', 'CeilNode', 'SingleStepChunk', "NextTokenManager", 'AsyncModelCache'
     # Encoding functions
     'read_encoded_tensor', 'write_encoded_tensor',
     'size_encoded_tensor', 'read_encoded_correlated_tensor', 'write_encoded_correlated_tensor',
@@ -18,7 +18,7 @@ __all__ = [
     'size_encoded_partition_work_result'
 ]
 
-from .cache import SafeTensorCache, ModelCache
+from .cache import SafeTensorCache, ModelCache, AsyncModelCache
 from .tensor import Tensor, read_encoded_tensor, size_encoded_tensor, write_encoded_tensor
 from .graph import ComputeGraph, ComputeGraphBuilder, ComputeGraphNode, ComputeGraphEdge, PartitionName
 from .name_scope import NameScope
