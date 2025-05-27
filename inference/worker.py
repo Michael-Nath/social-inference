@@ -42,9 +42,10 @@ class WorkerManager:
             if req.is_mobile:
                 eligible_partitions = {k: v for k, v in self.assignmentCounts.items() 
                                     if 'pre' not in k and 'post' not in k}
+            partition_keys = list(eligible_partitions.keys())
+            partition_keys.sort(key=lambda p: (len(self.graph.list_partition(p)), self.assignmentCounts[p]))
 
-            min_partition = min(eligible_partitions.items(), key=lambda x: x[1])
-            partition_name = min_partition[0]
+            partition_name = partition_keys[0]
             
             # Increment worker count for this partition
             self.assignmentCounts[partition_name] += 1
