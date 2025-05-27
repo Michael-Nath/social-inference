@@ -3077,7 +3077,9 @@ export class Coordinator {
     async register() {
         const response = await fetch(`${this.url}/register`, {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify({
+                is_mobile: navigator.maxTouchPoints > 0
+            }),
         });
         return new Registration(await response.json());
     }
