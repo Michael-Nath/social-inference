@@ -1,19 +1,23 @@
 export async function initializeWebGPU() {
-  const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice({
-    requiredLimits: {
-      maxBufferSize: adapter.limits.maxBufferSize,
-      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-    }
-  });
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice({
+      requiredLimits: {
+        maxBufferSize: adapter.limits.maxBufferSize,
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      }
+    });
 
-  // Add a device lost handler to catch severe errors
-  device.lost.then((info) => {
-    console.error(`WebGPU device was lost: ${info.message}`);
-    console.error(`Reason: ${info.reason}`);
-  });
-
-  return device;
+    // Add a device lost handler to catch severe errors
+    device.lost.then((info) => {
+      console.error(`WebGPU device was lost: ${info.message}`);
+      console.error(`Reason: ${info.reason}`);
+    });
+    return device;
+  } catch (error) {
+    console.log(error);
+    return null;
+  }
 };
 
 export async function viewBuffer(device, buffer, size) {

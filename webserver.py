@@ -25,17 +25,18 @@ import tests
 llama_model_param_keys = ['embed_tokens.weight', 'layers.0.self_attn.q_proj.weight', 'layers.0.self_attn.k_proj.weight', 'layers.0.self_attn.v_proj.weight', 'layers.0.self_attn.o_proj.weight', 'layers.0.mlp.gate_proj.weight', 'layers.0.mlp.up_proj.weight', 'layers.0.mlp.down_proj.weight', 'layers.0.input_layernorm.weight', 'layers.0.post_attention_layernorm.weight', 'layers.1.self_attn.q_proj.weight', 'layers.1.self_attn.k_proj.weight', 'layers.1.self_attn.v_proj.weight', 'layers.1.self_attn.o_proj.weight', 'layers.1.mlp.gate_proj.weight', 'layers.1.mlp.up_proj.weight', 'layers.1.mlp.down_proj.weight', 'layers.1.input_layernorm.weight', 'layers.1.post_attention_layernorm.weight', 'layers.2.self_attn.q_proj.weight', 'layers.2.self_attn.k_proj.weight', 'layers.2.self_attn.v_proj.weight', 'layers.2.self_attn.o_proj.weight', 'layers.2.mlp.gate_proj.weight', 'layers.2.mlp.up_proj.weight', 'layers.2.mlp.down_proj.weight', 'layers.2.input_layernorm.weight', 'layers.2.post_attention_layernorm.weight', 'layers.3.self_attn.q_proj.weight', 'layers.3.self_attn.k_proj.weight', 'layers.3.self_attn.v_proj.weight', 'layers.3.self_attn.o_proj.weight', 'layers.3.mlp.gate_proj.weight', 'layers.3.mlp.up_proj.weight', 'layers.3.mlp.down_proj.weight', 'layers.3.input_layernorm.weight', 'layers.3.post_attention_layernorm.weight', 'layers.4.self_attn.q_proj.weight', 'layers.4.self_attn.k_proj.weight', 'layers.4.self_attn.v_proj.weight', 'layers.4.self_attn.o_proj.weight', 'layers.4.mlp.gate_proj.weight', 'layers.4.mlp.up_proj.weight', 'layers.4.mlp.down_proj.weight', 'layers.4.input_layernorm.weight', 'layers.4.post_attention_layernorm.weight', 'layers.5.self_attn.q_proj.weight', 'layers.5.self_attn.k_proj.weight', 'layers.5.self_attn.v_proj.weight', 'layers.5.self_attn.o_proj.weight', 'layers.5.mlp.gate_proj.weight', 'layers.5.mlp.up_proj.weight', 'layers.5.mlp.down_proj.weight', 'layers.5.input_layernorm.weight', 'layers.5.post_attention_layernorm.weight', 'layers.6.self_attn.q_proj.weight', 'layers.6.self_attn.k_proj.weight', 'layers.6.self_attn.v_proj.weight', 'layers.6.self_attn.o_proj.weight', 'layers.6.mlp.gate_proj.weight', 'layers.6.mlp.up_proj.weight', 'layers.6.mlp.down_proj.weight', 'layers.6.input_layernorm.weight', 'layers.6.post_attention_layernorm.weight', 'layers.7.self_attn.q_proj.weight', 'layers.7.self_attn.k_proj.weight', 'layers.7.self_attn.v_proj.weight', 'layers.7.self_attn.o_proj.weight', 'layers.7.mlp.gate_proj.weight', 'layers.7.mlp.up_proj.weight', 'layers.7.mlp.down_proj.weight', 'layers.7.input_layernorm.weight', 'layers.7.post_attention_layernorm.weight', 'layers.8.self_attn.q_proj.weight', 'layers.8.self_attn.k_proj.weight', 'layers.8.self_attn.v_proj.weight', 'layers.8.self_attn.o_proj.weight', 'layers.8.mlp.gate_proj.weight', 'layers.8.mlp.up_proj.weight', 'layers.8.mlp.down_proj.weight', 'layers.8.input_layernorm.weight', 'layers.8.post_attention_layernorm.weight', 'layers.9.self_attn.q_proj.weight', 'layers.9.self_attn.k_proj.weight', 'layers.9.self_attn.v_proj.weight', 'layers.9.self_attn.o_proj.weight', 'layers.9.mlp.gate_proj.weight', 'layers.9.mlp.up_proj.weight', 'layers.9.mlp.down_proj.weight', 'layers.9.input_layernorm.weight', 'layers.9.post_attention_layernorm.weight', 'layers.10.self_attn.q_proj.weight', 'layers.10.self_attn.k_proj.weight', 'layers.10.self_attn.v_proj.weight', 'layers.10.self_attn.o_proj.weight', 'layers.10.mlp.gate_proj.weight', 'layers.10.mlp.up_proj.weight', 'layers.10.mlp.down_proj.weight', 'layers.10.input_layernorm.weight', 'layers.10.post_attention_layernorm.weight', 'layers.11.self_attn.q_proj.weight', 'layers.11.self_attn.k_proj.weight', 'layers.11.self_attn.v_proj.weight', 'layers.11.self_attn.o_proj.weight', 'layers.11.mlp.gate_proj.weight', 'layers.11.mlp.up_proj.weight', 'layers.11.mlp.down_proj.weight', 'layers.11.input_layernorm.weight', 'layers.11.post_attention_layernorm.weight', 'layers.12.self_attn.q_proj.weight', 'layers.12.self_attn.k_proj.weight', 'layers.12.self_attn.v_proj.weight', 'layers.12.self_attn.o_proj.weight', 'layers.12.mlp.gate_proj.weight', 'layers.12.mlp.up_proj.weight', 'layers.12.mlp.down_proj.weight', 'layers.12.input_layernorm.weight', 'layers.12.post_attention_layernorm.weight', 'layers.13.self_attn.q_proj.weight', 'layers.13.self_attn.k_proj.weight', 'layers.13.self_attn.v_proj.weight', 'layers.13.self_attn.o_proj.weight', 'layers.13.mlp.gate_proj.weight', 'layers.13.mlp.up_proj.weight', 'layers.13.mlp.down_proj.weight', 'layers.13.input_layernorm.weight', 'layers.13.post_attention_layernorm.weight', 'layers.14.self_attn.q_proj.weight', 'layers.14.self_attn.k_proj.weight', 'layers.14.self_attn.v_proj.weight', 'layers.14.self_attn.o_proj.weight', 'layers.14.mlp.gate_proj.weight', 'layers.14.mlp.up_proj.weight', 'layers.14.mlp.down_proj.weight', 'layers.14.input_layernorm.weight', 'layers.14.post_attention_layernorm.weight', 'layers.15.self_attn.q_proj.weight', 'layers.15.self_attn.k_proj.weight', 'layers.15.self_attn.v_proj.weight', 'layers.15.self_attn.o_proj.weight', 'layers.15.mlp.gate_proj.weight', 'layers.15.mlp.up_proj.weight', 'layers.15.mlp.down_proj.weight', 'layers.15.input_layernorm.weight', 'layers.15.post_attention_layernorm.weight', 'norm.weight']
 llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight', 'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight', 'input_layernorm.weight', 'post_attention_layernorm.weight']
 
-MODEL_PATH = "meta-llama/Llama-3.2-1B"
+# MODEL_PATH = "meta-llama/Llama-3.2-1B"
+MODEL_PATH = "meta-llama/Llama-3.1-8B-Instruct"
 # MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
 
 model_cache = AsyncModelCache()
 sync_model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
-llama_graph.coalesce_partitions(4)
+llama_graph.coalesce_partitions(1)
 pipeline = ComputePipeline(llama_graph)
 
 
-worker_manager = AsyncWorkerManager(llama_graph)
+worker_manager = WorkerManager(llama_graph)
 next_tok_manager = NextTokenManager(MODEL_PATH, pipeline)
 
 app = FastAPI()
@@ -50,12 +51,12 @@ async def register(req: RegistrationRequest):
     """
     return await worker_manager.register(req)
 
-@app.post("/revived/{partition_name}")
-async def revived(partition_name: PartitionName):
+@app.post("/revived/{partition_name}/{cand_session_id}")
+async def revived(partition_name: PartitionName, cand_session_id: str):
     """
     Called by clients when they observe a prior partition
     """
-    await worker_manager.revived(partition_name)
+    worker_manager.revived(partition_name, cand_session_id)
 
 @app.post("/input", response_model=CorrelationResponse)
 async def push_input(req: Prompt):

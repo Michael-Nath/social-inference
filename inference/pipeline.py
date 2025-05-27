@@ -186,7 +186,7 @@ class InflightWorkManager:
     between workers.
     """
 
-    GRACE_PERIOD_S: float = 45.0
+    GRACE_PERIOD_S: float = 45.0 * 10
 
     work: dict[PartitionName, dict[str, PartitionWork]]
     times: dict[PartitionName, dict[str, float]]

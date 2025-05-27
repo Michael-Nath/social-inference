@@ -55,7 +55,7 @@ def prepare_llama_model_statics(config, model_path, b: ComputeGraphBuilder) -> d
     # Fetch final layernorm weights and epsilon (from model.model.norm)
     final_norm_weight = b.safetensor("final_norm.weight", model_path, "model.norm.weight")
     all_statics["final_norm_weight"] = final_norm_weight
-    final_norm_eps_torch = torch.tensor(1e-5, dtype=torch.float32)
+    final_norm_eps_torch = torch.tensor(config.rms_norm_eps, dtype=torch.float32)
     all_statics["final_norm_eps"] = b.fixed("final_norm.eps", final_norm_eps_torch.unsqueeze(0))
     
     

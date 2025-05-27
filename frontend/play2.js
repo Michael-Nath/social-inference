@@ -9,15 +9,8 @@ async function main() {
     // --- Initialize WebGPU Device --- 
     const device = await initializeWebGPU();
     if (!device) {
-        console.error("WebGPU not supported or initialization failed.");
-        // Display error to user via a dedicated error element if UIManager can't be initialized yet
-        const errorDisplay = document.getElementById('error-display');
-        if (errorDisplay) {
-            errorDisplay.textContent = "WebGPU initialization failed. Please ensure your browser supports WebGPU and it is enabled.";
-            errorDisplay.style.color = 'red';
-            errorDisplay.style.display = 'block';
-        }
-        return; // Stop execution if no device
+        console.log("WebGPU not supported or initialization failed.");
+        throw new Error("WebGPU initialization failed. Please ensure your browser supports WebGPU and it is enabled.");
     }
     console.log("WebGPU Device Initialized:", device);
     // ----------------------------------
@@ -46,7 +39,7 @@ async function main() {
     // Fallback error display if UIManager might not be initialized or error is outside AppController
     const errorDisplay = document.getElementById('error-display');
     if (errorDisplay) {
-        errorDisplay.textContent = `A critical error occurred: ${error.message || 'Unknown error'}. Check console for details.`;
+        errorDisplay.textContent = `A critical error occurred: ${error.message || 'Unknown error'}.`;
         errorDisplay.style.color = 'red';
     }
   }
