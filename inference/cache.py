@@ -15,7 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GB = 1024 * 1024 * 1024
-SIZE_LIMIT = 10 * GB
+MB = 1024 * 1024
+SIZE_LIMIT = 32 * GB
 
 def _dtype_to_torch(dtype: str) -> torch.dtype:
   dtype_map = {
@@ -512,11 +513,18 @@ class AsyncSafeTensorCache:
 
           # Evict tensors if needed to make space
           required_space = entry.size()
-          current_size = sum(e.size() for e in self._cache.values() if e.present() and not e.pinned())
+
+          current_size = 0
+          evictable = []
+          for e in self._cache.values():
+            if e.present():
+              pinned = await e.pinned()
+              current_size += e.size()
+              if not pinned:
+                evictable.append(e)
+
           if current_size + required_space > SIZE_LIMIT:
-            # Need to evict some entries
             # Sort unpinned entries by size (smallest first for simplicity)
-            evictable = [e for e in self._cache.values() if e.present() and not e.pinned()]
             evictable.sort(key=lambda e: e.last_use)
             
             space_to_free = (current_size + required_space) - SIZE_LIMIT

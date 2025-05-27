@@ -31,7 +31,7 @@ MODEL_PATH = "meta-llama/Llama-3.2-1B"
 model_cache = AsyncModelCache()
 sync_model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
-llama_graph.coalesce_partitions(1)
+llama_graph.coalesce_partitions(4)
 pipeline = ComputePipeline(llama_graph)
 
 
@@ -89,17 +89,17 @@ async def get_safetensor(model_name: str, tensor_name: str):
     """
     # URL-decode the model_name and tensor_name as they may be URL-encoded
     model_name = base64.b64decode(model_name).decode('utf-8')
-    tensor_cache = sync_model_cache.get_cache(model_name)
+    tensor_cache = model_cache.get_cache(model_name)
 
     # Pretty print cache statistics
-    stats = tensor_cache.get_stats()
+    stats = await tensor_cache.get_stats()
     print(f"Cache Statistics for {model_name}:")
     print(f"  Hits: {stats.hits} ({stats.hits_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Misses: {stats.misses} ({stats.misses_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Evictions: {stats.evictions} ({stats.evictions_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Present: {stats.present} ({stats.present_bytes / (1024 * 1024):.2f} MB)")
 
-    with tensor_cache.get_tensor(tensor_name) as tensor:
+    async with tensor_cache.get_tensor(tensor_name) as tensor:
         # tensor is torch.Tensor
         if tensor.dtype == torch.bfloat16:
             tensor = tensor.to(torch.float32)
