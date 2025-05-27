@@ -43,7 +43,7 @@ class WorkerManager:
                 eligible_partitions = {k: v for k, v in self.assignmentCounts.items() 
                                     if 'pre' not in k and 'post' not in k}
             partition_keys = list(eligible_partitions.keys())
-            partition_keys.sort(key=lambda p: (len(self.graph.list_partition(p)), self.assignmentCounts[p]))
+            partition_keys.sort(key=lambda p: (self.assignmentCounts[p], len(self.graph.list_partition(p))))
 
             partition_name = partition_keys[0]
             
