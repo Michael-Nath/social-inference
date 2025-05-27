@@ -85,3 +85,21 @@ def test_graph_cuts():
     assert g.identify_backward_cuts("p1") == {
         ComputeGraphEdge(src="w", src_output=DEFAULT_NODE_OUTPUT, dst="o", dst_input=OutputNode.INPUT),
     }
+
+def test_graph_coalesce():
+    builder = ComputeGraphBuilder()
+
+    x = builder.input("x")
+    with builder.partition("p0"):
+        y = builder.matmul("y", x, x)
+    with builder.partition("p1"):
+        z = builder.matmul("z", y, y)
+    with builder.partition("p2"):
+        w = builder.matmul("w", z, z)
+    o = builder.output("o", w)
+
+    g = builder.build()
+
+    g.coalesce_partitions(2)
+
+    assert len(g.get_partitions()) == 2

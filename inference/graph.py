@@ -1525,6 +1525,59 @@ class ComputeGraph:
         dot += "}\n"
         return dot
     
+    def coalesce_partitions(self, n: int):
+        """
+        Evenly merge partitions until there are at most n partitions.
+        """
+
+        while len(self._partitions) > n:
+            # Build reachability table
+            reachibility = {}
+            for p in self._partitions:
+                reachibility[p] = set()
+                for node in self._partitions[p]:
+                    # Check forward edges
+                    for edge in self._forward_edges[node]:
+                        dst_partition = self._nodes[edge.dst].partition
+                        if dst_partition != p:
+                            reachibility[p].add(dst_partition)
+                    
+                    # Check backward edges
+                    for edge in self._backward_edges[node]:
+                        src_partition = self._nodes[edge.src].partition
+                        if src_partition != p:
+                            reachibility[p].add(src_partition)
+
+            # Find smallest pair of adjacent partitions
+            min_pair = None
+            min_size = float('inf')
+            for p0 in self._partitions:
+                for p1 in reachibility[p0]:
+                    if p0 < p1:
+                        size = len(self._partitions[p0]) + len(self._partitions[p1])
+                        if size < min_size:
+                            min_pair = (p0, p1)
+                            min_size = size
+
+            if min_pair is None:
+                raise ValueError("Cannot coalesce partitions")
+            
+            # Merge the two partitions
+            self.merge_partitions(min_pair[0], min_pair[1])
+            
+    
+    def merge_partitions(self, name_0: PartitionName, name_1: PartitionName):
+        new_name = f"{name_0}.{name_1}"
+        partition_0 = self._partitions[name_0]
+        partition_1 = self._partitions[name_1]
+
+        for node in partition_0 | partition_1:
+            self._nodes[node].partition = new_name
+
+        self._partitions[new_name] = partition_0 | partition_1
+        del self._partitions[name_0]
+        del self._partitions[name_1]
+    
     def split_partition(self, name: PartitionName):
         """
         Split a partition into two roughly equally sized partitions. The operation is performed in-place.
