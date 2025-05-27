@@ -2,6 +2,8 @@ import { initializeWebGPU } from "./common.js"; // Import the initializer
 import { AppController } from "./appController.js";
 import { UIManager } from "./uiManager.js";
 
+
+
 async function main() {
   try {
     // --- Initialize WebGPU Device --- 
@@ -23,15 +25,20 @@ async function main() {
     // --- Initialize UIManager ---
     // Ensure these IDs exist in your index.html
     const uiManager = new UIManager({
-        sessionsContainerId: 'sessions-container',
-        currentPartitionId: 'current-partition',
-        errorDisplayId: 'error-display' // Used for displaying errors by AppController
+      sessionsContainerId: 'sessions-container',
+      currentPartitionId: 'current-partition',
+      errorDisplayId: 'error-display', // Used for displaying errors by AppController
+      chatContainerId: 'chat-container',
+      chatOutputId: 'chat-output',
+      chatInputId: 'chat-input',
+      chatButtonId: 'chat-button'
     });
+  
     // ----------------------------
 
     // --- Initialize and Run AppController ---
     const appController = new AppController(device, uiManager);
-    await appController.runMainWorkflow();
+    await Promise.all([appController.runMainWorkflow(), appController.runRunChatWorkflow()]);
     // ------------------------------------
 
   } catch (error) {

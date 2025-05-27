@@ -18,8 +18,18 @@ export class AppController {
 
         this.coordinator = new Coordinator({ url: "" }); // Configure URL if needed
         this.compiler = new KernelCompiler(this.device);
-        this.tokens = [128000,   3923,    374,    279,   6864,    315,  18157,     30]
-        this.decodedTokens = "What is the capital of Spain?"
+    }
+
+    async runRunChatWorkflow() {
+        while(true) {
+            const cid = this.uiManager.chatCid;
+            if(cid != null) {
+                const response = await fetch(`/output/${cid}`);
+                const data = await response.json();
+                this.uiManager.updateChatOutput(data.decoded_text);
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
     }
 
     async runMainWorkflow() {
@@ -36,7 +46,6 @@ export class AppController {
 
             while (true) {
                 console.log("AppController: Getting work for partition:", registration.partition);
-                this.uiManager.displayDecodedText(this.decodedTokens)
                 const work = await this.coordinator.get_work(registration.partition);
                 if (!work) {
                     console.log("AppController: No work available for partition:", registration.partition);
@@ -60,15 +69,15 @@ export class AppController {
                 this.uiManager.renderSessionGraph(sessionGraph);
 
                 console.log("AppController: Starting execution...");
-                this.executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache, profiler, work.shouldTrace, outputCache);
-                const { finalOutputs, trace } = await this.executor.execute(work); // Pass work for initial inputs
+                const executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache, profiler, work.shouldTrace, outputCache);
+                const { finalOutputs, trace } = await executor.execute(work); // Pass work for initial inputs
                 console.log("AppController: Execution complete. Final outputs:", finalOutputs);
 
                 // Collect and submit outputs
                 let outputAssignments = [];
                 if (finalOutputs && finalOutputs.size > 0) {
                     for (const [nodeName, outputsMap] of finalOutputs.entries()) {
-                        if (nodeName.includes("embeds_matrix")) continue;
+                        //if (nodeName.includes("embeds_matrix")) continue;
                         for (const [outputName, tensor] of outputsMap.entries()) {
                             // Ensure tensor is serializable/CPUTensor for OutputAssignment
                             // This might require a conversion from GPUTensor if not handled by executor._gatherFinalOutputs
@@ -98,26 +107,25 @@ export class AppController {
                     console.log("AppController: Submitting work results...");
                 }
 
-                const submitResponse = await this.coordinator.submit_work(new PartitionWorkResult({
+                await this.coordinator.submit_work(new PartitionWorkResult({
                     partition: work.partition,
                     correlation_id: work.correlation_id,
                     outputs: outputAssignments,
                 }));
                 console.log("AppController: Work results submitted successfully.");
-                const nextToken = submitResponse.next_token;
-                const decodedText = submitResponse.decoded_text;
-                this.tokens.push(nextToken);
-                console.log(submitResponse);
-                // Display the decoded text
-                console.log("Decoded text:", decodedText);
-                if (decodedText && decodedText.trim()) {
-                    this.decodedTokens += decodedText;
-                }
+                // const nextToken = submitResponse.next_token;
+                // const decodedText = submitResponse.decoded_text;
+                // this.tokens.push(nextToken);
+                // console.log(submitResponse);
+                // // Display the decoded text
+                // console.log("Decoded text:", decodedText);
+                // if (decodedText && decodedText.trim()) {
+                //     this.decodedTokens += decodedText;
+                // }
                 if (profiler) {
                     this.uiManager.displayProfiling(profiler);
                     profiler.clear();
                 }
-                // Optionally display a success message via UIManager
             }
         } catch (error) {
             console.error("AppController: An error occurred in the main workflow:", error);

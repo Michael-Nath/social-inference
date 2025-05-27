@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import threading
 import time
 
+from pydantic import BaseModel
+
 from inference.encoding import read_be_int, read_encoded_string, size_encoded_string, write_be_int, write_encoded_string, write_encoded_bool, read_bool
 
 from .graph import ComputeGraph, ComputeGraphEdge, NodeName, PartitionName, PARTITION_INPUT, PARTITION_OUTPUT
@@ -35,18 +37,15 @@ class PipelineInput:
         return cls(correlation_id, inputs), offset
 
 
-@dataclass
-class Prompt:
+class Prompt(BaseModel):
     """
     Input prompt from the client
     """ 
-
     text: str
-    @classmethod
-    def decode(cls, offset: int, data: bytes):
-        text, offset = read_encoded_string(offset, data)
-        return cls(text)
-
+    
+class CorrelationResponse(BaseModel):
+    correlation_id: str
+    
 @dataclass
 class PipelineOutput:
     """
@@ -489,6 +488,12 @@ def size_encoded_bool(b: bool):
     return 1
 
 
+@dataclass
+class Completion:
+    text: str
+    chat_id: str
+    last_cid: str
+
 class NextTokenManager:
     """
     When a user pushes some text, the manager tokenizes the text and then enqueues
@@ -498,40 +503,73 @@ class NextTokenManager:
         self.pipe = pipe
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.next_cid  = 0
-        self.cid_to_completions = {}
 
-    def push(self, prompt: Prompt):
-        text = prompt.text
-        tokens = self.tokenizer.encode([text]) 
-        position_ids = torch.arange(len(tokens[0]), dtype=torch.int32).unsqueeze(0)
-        self.pipe.enqueue_input(PipelineInput(f"{self.next_cid}", {
+        self.chat_id_to_completions: dict[str, Completion] = {}
+        self.last_cid_to_completions: dict[str, Completion] = {}
+
+    def _push(self, text: str, cid: str):
+        tokens = torch.tensor(self.tokenizer.encode(text)).unsqueeze(0)
+        position_ids = torch.arange(tokens.shape[1], dtype=torch.int32).unsqueeze(0)
+       
+        self.pipe.enqueue_input(PipelineInput(cid,
             {
-                "tokens": Tensor.from_torch(tokens),
+                "input_tokens": Tensor.from_torch(tokens),
                 "position_ids": Tensor.from_torch(position_ids)
             }
-        }))
-        self.cid_to_completions[self.next_cid] = "" 
-        response = {"correlation_id": self.next_cid}
+        ))
+
+    def push(self, prompt: Prompt):
+        # Get a fresh CID
+        cid = str(self.next_cid)
         self.next_cid += 1
+
+        # Push to queues
+        self._push(prompt.text, cid)
+
+        # Initialize the completion tables
+        self.last_cid_to_completions[cid] = Completion(text=prompt.text, chat_id=cid, last_cid=cid)
+        self.chat_id_to_completions[cid] = self.last_cid_to_completions[cid]
+
+        response = CorrelationResponse(correlation_id=cid)
         return response
     
-    def peek(self, cid: int):
-        assert cid in self.cid_to_completions
-        return self.cid_to_completions[cid] 
+    def peek(self, chat_id: str):
+        assert chat_id in self.chat_id_to_completions
+        return {"decoded_text": self.chat_id_to_completions[chat_id].text} 
 
     def submit_next_work(self):
         outputs = self.pipe.dequeue_output(blocking=False) 
+
         if outputs is None:
             return None
-        logits = None
-        for output in outputs:
-            if output.name.endswith("logits"):
-                logits = output.tensor.to_torch()
+
+        for name, output in outputs.outputs.items():
+            if name.endswith("llama_out"):
+                logits = output.to_torch()
                 break
+
         assert logits is not None
         token  = logits[0][-1].argmax()
+
         # decode the token
         decoded_text = tokenizer.decode(token)
-        prefix = self.cid_to_completions[outputs.correlation_id]
+
+        completion = self.last_cid_to_completions[outputs.correlation_id]
+
+        prefix = completion.text
         new_input = prefix + decoded_text
-        self.push(new_input)
+
+        # Update completion object with new text
+        completion.text = new_input
+
+        # Get fresh CID
+        cid = str(self.next_cid)
+        self.next_cid += 1
+
+        del self.last_cid_to_completions[completion.last_cid]
+
+        completion.last_cid = cid
+        self.last_cid_to_completions[cid] = completion
+
+        # Push new input
+        self._push(new_input, cid)

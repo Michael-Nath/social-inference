@@ -16,6 +16,7 @@ from inference import (
 from inference.graph import PARTITION_INPUT, PARTITION_OUTPUT
 from inference.builds import build_llaam_causal_mp
 
+from inference.pipeline import CorrelationResponse
 import tests
 
 
@@ -27,6 +28,7 @@ MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct"
 
 model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
+llama_graph.coalesce_partitions(4)
 pipeline = ComputePipeline(llama_graph)
 
 worker_manager = WorkerManager(llama_graph)
@@ -53,20 +55,15 @@ async def register():
     """
     return worker_manager.register()
 
-@app.post("/input")
-async def push_input(req: Request):
+@app.post("/input", response_model=CorrelationResponse)
+async def push_input(req: Prompt):
     """
     Called by clients to push inference inputs
     """
-    body = bytearray()
-    async for chunk in req.stream():
-        body.extend(chunk)
-    # Parse JSON
-    work, _ = Prompt.decode(0, body)
-    return next_tok_manager.push(work)
+    return next_tok_manager.push(req)
 
 @app.get("/output/{cid}")
-async def get_output(cid: int):
+async def get_output(cid: str):
     """
     Called by clients to get inference outputs
     """
@@ -151,12 +148,11 @@ async def submit_work(req: Request):
         body.extend(chunk)
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
-    pipeline.submit_partition_work()
+    pipeline.submit_partition_work(work)
     next_tok_manager.submit_next_work()
 
 @app.post("/check-work")
 async def check_work(req: Request):
-
     body = bytearray()
     async for chunk in req.stream():
         body.extend(chunk)

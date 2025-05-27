@@ -1530,10 +1530,12 @@ class ComputeGraph:
         Evenly merge partitions until there are at most n partitions.
         """
 
-        while len(self._partitions) > n:
+        while len(self._partitions) - 2 > n:
             # Build reachability table
             reachibility = {}
             for p in self._partitions:
+                if p == PARTITION_INPUT or p == PARTITION_OUTPUT:
+                    continue
                 reachibility[p] = set()
                 for node in self._partitions[p]:
                     # Check forward edges
@@ -1552,6 +1554,8 @@ class ComputeGraph:
             min_pair = None
             min_size = float('inf')
             for p0 in self._partitions:
+                if p0 == PARTITION_INPUT or p0 == PARTITION_OUTPUT:
+                    continue
                 for p1 in reachibility[p0]:
                     if p0 < p1:
                         size = len(self._partitions[p0]) + len(self._partitions[p1])

@@ -9,6 +9,19 @@ export class UIManager {
         this.sessionsContainer = document.getElementById(containerSelectors.sessionsContainerId);
         this.currentPartitionElement = document.getElementById(containerSelectors.currentPartitionId);
         this.errorDisplayElement = document.getElementById(containerSelectors.errorDisplayId); // Optional
+        this.chatOutput = document.getElementById(containerSelectors.chatOutputId);
+        this.chatInput = document.getElementById(containerSelectors.chatInputId);
+        this.chatButton = document.getElementById(containerSelectors.chatButtonId);
+        this.chatCid = null;
+
+        this.chatButton.addEventListener('click', async () => {
+            await this.startChat();
+        });
+        this.chatInput.addEventListener('keydown', async (event) => {
+            if (event.key === 'Enter') {
+                await this.startChat();
+            }
+        });
 
         if (!this.sessionsContainer) {
             console.error("UIManager: Sessions container not found!");
@@ -19,10 +32,35 @@ export class UIManager {
         DomHighlighter.addHighlightStyles(); // Ensure styles are injected
     }
 
+    setChatPrompt(prompt) {
+        this.updateChatOutput(prompt);
+    }
+
+
     displayCurrentPartition(partitionName) {
         if (this.currentPartitionElement) {
             this.currentPartitionElement.textContent = partitionName || 'N/A';
         }
+    }
+
+    async startChat() {
+        const message = this.chatInput.value;
+        this.chatInput.value = '';
+       
+        this.setChatPrompt(message);
+        console.log("Sending message:", message);
+    
+        const response = await fetch("/input", {
+          method: "POST",
+          body: JSON.stringify({
+            text: message
+          }),
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        })
+        const response_json = await response.json();
+        this.chatCid = response_json.correlation_id;
     }
 
     displayProfiling(profiler) {
@@ -104,6 +142,13 @@ export class UIManager {
                 this.currentPartitionElement.parentNode.insertBefore(decodedTextDiv, this.currentPartitionElement.nextSibling);
             }
             decodedTextDiv.textContent = text;
+        }
+    }
+
+    updateChatOutput(completion) {
+        if (this.chatOutput) {
+            console.log("Updating chat output:", completion);
+            this.chatOutput.textContent = completion;
         }
     }
 
@@ -242,7 +287,6 @@ export class UIManager {
     }
 
     onNodeStart(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession) {
-        return
         const elId = DomHighlighter.getNodeElementId(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession);
         DomHighlighter.updateElementClass(elId, 'node-executing', true);
         DomHighlighter.updateElementClass(elId, 'node-completed', false);
@@ -250,10 +294,6 @@ export class UIManager {
     }
 
     onNodeEnd(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession, success) {
-        return;
-        console.log("success")
-        console.log(success)
-        return
         const elId = DomHighlighter.getNodeElementId(sessionId, sessionIndex, nodeIdentifier, nodeIndexInSession);
         DomHighlighter.updateElementClass(elId, 'node-executing', false);
         DomHighlighter.updateElementClass(elId, success ? 'node-completed' : 'node-failed', true);

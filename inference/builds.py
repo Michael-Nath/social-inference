@@ -30,6 +30,7 @@ def build_llaam_causal_mp(MODEL_PATH):
 
   nodes = [statics]
   num_layers = config.num_hidden_layers
+  #num_layers = 1
 
   for p_idx in range(num_layers):
     with b.partition(f"layer{p_idx}"):
