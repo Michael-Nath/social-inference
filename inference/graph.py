@@ -1362,7 +1362,7 @@ class ComputeGraph:
         """
         Check if a partition is protected.
         """
-        return partition == PARTITION_INPUT or partition == PARTITION_OUTPUT or partition == "pre" or partition == "post"
+        return partition == PARTITION_INPUT or partition == PARTITION_OUTPUT
 
     @contextmanager
     def partition(self, name: PartitionName):
