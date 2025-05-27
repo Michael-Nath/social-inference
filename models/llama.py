@@ -360,7 +360,7 @@ def llama_model(
     # weights[0] houses all statics
     # compute the embeddings of the input tokens
 
-    with b.partition("p0"):
+    with b.partition("pre"):
       dim0_node = b.fixed("embed_dim0", torch.tensor([0], dtype=torch.int32))    
       embed_tokens = b.index_select("embed_tokens", weights[0]["embed_matrix"], dim0_node, tokens)
       cos_node, sin_node = rotary_embed(
@@ -375,7 +375,7 @@ def llama_model(
             b, layer_out, weights[0]["head_dim"], weights[0]["n_kv_heads"], weights[0]["mlp_act"],
             weights[layer_idx], (cos_node, sin_node))
     
-    with b.partition("p0"): 
+    with b.partition("post"): 
       layer_out = layernorm(b, layer_out, weights[0]["final_norm_weight_post"], weights[0]["final_norm_eps_post"])
     return layer_out
 
@@ -390,7 +390,7 @@ def llama_causal(
     model_out = llama_model(b, tokens, position_ids, weights, layer_parts)
     # weights[0] houses all statics 
   with NameScope.push_scope("post_model"):
-    with b.partition("p0"):
+    with b.partition("post"):
       lm_head_weight = b.transpose("lm_head", weights[0]["embed_matrix_post"], 0, 1)
       lm_head_weight_unsqz = b.unsqueeze("lm_head_unsqz", lm_head_weight, just(b, 0))
       logits = b.matmul("logits", model_out, lm_head_weight_unsqz)

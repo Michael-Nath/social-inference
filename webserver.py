@@ -7,12 +7,13 @@ from pydantic import BaseModel
 import torch
 
 from inference import (
-    ModelCache, Registration, ComputePipeline, WorkerManager,
-    PartitionWork, PartitionWorkResult, PartitionName, SingleStepChunk,
-    PipelineInput, PipelineOutput, Tensor, ComputeGraphBuilder, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
+    ModelCache, Registration, ComputePipeline, WorkerManager, NextTokenManager,
+    PartitionName, SingleStepChunk, Prompt,
+    PipelineOutput, Tensor, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
     read_encoded_partition_work_result, simulator
 )
 
+from inference.graph import PARTITION_INPUT, PARTITION_OUTPUT
 from inference.builds import build_llaam_causal_mp
 
 import tests
@@ -20,12 +21,16 @@ import tests
 
 llama_model_param_keys = ['embed_tokens.weight', 'layers.0.self_attn.q_proj.weight', 'layers.0.self_attn.k_proj.weight', 'layers.0.self_attn.v_proj.weight', 'layers.0.self_attn.o_proj.weight', 'layers.0.mlp.gate_proj.weight', 'layers.0.mlp.up_proj.weight', 'layers.0.mlp.down_proj.weight', 'layers.0.input_layernorm.weight', 'layers.0.post_attention_layernorm.weight', 'layers.1.self_attn.q_proj.weight', 'layers.1.self_attn.k_proj.weight', 'layers.1.self_attn.v_proj.weight', 'layers.1.self_attn.o_proj.weight', 'layers.1.mlp.gate_proj.weight', 'layers.1.mlp.up_proj.weight', 'layers.1.mlp.down_proj.weight', 'layers.1.input_layernorm.weight', 'layers.1.post_attention_layernorm.weight', 'layers.2.self_attn.q_proj.weight', 'layers.2.self_attn.k_proj.weight', 'layers.2.self_attn.v_proj.weight', 'layers.2.self_attn.o_proj.weight', 'layers.2.mlp.gate_proj.weight', 'layers.2.mlp.up_proj.weight', 'layers.2.mlp.down_proj.weight', 'layers.2.input_layernorm.weight', 'layers.2.post_attention_layernorm.weight', 'layers.3.self_attn.q_proj.weight', 'layers.3.self_attn.k_proj.weight', 'layers.3.self_attn.v_proj.weight', 'layers.3.self_attn.o_proj.weight', 'layers.3.mlp.gate_proj.weight', 'layers.3.mlp.up_proj.weight', 'layers.3.mlp.down_proj.weight', 'layers.3.input_layernorm.weight', 'layers.3.post_attention_layernorm.weight', 'layers.4.self_attn.q_proj.weight', 'layers.4.self_attn.k_proj.weight', 'layers.4.self_attn.v_proj.weight', 'layers.4.self_attn.o_proj.weight', 'layers.4.mlp.gate_proj.weight', 'layers.4.mlp.up_proj.weight', 'layers.4.mlp.down_proj.weight', 'layers.4.input_layernorm.weight', 'layers.4.post_attention_layernorm.weight', 'layers.5.self_attn.q_proj.weight', 'layers.5.self_attn.k_proj.weight', 'layers.5.self_attn.v_proj.weight', 'layers.5.self_attn.o_proj.weight', 'layers.5.mlp.gate_proj.weight', 'layers.5.mlp.up_proj.weight', 'layers.5.mlp.down_proj.weight', 'layers.5.input_layernorm.weight', 'layers.5.post_attention_layernorm.weight', 'layers.6.self_attn.q_proj.weight', 'layers.6.self_attn.k_proj.weight', 'layers.6.self_attn.v_proj.weight', 'layers.6.self_attn.o_proj.weight', 'layers.6.mlp.gate_proj.weight', 'layers.6.mlp.up_proj.weight', 'layers.6.mlp.down_proj.weight', 'layers.6.input_layernorm.weight', 'layers.6.post_attention_layernorm.weight', 'layers.7.self_attn.q_proj.weight', 'layers.7.self_attn.k_proj.weight', 'layers.7.self_attn.v_proj.weight', 'layers.7.self_attn.o_proj.weight', 'layers.7.mlp.gate_proj.weight', 'layers.7.mlp.up_proj.weight', 'layers.7.mlp.down_proj.weight', 'layers.7.input_layernorm.weight', 'layers.7.post_attention_layernorm.weight', 'layers.8.self_attn.q_proj.weight', 'layers.8.self_attn.k_proj.weight', 'layers.8.self_attn.v_proj.weight', 'layers.8.self_attn.o_proj.weight', 'layers.8.mlp.gate_proj.weight', 'layers.8.mlp.up_proj.weight', 'layers.8.mlp.down_proj.weight', 'layers.8.input_layernorm.weight', 'layers.8.post_attention_layernorm.weight', 'layers.9.self_attn.q_proj.weight', 'layers.9.self_attn.k_proj.weight', 'layers.9.self_attn.v_proj.weight', 'layers.9.self_attn.o_proj.weight', 'layers.9.mlp.gate_proj.weight', 'layers.9.mlp.up_proj.weight', 'layers.9.mlp.down_proj.weight', 'layers.9.input_layernorm.weight', 'layers.9.post_attention_layernorm.weight', 'layers.10.self_attn.q_proj.weight', 'layers.10.self_attn.k_proj.weight', 'layers.10.self_attn.v_proj.weight', 'layers.10.self_attn.o_proj.weight', 'layers.10.mlp.gate_proj.weight', 'layers.10.mlp.up_proj.weight', 'layers.10.mlp.down_proj.weight', 'layers.10.input_layernorm.weight', 'layers.10.post_attention_layernorm.weight', 'layers.11.self_attn.q_proj.weight', 'layers.11.self_attn.k_proj.weight', 'layers.11.self_attn.v_proj.weight', 'layers.11.self_attn.o_proj.weight', 'layers.11.mlp.gate_proj.weight', 'layers.11.mlp.up_proj.weight', 'layers.11.mlp.down_proj.weight', 'layers.11.input_layernorm.weight', 'layers.11.post_attention_layernorm.weight', 'layers.12.self_attn.q_proj.weight', 'layers.12.self_attn.k_proj.weight', 'layers.12.self_attn.v_proj.weight', 'layers.12.self_attn.o_proj.weight', 'layers.12.mlp.gate_proj.weight', 'layers.12.mlp.up_proj.weight', 'layers.12.mlp.down_proj.weight', 'layers.12.input_layernorm.weight', 'layers.12.post_attention_layernorm.weight', 'layers.13.self_attn.q_proj.weight', 'layers.13.self_attn.k_proj.weight', 'layers.13.self_attn.v_proj.weight', 'layers.13.self_attn.o_proj.weight', 'layers.13.mlp.gate_proj.weight', 'layers.13.mlp.up_proj.weight', 'layers.13.mlp.down_proj.weight', 'layers.13.input_layernorm.weight', 'layers.13.post_attention_layernorm.weight', 'layers.14.self_attn.q_proj.weight', 'layers.14.self_attn.k_proj.weight', 'layers.14.self_attn.v_proj.weight', 'layers.14.self_attn.o_proj.weight', 'layers.14.mlp.gate_proj.weight', 'layers.14.mlp.up_proj.weight', 'layers.14.mlp.down_proj.weight', 'layers.14.input_layernorm.weight', 'layers.14.post_attention_layernorm.weight', 'layers.15.self_attn.q_proj.weight', 'layers.15.self_attn.k_proj.weight', 'layers.15.self_attn.v_proj.weight', 'layers.15.self_attn.o_proj.weight', 'layers.15.mlp.gate_proj.weight', 'layers.15.mlp.up_proj.weight', 'layers.15.mlp.down_proj.weight', 'layers.15.input_layernorm.weight', 'layers.15.post_attention_layernorm.weight', 'norm.weight']
 llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight', 'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight', 'input_layernorm.weight', 'post_attention_layernorm.weight']
-    
+
+# MODEL_PATH = "meta-llama/Llama-3.2-1B"
+MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
+
 model_cache = ModelCache()
-llama_graph = build_llaam_causal_mp()
+llama_graph = build_llaam_causal_mp(MODEL_PATH)
 pipeline = ComputePipeline(llama_graph)
-# pipeline, llama_graph = tests.test_softmax()
+
 worker_manager = WorkerManager(llama_graph)
+next_tok_manager = NextTokenManager(MODEL_PATH, pipeline)
 
 app = FastAPI()
 
@@ -57,15 +62,15 @@ async def push_input(req: Request):
     async for chunk in req.stream():
         body.extend(chunk)
     # Parse JSON
-    work, _ = PipelineInput.decode(0, body)
-    pipeline.enqueue_input(work)
+    work, _ = Prompt.decode(0, body)
+    return next_tok_manager.push(work)
 
-@app.get("/output", response_model=PipelineOutput | None)
-async def get_output():
+@app.get("/output/{cid}")
+async def get_output(cid: int):
     """
     Called by clients to get inference outputs
     """
-    return pipeline.dequeue_output(blocking=False)
+    return next_tok_manager.peek(cid)
 
 class SafetensorHeader(BaseModel):
     dtype: str
@@ -121,6 +126,8 @@ async def get_work(partition_name: PartitionName):
     Called by clients to request inference inputs
     """
     for p in pipeline.graph.get_partitions():
+        if p in [PARTITION_OUTPUT, PARTITION_INPUT]:
+            continue
         w = pipeline.get_partition_work(p)
         if w is not None:
             w.should_trace = False 
@@ -147,7 +154,8 @@ async def submit_work(req: Request):
         body.extend(chunk)
     # Parse JSON
     work, _ = read_encoded_partition_work_result(0, body)
-    return pipeline.submit_partition_work(work)
+    pipeline.submit_partition_work()
+    next_tok_manager.submit_next_work()
 
 @app.post("/check-work")
 async def check_work(req: Request):

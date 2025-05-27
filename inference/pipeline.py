@@ -34,6 +34,19 @@ class PipelineInput:
             inputs[node] = tensor
         return cls(correlation_id, inputs), offset
 
+
+@dataclass
+class Prompt:
+    """
+    Input prompt from the client
+    """ 
+
+    text: str
+    @classmethod
+    def decode(cls, offset: int, data: bytes):
+        text, offset = read_encoded_string(offset, data)
+        return cls(text)
+
 @dataclass
 class PipelineOutput:
     """
@@ -352,11 +365,6 @@ class ComputePipeline:
             for edge in forward_edges:
                 self.edge_queues[edge].put(edge, CorrelatedTensor(correlation_id=work.correlation_id, tensor=output.tensor))
 
-        if work.partition == "p0":
-            logits = work.outputs[-1].tensor.to_torch()
-            token  = logits[0][-1].argmax()
-            return {"next_token": token.item(), "decoded_text": tokenizer.decode(token)}
-
     def dequeue_output(self, blocking: bool = True, timeout: float | None = None) -> PipelineOutput | None:
         """
         Dequeues an output from the pipeline
@@ -479,3 +487,51 @@ def size_encoded_partition_work_result(partition_work_result: PartitionWorkResul
 
 def size_encoded_bool(b: bool):
     return 1
+
+
+class NextTokenManager:
+    """
+    When a user pushes some text, the manager tokenizes the text and then enqueues
+    the input to its ComputePipeline object
+    """
+    def __init__(self, model_path: str, pipe: ComputePipeline):
+        self.pipe = pipe
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.next_cid  = 0
+        self.cid_to_completions = {}
+
+    def push(self, prompt: Prompt):
+        text = prompt.text
+        tokens = self.tokenizer.encode([text]) 
+        position_ids = torch.arange(len(tokens[0]), dtype=torch.int32).unsqueeze(0)
+        self.pipe.enqueue_input(PipelineInput(f"{self.next_cid}", {
+            {
+                "tokens": Tensor.from_torch(tokens),
+                "position_ids": Tensor.from_torch(position_ids)
+            }
+        }))
+        self.cid_to_completions[self.next_cid] = "" 
+        response = {"correlation_id": self.next_cid}
+        self.next_cid += 1
+        return response
+    
+    def peek(self, cid: int):
+        assert cid in self.cid_to_completions
+        return self.cid_to_completions[cid] 
+
+    def submit_next_work(self):
+        outputs = self.pipe.dequeue_output(blocking=False) 
+        if outputs is None:
+            return None
+        logits = None
+        for output in outputs:
+            if output.name.endswith("logits"):
+                logits = output.tensor.to_torch()
+                break
+        assert logits is not None
+        token  = logits[0][-1].argmax()
+        # decode the token
+        decoded_text = tokenizer.decode(token)
+        prefix = self.cid_to_completions[outputs.correlation_id]
+        new_input = prefix + decoded_text
+        self.push(new_input)
