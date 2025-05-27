@@ -719,7 +719,7 @@ export class KernelCompiler {
 
                     const shaderModule = this.device.createShaderModule({
                         label: `${kernel.name}.${kernel.key()}.shadermodule`,
-                        code: kernel.shader
+                        code: await kernel.shader()
                     });
                     console.debug(`Creating pipeline for kernel: ${kernel.name} (${kernel.key()})`);
 

@@ -363,7 +363,7 @@ class MatmulNode extends Node {
         // much caching as possible. See GPUKernel for details.
         return new GPUKernel({
             name: 'matmul',
-            shader: await fetch('kernels/matmul.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/matmul.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const lhsTensor = executionContext.gpu(MatmulNode.LHS);
@@ -634,7 +634,7 @@ class SoftmaxNode extends Node {
     async getGPUKernel() {
         return new GPUKernel({
             name: 'softmax_v2',
-            shader: await fetch('kernels/softmax.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/softmax.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const inputGPUTensor = executionContext.gpu(SoftmaxNode.INPUT);
@@ -1082,7 +1082,7 @@ class ReshapeNode extends Node {
         /* TODO: We need a ShapeKernel that is IDENTICAL to a CPU kernel except operates on GPU tensors. */
         return new GPUKernel({
             name: 'reshape',
-            shader: await fetch('kernels/empty.wgsl').then((res) => res.text()),
+            shader: async () => await fetch('kernels/empty.wgsl').then((res) => res.text()),
             entryPoint: 'main',
             workgroupFunction: (executionContext) => { return {x: 1}; },
             inputs: [],
@@ -1666,7 +1666,7 @@ class HadamardNode extends Node {
     async getGPUKernel() {
         return new GPUKernel({
             name: 'hadamard',
-            shader: await fetch('kernels/hadamard.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/hadamard.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const tensorA = executionContext.gpu(HadamardNode.A);
@@ -2056,7 +2056,7 @@ class TransposeNode extends Node {
         const MAX_DIMS = 8; // Define explicitly here for clarity, should match WGSL
         return new GPUKernel({
             name: `transpose<${this.dim0}, ${this.dim1}>`,
-            shader: await fetch('kernels/transpose.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/transpose.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const inputTensor = executionContext.gpu(TransposeNode.INPUT);
@@ -2236,7 +2236,7 @@ class AddNode extends Node {
         // much caching as possible. See GPUKernel for details.
         return new GPUKernel({
             name: 'add',
-            shader: await fetch('kernels/add.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/add.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const inputTensorA = executionContext.gpu(AddNode.A);
@@ -2419,7 +2419,7 @@ class DivNode extends Node {
     async getGPUKernel() {
         return new GPUKernel({
             name: 'divide',
-            shader: await fetch('kernels/divide.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/divide.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const tensorA = executionContext.gpu(DivNode.A);
@@ -3286,7 +3286,7 @@ class CosNode extends Node {
         // console.warn(`CosNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
             name: 'cos',
-            shader: await fetch('kernels/cos.wgsl').then(r => r.text()), 
+            shader: async () => await fetch('kernels/cos.wgsl').then(r => r.text()), 
             entryPoint: 'main',
             dimensionBuffer: { 
                 func: (executionContext) => {
@@ -3612,7 +3612,7 @@ class ReduceMeanNode extends Node {
     async getGPUKernel() {
         return new GPUKernel({
             name: 'reduce_mean',
-            shader: await fetch('kernels/reduce_mean.wgsl').then(r => r.text()),
+            shader: async () => await fetch('kernels/reduce_mean.wgsl').then(r => r.text()),
             dimensionBuffer: {
                 func: (executionContext) => {
                     const inputTensor = executionContext.gpu(ReduceMeanNode.INPUT);
@@ -3762,7 +3762,7 @@ class RsqrtNode extends Node {
         // console.warn(`RsqrtNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
             name: 'rsqrt',
-            shader: await fetch('kernels/rsqrt.wgsl').then(r => r.text()), 
+            shader: async () => await fetch('kernels/rsqrt.wgsl').then(r => r.text()), 
             entryPoint: 'main',
             dimensionBuffer: { 
                 func: (executionContext) => {
@@ -3829,7 +3829,7 @@ class SiluNode extends Node {
         // console.warn(`SiluNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
             name: 'silu',
-            shader: await fetch('kernels/silu.wgsl').then(r => r.text()), 
+            shader: async () => await fetch('kernels/silu.wgsl').then(r => r.text()), 
             entryPoint: 'main',
             dimensionBuffer: { 
                 func: (executionContext) => {
@@ -3896,7 +3896,7 @@ class SinNode extends Node {
         // console.warn(`SinNode (${this.name}): GPU kernel not yet implemented. Fetching empty.`);
         return new GPUKernel({
             name: 'sin',
-            shader: await fetch('kernels/sin.wgsl').then(r => r.text()), 
+            shader: async () => await fetch('kernels/sin.wgsl').then(r => r.text()), 
             entryPoint: 'main',
             dimensionBuffer: { 
                 func: (executionContext) => {
@@ -3991,7 +3991,7 @@ class SquaredNode extends Node {
     async getGPUKernel() {
         return new GPUKernel({
             name: 'squared',
-            shader: await fetch('kernels/squared.wgsl').then(r => r.text()), 
+            shader: async () => await fetch('kernels/squared.wgsl').then(r => r.text()), 
             entryPoint: 'main',
             dimensionBuffer: { 
                 func: (executionContext) => {
