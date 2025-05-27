@@ -36,7 +36,7 @@ class WorkerManager:
             if req.is_mobile:
                 eligible_partitions = {k: v for k, v in self.assignmentCounts.items() 
                                     if 'pre' not in k and 'post' not in k}
-            
+
             min_partition = min(eligible_partitions.items(), key=lambda x: x[1])
             partition_name = min_partition[0]
             

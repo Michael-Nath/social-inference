@@ -3080,6 +3080,9 @@ export class Coordinator {
             body: JSON.stringify({
                 is_mobile: navigator.maxTouchPoints > 0
             }),
+            headers: {
+                ["Content-Type"]: 'application/json'
+            }
         });
         return new Registration(await response.json());
     }
