@@ -1358,6 +1358,12 @@ class ComputeGraph:
         self._cached_forward_cuts = {}
         self._cached_backward_cuts = {}
 
+    def is_protected_partition(self, partition: PartitionName) -> bool:
+        """
+        Check if a partition is protected.
+        """
+        return partition == PARTITION_INPUT or partition == PARTITION_OUTPUT or partition == "pre" or partition == "post"
+
     @contextmanager
     def partition(self, name: PartitionName):
         """
@@ -1530,31 +1536,27 @@ class ComputeGraph:
         Evenly merge partitions until there are at most n partitions.
         """
 
-        while len(self._partitions) - 2 > n:
+        while len(self._partitions) - 4 > n:
             # Build reachability table
             reachibility = {}
             for p in self._partitions:
-                if p == PARTITION_INPUT or p == PARTITION_OUTPUT:
+                if self.is_protected_partition(p):
                     continue
                 reachibility[p] = set()
                 for node in self._partitions[p]:
                     # Check forward edges
                     for edge in self._forward_edges[node]:
                         dst_partition = self._nodes[edge.dst].partition
+                        if self.is_protected_partition(dst_partition):
+                            continue
                         if dst_partition != p:
                             reachibility[p].add(dst_partition)
                     
-                    # Check backward edges
-                    for edge in self._backward_edges[node]:
-                        src_partition = self._nodes[edge.src].partition
-                        if src_partition != p:
-                            reachibility[p].add(src_partition)
-
             # Find smallest pair of adjacent partitions
             min_pair = None
             min_size = float('inf')
             for p0 in self._partitions:
-                if p0 == PARTITION_INPUT or p0 == PARTITION_OUTPUT:
+                if self.is_protected_partition(p0):
                     continue
                 for p1 in reachibility[p0]:
                     if p0 < p1:

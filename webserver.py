@@ -29,8 +29,9 @@ MODEL_PATH = "meta-llama/Llama-3.2-1B"
 
 model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
-#llama_graph.coalesce_partitions(2)
+llama_graph.coalesce_partitions(2)
 pipeline = ComputePipeline(llama_graph)
+
 
 worker_manager = WorkerManager(llama_graph)
 next_tok_manager = NextTokenManager(MODEL_PATH, pipeline)

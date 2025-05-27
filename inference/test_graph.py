@@ -89,6 +89,7 @@ def test_graph_cuts():
 def test_graph_coalesce():
     builder = ComputeGraphBuilder()
 
+
     x = builder.input("x")
     with builder.partition("p0"):
         y = builder.matmul("y", x, x)
@@ -99,7 +100,7 @@ def test_graph_coalesce():
     o = builder.output("o", w)
 
     g = builder.build()
-
+ 
     g.coalesce_partitions(2)
 
     assert len(g.get_partitions()) == 2
