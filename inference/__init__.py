@@ -15,7 +15,8 @@ __all__ = [
     'size_encoded_output_assignment', 'read_encoded_graph', 'write_encoded_graph',
     'size_encoded_graph', 'read_encoded_partition_work', 'write_encoded_partition_work',
     'size_encoded_partition_work', 'read_encoded_partition_work_result', 'write_encoded_partition_work_result',
-    'size_encoded_partition_work_result'
+    'size_encoded_partition_work_result', 
+    'AsyncWorkerManager'
 ]
 
 from .cache import SafeTensorCache, ModelCache, AsyncModelCache
@@ -29,7 +30,7 @@ from .pipeline import (
     write_encoded_partition_work, size_encoded_partition_work, Prompt, NextTokenManager,
     read_encoded_partition_work_result, write_encoded_partition_work_result, size_encoded_partition_work_result
 )
-from .worker import Registration, WorkerManager
+from .worker import Registration, WorkerManager, AsyncWorkerManager
 from .graph import (
     NodeName, MatmulNode, DEFAULT_NODE_OUTPUT,
     NodeInput, NodeOutput, SliceNode, UnsqueezeNode, BroadcastNode, CatNode,

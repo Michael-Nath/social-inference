@@ -18,7 +18,7 @@ from inference.graph import PARTITION_INPUT, PARTITION_OUTPUT
 from inference.builds import build_llaam_causal_mp
 
 from inference.pipeline import CorrelationResponse
-from inference.worker import RegistrationRequest
+from inference.worker import AsyncWorkerManager, RegistrationRequest
 import tests
 
 
@@ -35,7 +35,7 @@ llama_graph.coalesce_partitions(4)
 pipeline = ComputePipeline(llama_graph)
 
 
-worker_manager = WorkerManager(llama_graph)
+worker_manager = AsyncWorkerManager(llama_graph)
 next_tok_manager = NextTokenManager(MODEL_PATH, pipeline)
 
 app = FastAPI()
@@ -48,14 +48,14 @@ async def register(req: RegistrationRequest):
     """
     Called by clients to register their capabilities and request assignment to work.
     """
-    return worker_manager.register(req)
+    return await worker_manager.register(req)
 
 @app.post("/revived/{partition_name}")
 async def revived(partition_name: PartitionName):
     """
     Called by clients when they observe a prior partition
     """
-    worker_manager.revived(partition_name)
+    await worker_manager.revived(partition_name)
 
 @app.post("/input", response_model=CorrelationResponse)
 async def push_input(req: Prompt):
