@@ -255,6 +255,16 @@ class ComputePipeline:
     Queues for each edge in the graph.
     """
 
+    inflight_work_manager: InflightWorkManager
+    """
+    Manages inflight work for the pipeline.
+    """
+
+    progress: dict[str, set[PartitionName]]
+    """
+    Progress of each correlation ID. Lists the partitions that a given correlation ID is currently a) in-queue for or b) in-flight for.
+    """
+
     lock: threading.Lock
 
     def __init__(self, graph: ComputeGraph):
@@ -262,6 +272,7 @@ class ComputePipeline:
         self.edge_queues = {}
         self.partition_queues = {}
         self.inflight_work_manager = InflightWorkManager()
+        self.progress = {}
         self.lock = threading.Lock()
         self._build_queues()
 
@@ -310,6 +321,10 @@ class ComputePipeline:
                 
                 edge_elements[edge] = elements[node]
 
+        # Update progress
+        self.progress[correlation_id] = set()
+        self.progress[correlation_id].add(PARTITION_INPUT)
+
         # Enqueue elements
         for edge, element in edge_elements.items():
             self.edge_queues[edge].put(edge, element)
@@ -349,6 +364,9 @@ class ComputePipeline:
             inputs=input_assignments
         )
 
+        # Update progress
+        self.progress[correlation_id].add(partition)
+
         with self.lock:
             self.inflight_work_manager.mark_sent(w)
 
@@ -363,6 +381,10 @@ class ComputePipeline:
             # If the work was not alive, discard it
             if not self.inflight_work_manager.acknowledge_work(work):
                 return
+        
+        # Update progress
+        self.progress[work.correlation_id].remove(work.partition)
+
         for output in work.outputs:
             forward_edges = self.graph.get_forward_edges(output.node, src_output=output.output)
             for edge in forward_edges:
@@ -384,6 +406,12 @@ class ComputePipeline:
 
         # Return the output
         return PipelineOutput(correlation_id=element.correlation_id, outputs=outputs)
+    
+    def get_progress(self, correlation_id: str) -> set[PartitionName]:
+        """
+        Gets the progress of a correlation ID.
+        """
+        return self.progress[correlation_id]
 
 
 def read_encoded_pipeline_input(offset: int, data: bytes) -> tuple[PipelineInput, int]:
@@ -550,6 +578,9 @@ class NextTokenManager:
             }
         ))
 
+    def get_last_correlation_id(self, chat_id: str) -> str:
+        return self.chat_id_to_completions[chat_id].last_cid
+
     def push(self, prompt: Prompt):
         # Get a fresh CID
         cid = str(self.next_cid)
@@ -567,9 +598,9 @@ class NextTokenManager:
         response = CorrelationResponse(correlation_id=cid)
         return response
     
-    def peek(self, chat_id: str):
+    def peek(self, chat_id: str) -> str:
         assert chat_id in self.chat_id_to_completions
-        return {"decoded_text": self.chat_id_to_completions[chat_id].text} 
+        return self.chat_id_to_completions[chat_id].text.replace(self.tokenizer.bos_token, "").replace(self.tokenizer.eos_token, "")
 
     def submit_next_work(self):
         outputs = self.pipe.dequeue_output(blocking=False) 
@@ -616,4 +647,5 @@ class NextTokenManager:
         self.last_cid_to_completions[cid] = completion
 
         # Push new input
-        self._push(new_input, cid)
+        if decoded_text != self.tokenizer.eos_token:
+            self._push(new_input, cid)

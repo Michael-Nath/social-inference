@@ -3,26 +3,39 @@
     <!-- <script src="consoleHook.js"></script> -->
     <script type="module" src="play2.js"></script>
     <!-- <script type="module" src="test_kernel.js"></script> -->
+    <style>
+       .chat-output {
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: #f9f9f9;
+        font-family: monospace;
+        white-space: pre-wrap;
+       }
+    </style>
     <body>
-        Welcome to Social Inference!
-        <div id="partition-info">
-            <h2>Current Partition: <span id="current-partition"></span></h2>
-            <h2><span id="error-display"></span></h2>
-        </div>
+        <h1>Welcome to Social Inference!</h1>
         <div id="chat-container"> 
-            <div id="chat-output" style="margin-top: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; background: #f9f9f9; font-family: monospace; white-space: pre-wrap;"></div>
-
+            <h2>Chat</h2>
+            <div id="chat-output" class="chat-output"></div>
             <input id="chat-input" type="text" placeholder="Enter your message here...">
             <button id="chat-button" >Send</button>
+            <p> Next token status: <span id="chat-status"></span></p>
         </div>
-        <div id="sessions-container">
-            <!-- Sessions will be dynamically added here -->
-        </div>
-        <div id="console">
-            <!-- Hooked console messages will be displayed here -->
-        </div>
-        <div id="profiling">
-            <!-- Profiling will be displayed here -->
+        <div id="worker-info"></div>
+            <h2>Your Worker</h2>
+            <p>Assigned Partition: <span id="current-partition"></span></p>
+            <p>Status: <span id="error-display"></span></p>
+            <div id="sessions-container">
+                <!-- Sessions will be dynamically added here -->
+            </div>
+            <div id="console">
+                <!-- Hooked console messages will be displayed here -->
+            </div>
+            <div id="profiling">
+                <!-- Profiling will be displayed here -->
+            </div>
         </div>
     </body>
 </html>

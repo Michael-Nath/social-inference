@@ -24,7 +24,8 @@ async function main() {
       chatContainerId: 'chat-container',
       chatOutputId: 'chat-output',
       chatInputId: 'chat-input',
-      chatButtonId: 'chat-button'
+      chatButtonId: 'chat-button',
+      statusId: 'chat-status'
     });
   
     // ----------------------------

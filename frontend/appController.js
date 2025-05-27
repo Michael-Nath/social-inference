@@ -1,9 +1,10 @@
 // frontend/appController.js
-import { Coordinator, PartitionWorkResult, OutputAssignment, SingleStepChunk } from "./worker.js"; // Assuming worker.js path
+import { Coordinator, PartitionWorkResult, OutputAssignment, SingleStepChunk, DEFAULT_NODE_OUTPUT } from "./worker.js"; // Assuming worker.js path
 import { KernelCompiler } from "./compiler.js"; // Assuming compiler.js path
 import { SessionExecutor } from "./executor.js"; // Assuming executor.js path
 import { SafeTensorCache, OutputCache } from "./tensorcache.js";
 import { Profiler } from "./utils/profiler.js";
+import { CPUTensor } from "./kernel.js";
 
 export class AppController {
     device;
@@ -27,6 +28,7 @@ export class AppController {
                 const response = await fetch(`/output/${cid}`);
                 const data = await response.json();
                 this.uiManager.updateChatOutput(data.decoded_text);
+                this.uiManager.setStatus(data.status);
             }
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
@@ -53,9 +55,41 @@ export class AppController {
             localStorage.setItem('partition', registration.partition);
             localStorage.setItem('sessionId', registration.sessionId);
 
-            const cache = new SafeTensorCache();
             const outputCache = new OutputCache();
             const profiler = new Profiler();
+
+            console.log("AppController: Prefilling cache...");
+            const prefillResponse = await fetch(`/prefill/${registration.partition}`);
+            const prefillData = await prefillResponse.json();
+
+            const promises = [];
+            let done = 0;
+            let total = prefillData.safetensors.length;
+            for(const safetensor of prefillData.safetensors) {
+                const p = (async () => {
+                    const response = await fetch(`/safetensor/${btoa(safetensor.model_name)}/${safetensor.tensor_name}`);
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch tensor: ${response.status} ${response.statusText}`);
+                    }
+                    const buffer = await response.arrayBuffer();
+                    const view = new DataView(buffer);
+                    const [tensor] = CPUTensor.decode(view, 0); 
+                    done++;
+                    this.uiManager.displayError(`Prefilling cache... ${done}/${total}`);
+                    return {
+                        node_name: safetensor.node_name,
+                        output_name: DEFAULT_NODE_OUTPUT,
+                        tensor: tensor
+                    };
+                })();
+                promises.push(p);
+            }
+            this.uiManager.displayError("Prefilling cache...");
+            const prefillResults = await Promise.all(promises);
+            for(const result of prefillResults) {
+                outputCache.put(`${result.node_name}:${result.output_name}`, result.tensor);
+            }
+            console.log(`AppController: Cache prefilled with ${prefillResults.length} tensors.`);
 
             while (true) {
                 console.log("AppController: Getting work for partition:", registration.partition);
@@ -82,7 +116,7 @@ export class AppController {
                 this.uiManager.renderSessionGraph(sessionGraph);
 
                 console.log("AppController: Starting execution...");
-                const executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, cache, profiler, work.shouldTrace, outputCache);
+                const executor = new SessionExecutor(this.device, sessionGraph, this.uiManager, null, profiler, work.shouldTrace, outputCache);
                 const { finalOutputs, trace } = await executor.execute(work); // Pass work for initial inputs
                 console.log("AppController: Execution complete. Final outputs:", finalOutputs);
 

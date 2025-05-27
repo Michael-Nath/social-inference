@@ -16,7 +16,9 @@ load_dotenv()
 
 GB = 1024 * 1024 * 1024
 MB = 1024 * 1024
-SIZE_LIMIT = 32 * GB
+SIZE_LIMIT = int(os.getenv("SIZE_LIMIT", "16")) * GB
+
+print(f"Cache size: {SIZE_LIMIT / GB} GB")
 
 def _dtype_to_torch(dtype: str) -> torch.dtype:
   dtype_map = {
@@ -587,14 +589,20 @@ class AsyncModelCache:
       self.session = aiohttp.ClientSession()
 
       self._caches = {
-        "meta-llama/Llama-3.2-1B": AsyncSafeTensorCache([
-          "https://huggingface.co/meta-llama/Llama-3.2-1B/resolve/main/model.safetensors"
-        ], self.session),
-        "meta-llama/Llama-3.2-3B-Instruct": AsyncSafeTensorCache([
-          "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/model-00001-of-00002.safetensors",
-          "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/model-00002-of-00002.safetensors"
-        ], self.session)
-      }
+      "meta-llama/Llama-3.2-1B": AsyncSafeTensorCache([
+        "https://huggingface.co/meta-llama/Llama-3.2-1B/resolve/main/model.safetensors"
+      ], self.session),
+      "meta-llama/Llama-3.2-3B-Instruct": AsyncSafeTensorCache([
+        "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/model-00001-of-00002.safetensors",
+        "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/model-00002-of-00002.safetensors"
+      ], self.session),
+      "meta-llama/Llama-3.1-8B-Instruct": AsyncSafeTensorCache([
+        "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/resolve/main/model-00001-of-00004.safetensors", 
+        "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/resolve/main/model-00002-of-00004.safetensors",
+        "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/resolve/main/model-00003-of-00004.safetensors",
+        "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/resolve/main/model-00004-of-00004.safetensors",
+      ], self.session)
+    }
       self.initialized = True
 
     return self._caches[model]

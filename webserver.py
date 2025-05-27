@@ -14,7 +14,7 @@ from inference import (
     read_encoded_partition_work_result, simulator
 )
 
-from inference.graph import PARTITION_INPUT, PARTITION_OUTPUT
+from inference.graph import PARTITION_INPUT, PARTITION_OUTPUT, SafetensorNode
 from inference.builds import build_llaam_causal_mp
 
 from inference.pipeline import CorrelationResponse
@@ -25,9 +25,9 @@ import tests
 llama_model_param_keys = ['embed_tokens.weight', 'layers.0.self_attn.q_proj.weight', 'layers.0.self_attn.k_proj.weight', 'layers.0.self_attn.v_proj.weight', 'layers.0.self_attn.o_proj.weight', 'layers.0.mlp.gate_proj.weight', 'layers.0.mlp.up_proj.weight', 'layers.0.mlp.down_proj.weight', 'layers.0.input_layernorm.weight', 'layers.0.post_attention_layernorm.weight', 'layers.1.self_attn.q_proj.weight', 'layers.1.self_attn.k_proj.weight', 'layers.1.self_attn.v_proj.weight', 'layers.1.self_attn.o_proj.weight', 'layers.1.mlp.gate_proj.weight', 'layers.1.mlp.up_proj.weight', 'layers.1.mlp.down_proj.weight', 'layers.1.input_layernorm.weight', 'layers.1.post_attention_layernorm.weight', 'layers.2.self_attn.q_proj.weight', 'layers.2.self_attn.k_proj.weight', 'layers.2.self_attn.v_proj.weight', 'layers.2.self_attn.o_proj.weight', 'layers.2.mlp.gate_proj.weight', 'layers.2.mlp.up_proj.weight', 'layers.2.mlp.down_proj.weight', 'layers.2.input_layernorm.weight', 'layers.2.post_attention_layernorm.weight', 'layers.3.self_attn.q_proj.weight', 'layers.3.self_attn.k_proj.weight', 'layers.3.self_attn.v_proj.weight', 'layers.3.self_attn.o_proj.weight', 'layers.3.mlp.gate_proj.weight', 'layers.3.mlp.up_proj.weight', 'layers.3.mlp.down_proj.weight', 'layers.3.input_layernorm.weight', 'layers.3.post_attention_layernorm.weight', 'layers.4.self_attn.q_proj.weight', 'layers.4.self_attn.k_proj.weight', 'layers.4.self_attn.v_proj.weight', 'layers.4.self_attn.o_proj.weight', 'layers.4.mlp.gate_proj.weight', 'layers.4.mlp.up_proj.weight', 'layers.4.mlp.down_proj.weight', 'layers.4.input_layernorm.weight', 'layers.4.post_attention_layernorm.weight', 'layers.5.self_attn.q_proj.weight', 'layers.5.self_attn.k_proj.weight', 'layers.5.self_attn.v_proj.weight', 'layers.5.self_attn.o_proj.weight', 'layers.5.mlp.gate_proj.weight', 'layers.5.mlp.up_proj.weight', 'layers.5.mlp.down_proj.weight', 'layers.5.input_layernorm.weight', 'layers.5.post_attention_layernorm.weight', 'layers.6.self_attn.q_proj.weight', 'layers.6.self_attn.k_proj.weight', 'layers.6.self_attn.v_proj.weight', 'layers.6.self_attn.o_proj.weight', 'layers.6.mlp.gate_proj.weight', 'layers.6.mlp.up_proj.weight', 'layers.6.mlp.down_proj.weight', 'layers.6.input_layernorm.weight', 'layers.6.post_attention_layernorm.weight', 'layers.7.self_attn.q_proj.weight', 'layers.7.self_attn.k_proj.weight', 'layers.7.self_attn.v_proj.weight', 'layers.7.self_attn.o_proj.weight', 'layers.7.mlp.gate_proj.weight', 'layers.7.mlp.up_proj.weight', 'layers.7.mlp.down_proj.weight', 'layers.7.input_layernorm.weight', 'layers.7.post_attention_layernorm.weight', 'layers.8.self_attn.q_proj.weight', 'layers.8.self_attn.k_proj.weight', 'layers.8.self_attn.v_proj.weight', 'layers.8.self_attn.o_proj.weight', 'layers.8.mlp.gate_proj.weight', 'layers.8.mlp.up_proj.weight', 'layers.8.mlp.down_proj.weight', 'layers.8.input_layernorm.weight', 'layers.8.post_attention_layernorm.weight', 'layers.9.self_attn.q_proj.weight', 'layers.9.self_attn.k_proj.weight', 'layers.9.self_attn.v_proj.weight', 'layers.9.self_attn.o_proj.weight', 'layers.9.mlp.gate_proj.weight', 'layers.9.mlp.up_proj.weight', 'layers.9.mlp.down_proj.weight', 'layers.9.input_layernorm.weight', 'layers.9.post_attention_layernorm.weight', 'layers.10.self_attn.q_proj.weight', 'layers.10.self_attn.k_proj.weight', 'layers.10.self_attn.v_proj.weight', 'layers.10.self_attn.o_proj.weight', 'layers.10.mlp.gate_proj.weight', 'layers.10.mlp.up_proj.weight', 'layers.10.mlp.down_proj.weight', 'layers.10.input_layernorm.weight', 'layers.10.post_attention_layernorm.weight', 'layers.11.self_attn.q_proj.weight', 'layers.11.self_attn.k_proj.weight', 'layers.11.self_attn.v_proj.weight', 'layers.11.self_attn.o_proj.weight', 'layers.11.mlp.gate_proj.weight', 'layers.11.mlp.up_proj.weight', 'layers.11.mlp.down_proj.weight', 'layers.11.input_layernorm.weight', 'layers.11.post_attention_layernorm.weight', 'layers.12.self_attn.q_proj.weight', 'layers.12.self_attn.k_proj.weight', 'layers.12.self_attn.v_proj.weight', 'layers.12.self_attn.o_proj.weight', 'layers.12.mlp.gate_proj.weight', 'layers.12.mlp.up_proj.weight', 'layers.12.mlp.down_proj.weight', 'layers.12.input_layernorm.weight', 'layers.12.post_attention_layernorm.weight', 'layers.13.self_attn.q_proj.weight', 'layers.13.self_attn.k_proj.weight', 'layers.13.self_attn.v_proj.weight', 'layers.13.self_attn.o_proj.weight', 'layers.13.mlp.gate_proj.weight', 'layers.13.mlp.up_proj.weight', 'layers.13.mlp.down_proj.weight', 'layers.13.input_layernorm.weight', 'layers.13.post_attention_layernorm.weight', 'layers.14.self_attn.q_proj.weight', 'layers.14.self_attn.k_proj.weight', 'layers.14.self_attn.v_proj.weight', 'layers.14.self_attn.o_proj.weight', 'layers.14.mlp.gate_proj.weight', 'layers.14.mlp.up_proj.weight', 'layers.14.mlp.down_proj.weight', 'layers.14.input_layernorm.weight', 'layers.14.post_attention_layernorm.weight', 'layers.15.self_attn.q_proj.weight', 'layers.15.self_attn.k_proj.weight', 'layers.15.self_attn.v_proj.weight', 'layers.15.self_attn.o_proj.weight', 'layers.15.mlp.gate_proj.weight', 'layers.15.mlp.up_proj.weight', 'layers.15.mlp.down_proj.weight', 'layers.15.input_layernorm.weight', 'layers.15.post_attention_layernorm.weight', 'norm.weight']
 llama_layer_one_param_keys = ['self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight', 'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight', 'input_layernorm.weight', 'post_attention_layernorm.weight']
 
-# MODEL_PATH = "meta-llama/Llama-3.2-1B"
-MODEL_PATH = "meta-llama/Llama-3.1-8B-Instruct"
-# MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
+MODEL_PATH = "meta-llama/Llama-3.2-1B"
+#MODEL_PATH = "meta-llama/Llama-3.1-8B-Instruct"
+#MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
 
 model_cache = AsyncModelCache()
 sync_model_cache = ModelCache()
@@ -49,7 +49,7 @@ async def register(req: RegistrationRequest):
     """
     Called by clients to register their capabilities and request assignment to work.
     """
-    return await worker_manager.register(req)
+    return worker_manager.register(req)
 
 @app.post("/revived/{partition_name}/{cand_session_id}")
 async def revived(partition_name: PartitionName, cand_session_id: str):
@@ -65,12 +65,57 @@ async def push_input(req: Prompt):
     """
     return next_tok_manager.push(req)
 
+class GetOutputResponse(BaseModel):
+    decoded_text: str
+    status: str
+
 @app.get("/output/{cid}")
 async def get_output(cid: str):
     """
     Called by clients to get inference outputs
     """
-    return next_tok_manager.peek(cid)
+
+    # Peek @ progress
+    last_correlation_id = next_tok_manager.get_last_correlation_id(cid)
+    progress = pipeline.get_progress(last_correlation_id)
+
+    # Map to human-readable progress
+    status = None
+    if PARTITION_INPUT in progress:
+        status = "In queue"
+
+    if "pre" in progress:
+        status = "Pre-processing... (computing embeddings)"
+
+    max_layer = None
+    min_layer = None
+    for partition in progress:
+        sub_partitions = partition.split(".")
+        for sub_partition in sub_partitions:
+            if "layer" in sub_partition:
+                num = sub_partition.split("layer")[1]
+                if max_layer is None or int(num) > max_layer:
+                    max_layer = int(num)
+                if min_layer is None or int(num) < min_layer:
+                    min_layer = int(num)
+
+    if max_layer is not None:
+        if max_layer != min_layer:
+            status = f"Layers {min_layer} to {max_layer}"
+        else:
+            status = f"Layer {max_layer}"
+
+    if "post" in progress:
+        status = "Post-processing... (computing logits)"
+    
+    if PARTITION_OUTPUT in progress:
+        status = "Done!"
+
+
+    if status is None:
+        status = "Working..."
+
+    return GetOutputResponse(decoded_text=next_tok_manager.peek(cid), status=status)
 
 class SafetensorHeader(BaseModel):
     dtype: str
@@ -140,6 +185,29 @@ async def get_work(partition_name: PartitionName):
             } 
         )
     return StreamingResponse(io.BytesIO(b""), status_code=404, media_type="application/octet-stream")
+
+
+class PrefillTensor(BaseModel):
+    node_name: str
+    model_name: str
+    tensor_name: str
+
+class PrefillResponse(BaseModel):
+    safetensors: list[PrefillTensor]
+
+@app.get("/prefill/{partition_name}")
+async def prefill(partition_name: PartitionName):
+    """
+    Returns a list of all safetensors in a partition. Used by nodes to prefill their caches.
+    """
+
+    node_names = llama_graph.list_partition(partition_name)
+    safetensors = []
+    for node_name in node_names:
+        node = llama_graph.get_node(node_name)
+        if isinstance(node, SafetensorNode):
+            safetensors.append(PrefillTensor(node_name=node_name, model_name=node.model_name, tensor_name=node.tensor_name))
+    return PrefillResponse(safetensors=safetensors)
 
 @app.post("/work")
 async def submit_work(req: Request):

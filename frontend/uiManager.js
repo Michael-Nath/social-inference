@@ -12,6 +12,7 @@ export class UIManager {
         this.chatOutput = document.getElementById(containerSelectors.chatOutputId);
         this.chatInput = document.getElementById(containerSelectors.chatInputId);
         this.chatButton = document.getElementById(containerSelectors.chatButtonId);
+        this.statusElement = document.getElementById(containerSelectors.statusId);
         this.chatCid = null;
 
         this.chatButton.addEventListener('click', async () => {
@@ -34,6 +35,10 @@ export class UIManager {
 
     setChatPrompt(prompt) {
         this.updateChatOutput(prompt);
+    }
+
+    setStatus(status) {
+        this.statusElement.textContent = status;
     }
 
 
@@ -153,10 +158,8 @@ export class UIManager {
     }
 
     displayError(message) {
-        console.error("UIManager Displaying Error:", message);
         if (this.errorDisplayElement) {
-            this.errorDisplayElement.textContent = `Error: ${message || 'Unknown error'}`;
-            this.errorDisplayElement.style.color = 'red';
+            this.errorDisplayElement.textContent = message;
             this.errorDisplayElement.style.display = 'block';
         }
         // Potentially also log to a more prominent UI element if needed
