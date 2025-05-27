@@ -36,9 +36,12 @@ export class AppController {
         this.uiManager.clearError();
         try {
             console.log("AppController: Getting partition from local storage...");
+            const sessionId = localStorage.getItem('sessionId');
             const partition = localStorage.getItem('partition');
             if(partition) {
-                await this.coordinator.revived(partition);
+                await this.coordinator.revived(partition, sessionId);
+            } else {
+                console.log("We do not have a valid partition to work with")
             }
 
             console.log("AppController: Registering with coordinator...");
@@ -46,8 +49,9 @@ export class AppController {
             console.log("AppController: Registered for partition:", registration.partition);
             this.uiManager.displayCurrentPartition(registration.partition);
 
-            // Store partition in local storage
+            // Store partition & current session in local storage
             localStorage.setItem('partition', registration.partition);
+            localStorage.setItem('sessionId', registration.sessionId);
 
             const cache = new SafeTensorCache();
             const outputCache = new OutputCache();

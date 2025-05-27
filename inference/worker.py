@@ -1,4 +1,5 @@
 import threading
+import time
 
 from pydantic import BaseModel
 from .graph import PartitionName, ComputeGraph, PARTITION_INPUT, PARTITION_OUTPUT
@@ -8,6 +9,7 @@ class RegistrationRequest(BaseModel):
 
 class Registration(BaseModel):
     partition: PartitionName
+    session_id: str
 
 class WorkerManager:
     graph: ComputeGraph
@@ -16,6 +18,7 @@ class WorkerManager:
 
     def __init__(self, graph: ComputeGraph):
         self.graph = graph
+        self.session_id = str(time.time())
         self.assignmentCounts = {}
         for p in (graph.get_partitions() - {PARTITION_INPUT, PARTITION_OUTPUT}):
             self.assignmentCounts[p] = 0
@@ -24,12 +27,19 @@ class WorkerManager:
             raise ValueError("No partitions to assign")
         self.lock = threading.Lock()
 
-    def revived(self, partition_name: PartitionName):
+    def revived(self, partition_name: PartitionName, cand_session_id: str):
         """
         Called when a worker observes a prior partition
         """
+        if (cand_session_id != self.session_id):
+            # client is not on same session as the server, cannot decrement anything
+            # because the client's partition in browser storage is not accurate
+            return
+        # the client is on the same session as the server and the client has a valid assignment
         with self.lock:
             if partition_name in self.assignmentCounts:
+                # client "gives up" this partition; the coordinator can either give this back in
+                # subsequent register(), or assign another partition
                 self.assignmentCounts[partition_name] -= 1
 
     def register(self, req: RegistrationRequest) -> Registration:
@@ -58,4 +68,4 @@ class WorkerManager:
             for k,v in self.assignmentCounts.items():
                 print(f"Partition {k} has {v} workers")
                 
-            return Registration(partition=partition_name)
+            return Registration(partition=partition_name, session_id=self.session_id)

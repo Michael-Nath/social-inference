@@ -77,10 +77,12 @@ class Registration {
     /*
      * @param {Object} api_response - Registration response from server
      * @param {string} api_response.partition - Partition to register as
+     * @param {string} api_response.session_id - Session ID (used for refresh recovery)
      */
     constructor(api_response) {
         /** @type {string} */
         this.partition = api_response.partition;
+        this.sessionId = api_response.session_id;
     }
 }
 
@@ -3087,8 +3089,8 @@ export class Coordinator {
         return new Registration(await response.json());
     }
 
-    async revived(partition_name) {
-        await fetch(`${this.url}/revived/${partition_name}`, {
+    async revived(partition_name, sessionId) {
+        await fetch(`${this.url}/revived/${partition_name}/${sessionId}`, {
             method: "POST",
         });
     }
