@@ -75,6 +75,7 @@ export class CPUTensor extends Tensor {
         return new Uint8Array(this.data);
       default:
         console.warn(`Unrecognized dtype: ${this.dtype}, falling back to Float32Array`);
+        debugger;
         return new Float32Array(this.data);
     }
   }

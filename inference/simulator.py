@@ -367,7 +367,7 @@ def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) ->
                 output_table[(node, DEFAULT_NODE_OUTPUT)] = output
                 return output
             elif isinstance(encoded_node, UpperTriangularMaskNode):
-                dimension = encoded_node.dimension
+                dimension = resolve_input(node, UpperTriangularMaskNode.DIM).item()
                 output_dtype_str = encoded_node.output_dtype
                 if output_dtype_str == "uint8":
                     output_dtype = torch.uint8
@@ -395,7 +395,13 @@ def simulate(work: PartitionWork, model_cache: ModelCache, single_step: bool) ->
             for (n, out), tensor in output_table.items():
                 print(f"  {n}.{out}: {tensor.shape}")
             raise e
+        
 
+
+    # Check for NaNs
+    for (n, out), tensor in output_table.items():
+        if torch.isnan(tensor).any():
+            print(f"WARNING: NaN in {n}.{out}")
 
     for node in output_nodes:
         evaluate_output(node, DEFAULT_NODE_OUTPUT)

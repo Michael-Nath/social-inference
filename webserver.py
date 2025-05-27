@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import torch
 
 from inference import (
-    AsyncModelCache, Registration, ComputePipeline, WorkerManager, NextTokenManager,
+    ModelCache, AsyncModelCache, Registration, ComputePipeline, WorkerManager, NextTokenManager,
     PartitionName, SingleStepChunk, Prompt,
     PipelineOutput, Tensor, size_encoded_partition_work, write_encoded_partition_work, size_encoded_tensor, write_encoded_tensor,
     read_encoded_partition_work_result, simulator
@@ -29,6 +29,7 @@ MODEL_PATH = "meta-llama/Llama-3.2-1B"
 # MODEL_PATH = "meta-llama/Llama-3.2-3B-Instruct" 
 
 model_cache = AsyncModelCache()
+sync_model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
 llama_graph.coalesce_partitions(1)
 pipeline = ComputePipeline(llama_graph)
@@ -88,17 +89,17 @@ async def get_safetensor(model_name: str, tensor_name: str):
     """
     # URL-decode the model_name and tensor_name as they may be URL-encoded
     model_name = base64.b64decode(model_name).decode('utf-8')
-    tensor_cache = model_cache.get_cache(model_name)
+    tensor_cache = sync_model_cache.get_cache(model_name)
 
     # Pretty print cache statistics
-    stats = await tensor_cache.get_stats()
+    stats = tensor_cache.get_stats()
     print(f"Cache Statistics for {model_name}:")
     print(f"  Hits: {stats.hits} ({stats.hits_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Misses: {stats.misses} ({stats.misses_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Evictions: {stats.evictions} ({stats.evictions_bytes / (1024 * 1024):.2f} MB)")
     print(f"  Present: {stats.present} ({stats.present_bytes / (1024 * 1024):.2f} MB)")
 
-    async with tensor_cache.get_tensor(tensor_name) as tensor:
+    with tensor_cache.get_tensor(tensor_name) as tensor:
         # tensor is torch.Tensor
         if tensor.dtype == torch.bfloat16:
             tensor = tensor.to(torch.float32)
@@ -125,7 +126,7 @@ async def get_work(partition_name: PartitionName):
     """
     w = pipeline.get_partition_work(partition_name)
     if w is not None:
-        w.should_trace = False 
+        w.should_trace = False
         inflight_work[(w.partition, w.correlation_id)] = w
         tensor_bytes = bytearray(size_encoded_partition_work(w))
         write_encoded_partition_work(tensor_bytes, 0, w)
@@ -161,7 +162,7 @@ async def check_work(req: Request):
     work, _ = SingleStepChunk.decode(0, body)
     if (work.partition, work.correlation_id) not in sim_results:
         print("SIMULATING")
-        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], model_cache, True)
+        gt = simulator.simulate(inflight_work[(work.partition, work.correlation_id)], sync_model_cache, True)
         sim_results[(work.partition, work.correlation_id)] = gt
         
     gt = sim_results[(work.partition, work.correlation_id)]

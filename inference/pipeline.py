@@ -16,6 +16,8 @@ from .queue import CorrelatedQueue, CorrelatedTensor
 from transformers import AutoTokenizer
 
 import torch
+import torch.nn.functional as F
+
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
 
 @dataclass
@@ -489,6 +491,34 @@ def size_encoded_partition_work_result(partition_work_result: PartitionWorkResul
 def size_encoded_bool(b: bool):
     return 1
 
+def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
+    """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+        Args:
+            logits: logits distribution shape (vocabulary size)
+            top_k >0: keep only top k tokens with highest probability (top-k filtering).
+            top_p >0.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+                Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+    """
+    assert logits.dim() == 1  # batch size 1 for now - could be updated for more but the code would be less clear
+    top_k = min(top_k, logits.size(-1))  # Safety check
+    if top_k > 0:
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits[indices_to_remove] = filter_value
+
+    if top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs > top_p
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        indices_to_remove = sorted_indices[sorted_indices_to_remove]
+        logits[indices_to_remove] = filter_value
+    return logits
 
 @dataclass
 class Completion:
@@ -510,7 +540,7 @@ class NextTokenManager:
         self.last_cid_to_completions: dict[str, Completion] = {}
 
     def _push(self, text: str, cid: str):
-        tokens = torch.tensor(self.tokenizer.encode(text)).unsqueeze(0)
+        tokens = torch.tensor(self.tokenizer.encode(text), dtype=torch.int32).unsqueeze(0)
         position_ids = torch.arange(tokens.shape[1], dtype=torch.int32).unsqueeze(0)
        
         self.pipe.enqueue_input(PipelineInput(cid,
@@ -524,6 +554,8 @@ class NextTokenManager:
         # Get a fresh CID
         cid = str(self.next_cid)
         self.next_cid += 1
+
+        prompt.text = self.tokenizer.bos_token + prompt.text
 
         # Push to queues
         self._push(prompt.text, cid)
@@ -551,10 +583,20 @@ class NextTokenManager:
                 break
 
         assert logits is not None
-        token  = logits[0][-1].argmax()
+        # logits is [B, L, V]
+
+
+        temp = 0.7
+        top_k = 0
+        top_p = 0.9
+
+        logits = logits[0, -1, :]  / temp
+        filtered_logits = top_k_top_p_filtering(logits, top_k, top_p)
+        probabilities = F.softmax(filtered_logits, dim=-1)
+        token = torch.multinomial(probabilities, 1)
 
         # decode the token
-        decoded_text = tokenizer.decode(token)
+        decoded_text = self.tokenizer.decode(token)
 
         completion = self.last_cid_to_completions[outputs.correlation_id]
 
