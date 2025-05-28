@@ -10,6 +10,7 @@ import {
 } from "./encoding.js";
 import { CPUKernel, CPUTensor, GPUKernel, GPUTensor, Tensor } from "./kernel.js";
 import { SafeTensorCache } from "./tensorcache.js";
+import { SAFETENSOR_SERVER_URL } from "./config.js";
 
 /*
  * Kernels
@@ -549,7 +550,7 @@ export class SafetensorNode extends Node {
             name: 'safetensor',
             func: async (executionContext) => {
                 const encodedModelName = btoa(this.model_name);
-                const response = await fetch(`/safetensor/${encodedModelName}/${this.tensor_name}`);
+                const response = await fetch(`${SAFETENSOR_SERVER_URL}/${encodedModelName}/${this.tensor_name}`);
         
                 if (!response.ok) {
                     throw new Error(`Failed to fetch tensor: ${response.status} ${response.statusText}`);

@@ -24,6 +24,17 @@ import tests
 model_cache = AsyncModelCache()
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 async def stream_bytes(bytes: bytes, chunk_size: int = 1024 * 500):
     n_bytes = len(bytes)
     for i in range(0, n_bytes, chunk_size):

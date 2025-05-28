@@ -32,7 +32,7 @@ MODEL_PATH = "meta-llama/Llama-3.2-1B"
 model_cache = AsyncModelCache()
 sync_model_cache = ModelCache()
 llama_graph = build_llaam_causal_mp(MODEL_PATH)
-llama_graph.coalesce_partitions(1)
+llama_graph.coalesce_partitions(2)
 pipeline = ComputePipeline(llama_graph)
 
 

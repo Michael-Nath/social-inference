@@ -5,6 +5,7 @@ import { SessionExecutor } from "./executor.js"; // Assuming executor.js path
 import { SafeTensorCache, OutputCache } from "./tensorcache.js";
 import { Profiler } from "./utils/profiler.js";
 import { CPUTensor } from "./kernel.js";
+import { SAFETENSOR_SERVER_URL } from "./config.js";
 
 export class AppController {
     device;
@@ -67,7 +68,7 @@ export class AppController {
             let total = prefillData.safetensors.length;
             for(const safetensor of prefillData.safetensors) {
                 const p = (async () => {
-                    const response = await fetch(`/safetensor/${btoa(safetensor.model_name)}/${safetensor.tensor_name}`);
+                    const response = await fetch(`${SAFETENSOR_SERVER_URL}/${btoa(safetensor.model_name)}/${safetensor.tensor_name}`);
                     if (!response.ok) {
                         throw new Error(`Failed to fetch tensor: ${response.status} ${response.statusText}`);
                     }
@@ -100,6 +101,7 @@ export class AppController {
                     await new Promise(resolve => setTimeout(resolve, 1000)); // Add a 1 second delay
                     continue;
                 }
+                this.uiManager.displayError("Working...");
                 console.log("AppController: Received work with correlation ID:", work.correlation_id, work);
 
                 console.log("AppController: Starting compilation...");
